@@ -223,6 +223,9 @@ private struct SourceRow: View {
 
     var body: some View {
         Label(title ?? source.displayName, systemImage: source.isCollection ? "photo.stack" : "photo")
+            // Stable machine-facing handle for UI tests — the visible text is the
+            // user-set title, which can change without breaking test selectors.
+            .accessibilityIdentifier(source.displayName)
             .task(id: source.id) { await loadTitle() }
     }
 
@@ -235,14 +238,18 @@ private struct SourceRow: View {
 }
 
 /// One row in the "iCloud" sidebar section: a normal label once downloaded, or a
-/// placeholder with progress while the file is still being fetched.
+/// placeholder with progress while the file is still being fetched. Fully-downloaded
+/// collections show their stored title like local sources do; anything not yet local
+/// keeps the filename stem — reading a title must never trigger a download.
 private struct CloudItemRow: View {
     let item: CloudItem
+
+    @State private var title: String?
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.displayName)
+                Text(title ?? item.displayName)
                 switch item.downloadState {
                 case .current:
                     EmptyView()
@@ -256,5 +263,15 @@ private struct CloudItemRow: View {
             Image(systemName: item.isCollection ? "photo.stack" : "photo")
         }
         .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
+        // Keyed on the whole item so the title is fetched once the download completes
+        // (the state flip from .downloading/.remote to .current changes the id).
+        .task(id: item) { await loadTitle() }
+    }
+
+    private func loadTitle() async {
+        guard item.isCollection, item.downloadState == .current else { return }
+        if let fetched = try? await GoCore.shared.title(ofCollectionAt: item.path), !fetched.isEmpty {
+            title = fetched
+        }
     }
 }

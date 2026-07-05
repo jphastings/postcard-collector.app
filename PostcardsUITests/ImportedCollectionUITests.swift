@@ -28,14 +28,19 @@ final class ImportedCollectionUITests: XCTestCase {
 
     @MainActor
     func testImportedCollectionScrollsAndOpensCards() throws {
+        // Cells and sidebar rows are queried by accessibilityIdentifier (SourceRow uses
+        // the filename stem, GridCell the card name): the visible text is a user-set
+        // collection title and the cells are text-free thumbnails whose labels are
+        // human-facing descriptions, so identifiers are the stable machine handle.
+
         // The import runs asynchronously at launch; the collection then appears in the
-        // sidebar under its display name.
-        let sidebarRow = app.staticTexts["user-collection"]
+        // sidebar.
+        let sidebarRow = app.descendants(matching: .any).matching(identifier: "user-collection").firstMatch
         XCTAssertTrue(sidebarRow.waitForExistence(timeout: 15), "imported collection never appeared in the sidebar")
         sidebarRow.tap()
 
         // The grid must actually show the imported collection's cards.
-        let firstCard = app.staticTexts["user-card-01"]
+        let firstCard = app.descendants(matching: .any).matching(identifier: "user-card-01").firstMatch
         XCTAssertTrue(firstCard.waitForExistence(timeout: 15), "imported collection's cards never appeared in the grid")
 
         // Bug 2 regression: the grid must scroll. With 12 cards on an iPhone some cells
@@ -47,7 +52,9 @@ final class ImportedCollectionUITests: XCTestCase {
 
         // Bug 3 regression: tapping a card must open the detail view (recognisable by
         // its Info toolbar button).
-        let anyCard = app.buttons.matching(NSPredicate(format: "label CONTAINS 'user-card-'")).firstMatch
+        let anyCard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'user-card-'"))
+            .firstMatch
         XCTAssertTrue(anyCard.waitForExistence(timeout: 5), "no tappable card cells in the grid")
         anyCard.tap()
 
