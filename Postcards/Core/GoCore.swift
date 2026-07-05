@@ -122,6 +122,16 @@ actor GoCore {
         try cardFile(at: path).image()
     }
 
+    /// Drops (and closes) any cached handle for the file at `path`. Call before replacing
+    /// the file on disk — e.g. re-importing a collection — so later calls reopen the new
+    /// contents instead of reading through a stale SQLite handle on the deleted inode.
+    func invalidateSource(at path: String) {
+        if let collection = collections.removeValue(forKey: path) {
+            try? collection.close()
+        }
+        cardFiles.removeValue(forKey: path)
+    }
+
     // MARK: - CardReference convenience
 
     /// The raw, untouched bytes of a card's stored (combined front+back) web-format file,

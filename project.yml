@@ -16,9 +16,43 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: true
     FRAMEWORK_SEARCH_PATHS:
       - "$(PROJECT_DIR)/Frameworks"
+    DEVELOPMENT_TEAM: 7L3537S658
+
+# The .postcard.db compound extension can't be expressed to LaunchServices (extensions
+# are single-segment), so the imported UTI claims plain "db" at Alternate rank: the app
+# offers to open .db files via double-click / Open With without stealing the default
+# association. LibraryModel still validates the full .postcard.db suffix on import.
+targetTemplates:
+  PostcardApp:
+    info:
+      path: Postcards/Support/Info-${target_name}.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Postcard Collection
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.dotpostcard.postcard-collection
+          - CFBundleTypeName: Postcard Image
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.jpeg
+              - public.png
+              - org.webmproject.webp
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.dotpostcard.postcard-collection
+            UTTypeDescription: Postcard Collection
+            UTTypeConformsTo:
+              - public.database
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - db
 
 targets:
   Postcards-iOS:
+    templates: [PostcardApp]
     type: application
     platform: iOS
     deploymentTarget: "17.0"
@@ -26,6 +60,7 @@ targets:
       - path: Postcards
         excludes:
           - "Fixtures/**"
+          - "Support/**"
       - path: Postcards/Fixtures
         buildPhase: resources
     settings:
@@ -40,6 +75,7 @@ targets:
         codeSign: true
 
   Postcards-macOS:
+    templates: [PostcardApp]
     type: application
     platform: macOS
     deploymentTarget: "14.0"
@@ -47,6 +83,7 @@ targets:
       - path: Postcards
         excludes:
           - "Fixtures/**"
+          - "Support/**"
       - path: Postcards/Fixtures
         buildPhase: resources
     settings:
@@ -66,13 +103,33 @@ targets:
     sources:
       - path: Postcards/Core
       - path: PostcardsTests
+        excludes:
+          - "Resources/**"
+      - path: PostcardsTests/Resources
+        buildPhase: resources
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.tests
       GENERATE_INFOPLIST_FILE: true
     dependencies:
       - framework: Frameworks/Postcards.xcframework
-        embed: false
-        codeSign: false
+        embed: true
+        codeSign: true
+
+  PostcardsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: PostcardsUITests
+        excludes:
+          - "Resources/**"
+      - path: PostcardsUITests/Resources
+        buildPhase: resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.uitests
+      TEST_TARGET_NAME: Postcards-iOS
+    dependencies:
+      - target: Postcards-iOS
 
 schemes:
   Postcards-iOS:
@@ -84,7 +141,7 @@ schemes:
     test:
       config: Debug
       targets:
-        - PostcardsTests
+        - PostcardsUITests
   Postcards-macOS:
     build:
       targets:

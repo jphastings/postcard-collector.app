@@ -1,14 +1,14 @@
 import SwiftUI
 
 /// The app's root: a sidebar of collections/loose files (bundled fixtures plus anything
-/// opened via `.fileImporter`), a grid of the selected collection's cards, and the
-/// selected card's detail.
+/// the user opens — file importer, ⌘O, drag-and-drop, or Open With), a grid of the
+/// selected collection's cards, and the selected card's detail.
 struct LibraryView: View {
-    @State private var library = LibraryModel()
+    let library: LibraryModel
+
     @State private var selectedSource: LibrarySource?
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
-    @State private var importError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -29,18 +29,21 @@ struct LibraryView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    library.addSources(from: urls)
+                    Task { await library.importSources(from: urls) }
                 case .failure(let error):
-                    importError = error.localizedDescription
+                    library.importError = error.localizedDescription
                 }
             }
             .alert(
                 "Couldn't open file",
-                isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
+                isPresented: Binding(
+                    get: { library.importError != nil },
+                    set: { if !$0 { library.importError = nil } }
+                )
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text(importError ?? "")
+                Text(library.importError ?? "")
             }
         } content: {
             if let selectedSource {
@@ -60,6 +63,25 @@ struct LibraryView: View {
                 ContentUnavailableView("Select a Postcard", systemImage: "photo")
             }
         }
+        // Finder/Files drops of .postcard.db / .postcard.* files anywhere on the window.
+        .dropDestination(for: URL.self) { urls, _ in
+            Task { await library.importSources(from: urls) }
+            return true
+        }
+        // Double-click / "Open With" documents (see CFBundleDocumentTypes in project.yml).
+        .onOpenURL { url in
+            Task { await library.importSources(from: [url]) }
+        }
+        .task { await runAutomationHookIfRequested() }
+    }
+
+    /// DEBUG-only hook for UI tests: `-uitest-import <path>` runs the real import
+    /// pipeline at launch, standing in for the un-automatable system file picker.
+    private func runAutomationHookIfRequested() async {
+        #if DEBUG
+        guard let path = UserDefaults.standard.string(forKey: "uitest-import") else { return }
+        await library.importSources(from: [URL(fileURLWithPath: path)])
+        #endif
     }
 }
 
