@@ -23,10 +23,10 @@ final class LibraryModelImportTests: XCTestCase {
 
     /// Stages the bundled fixture db in a directory outside the app bundle/import dir,
     /// standing in for a file-importer/open-panel URL.
-    private func stagePickedCollection(named filename: String = "my-cards.postcard.db") throws -> URL {
+    private func stagePickedCollection(named filename: String = "my-cards.postcards") throws -> URL {
         let fixture = try XCTUnwrap(
-            Bundle(for: LibraryModelImportTests.self).url(forResource: "fixture.postcard", withExtension: "db"),
-            "fixture.postcard.db must be a test bundle resource"
+            Bundle(for: LibraryModelImportTests.self).url(forResource: "fixture", withExtension: "postcards"),
+            "fixture.postcards must be a test bundle resource"
         )
         let picked = pickedDirectory.appending(path: filename)
         try FileManager.default.copyItem(at: fixture, to: picked)
@@ -99,7 +99,7 @@ final class LibraryModelImportTests: XCTestCase {
     }
 
     func testCorruptCollectionIsRejectedAtImportTime() async throws {
-        let corrupt = pickedDirectory.appending(path: "broken.postcard.db")
+        let corrupt = pickedDirectory.appending(path: "broken.postcards")
         try Data("not a sqlite file".utf8).write(to: corrupt)
         let model = LibraryModel(importDirectory: importDirectory)
         let preexistingSources = model.sources.count
@@ -110,6 +110,6 @@ final class LibraryModelImportTests: XCTestCase {
         XCTAssertEqual(model.sources.count, preexistingSources)
         // The failed copy must not linger to be "restored" as a broken source next launch.
         let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: importDirectory.path)) ?? []
-        XCTAssertFalse(leftovers.contains("broken.postcard.db"))
+        XCTAssertFalse(leftovers.contains("broken.postcards"))
     }
 }

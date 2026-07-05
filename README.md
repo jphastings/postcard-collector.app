@@ -1,6 +1,6 @@
 # Postcards
 
-A read-only SwiftUI viewer for `*.postcard.db` collections and bare `*.postcard.*` files,
+A read-only SwiftUI viewer for `*.postcards` collections and bare `*.postcard.*` files,
 over a Go core (see [dotpostcard](https://github.com/jphastings/dotpostcard)) vendored as
 an XCFramework. iOS 17+ and macOS 14+.
 
@@ -36,7 +36,7 @@ sync (milestone 6) and motion-driven parallax (milestone 7) are not implemented 
 - `Postcards/Views/` — `LibraryView` (sidebar + file importer), `CollectionGridView`
   (searchable grid, thumbnails via `NSCache`), `CardDetailView` + `FlipEffect.swift`
   (the tap-to-flip card), `CardInfoPanel` (sheet on iOS / inspector on macOS).
-- `Postcards/Fixtures/` — a bundled sample collection (`fixture.postcard.db`, four cards
+- `Postcards/Fixtures/` — a bundled sample collection (`fixture.postcards`, four cards
   covering all four flip types) and one bare card file, for the app to show with nothing
   configured.
 - `PostcardsTests/` — logic-only unit tests, compiled directly against `Postcards/Core`

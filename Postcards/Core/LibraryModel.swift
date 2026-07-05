@@ -34,7 +34,7 @@ final class LibraryModel {
     init(importDirectory: URL = LibraryModel.defaultImportDirectory) {
         self.importDirectory = importDirectory
 
-        if let fixtureCollection = Bundle.main.url(forResource: "fixture.postcard", withExtension: "db") {
+        if let fixtureCollection = Bundle.main.url(forResource: "fixture", withExtension: "postcards") {
             sources.append(.collection(path: fixtureCollection.path, displayName: "Sample Collection"))
         }
         if let fixtureCard = Bundle.main.url(forResource: "righthand-card.postcard", withExtension: "jpeg") {
@@ -66,7 +66,7 @@ final class LibraryModel {
 
     // MARK: - Import pipeline
 
-    private static let collectionSuffix = ".postcard.db"
+    private static let collectionSuffix = ".postcards"
     private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes
 

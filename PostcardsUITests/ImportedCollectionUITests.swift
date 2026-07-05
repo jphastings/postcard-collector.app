@@ -1,7 +1,7 @@
 import XCTest
 
 /// Regression tests for the "imported collection = dead grid" bugs: after importing a
-/// user's own .postcard.db, the grid must scroll and its cards must open.
+/// user's own .postcards, the grid must scroll and its cards must open.
 ///
 /// The system Files picker can't be driven reliably from XCUITest, so the app's
 /// DEBUG-only `-uitest-import <path>` launch argument (see LibraryView) feeds the picked
@@ -17,8 +17,8 @@ final class ImportedCollectionUITests: XCTestCase {
 
         let db = try XCTUnwrap(
             Bundle(for: ImportedCollectionUITests.self)
-                .url(forResource: "user-collection.postcard", withExtension: "db"),
-            "user-collection.postcard.db must be a UI-test bundle resource"
+                .url(forResource: "user-collection", withExtension: "postcards"),
+            "user-collection.postcards must be a UI-test bundle resource"
         )
 
         app = XCUIApplication()

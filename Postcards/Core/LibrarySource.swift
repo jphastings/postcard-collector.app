@@ -1,6 +1,6 @@
 import Foundation
 
-/// One thing the library can show: either an opened `.postcard.db` collection, or a bare
+/// One thing the library can show: either an opened `.postcards` collection, or a bare
 /// `.postcard.*` file opened outside of any collection.
 enum LibrarySource: Identifiable, Hashable {
     case collection(path: String, displayName: String)

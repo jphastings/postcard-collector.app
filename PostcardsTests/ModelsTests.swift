@@ -48,12 +48,12 @@ final class ModelsTests: XCTestCase {
 
     func testLibraryHitDecodesTheNestedCardSummary() throws {
         let json = """
-        [{"source":"/tmp/fixture.postcard.db","card":{"name":"lefthand-card","filename":"lefthand-card.postcard.jpeg","mimetype":"image/jpeg","flip":"left-hand","sent_on":"1990-02-20","sender_name":"Hans Zimmermann","recipient_name":"Greta Vogel","location_name":"Berlin, Germany","country_code":"DEU","latitude":52.52,"longitude":13.405,"front_px_w":947,"front_px_h":672,"has_back":true},"snippet":"\\u003cb\\u003eBerlin\\u003c/b\\u003e, Germany"}]
+        [{"source":"/tmp/fixture.postcards","card":{"name":"lefthand-card","filename":"lefthand-card.postcard.jpeg","mimetype":"image/jpeg","flip":"left-hand","sent_on":"1990-02-20","sender_name":"Hans Zimmermann","recipient_name":"Greta Vogel","location_name":"Berlin, Germany","country_code":"DEU","latitude":52.52,"longitude":13.405,"front_px_w":947,"front_px_h":672,"has_back":true},"snippet":"\\u003cb\\u003eBerlin\\u003c/b\\u003e, Germany"}]
         """
         let hits = try decoder.decode([LibraryHit].self, from: Data(json.utf8))
 
         XCTAssertEqual(hits.count, 1)
-        XCTAssertEqual(hits[0].source, "/tmp/fixture.postcard.db")
+        XCTAssertEqual(hits[0].source, "/tmp/fixture.postcards")
         XCTAssertEqual(hits[0].card.name, "lefthand-card")
         XCTAssertEqual(hits[0].snippet, "<b>Berlin</b>, Germany")
     }

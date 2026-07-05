@@ -29,9 +29,11 @@ struct PostcardsApp: App {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.message = "Choose .postcard.db collections or .postcard image files"
-        // .postcard.db / .postcard.webp etc are compound extensions LaunchServices can't
-        // express, so allow the base types and let LibraryModel validate the full suffix.
+        panel.message = "Choose .postcards collections or .postcard image files"
+        // .postcard.webp etc (the card format) are still compound extensions LaunchServices
+        // can't express, so allow the base types and let LibraryModel validate the full
+        // suffix. Collections use the single-segment .postcards extension (exported UTI
+        // org.dotpostcard.postcards, which conforms to public.database).
         panel.allowedContentTypes = [.database, .data, .image]
 
         let library = library

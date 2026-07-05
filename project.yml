@@ -18,10 +18,9 @@ settings:
       - "$(PROJECT_DIR)/Frameworks"
     DEVELOPMENT_TEAM: 7L3537S658
 
-# The .postcard.db compound extension can't be expressed to LaunchServices (extensions
-# are single-segment), so the imported UTI claims plain "db" at Alternate rank: the app
-# offers to open .db files via double-click / Open With without stealing the default
-# association. LibraryModel still validates the full .postcard.db suffix on import.
+# The Postcard Collection format uses the single-segment ".postcards" extension, so it can
+# be declared as a proper exported UTI (the app owns the type, giving a default handler,
+# icon, and Files/iCloud association) instead of the previous compound-extension workaround.
 targetTemplates:
   PostcardApp:
     info:
@@ -30,9 +29,9 @@ targetTemplates:
         CFBundleDocumentTypes:
           - CFBundleTypeName: Postcard Collection
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: Owner
             LSItemContentTypes:
-              - org.dotpostcard.postcard-collection
+              - org.dotpostcard.postcards
           - CFBundleTypeName: Postcard Image
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -40,15 +39,15 @@ targetTemplates:
               - public.jpeg
               - public.png
               - org.webmproject.webp
-        UTImportedTypeDeclarations:
-          - UTTypeIdentifier: org.dotpostcard.postcard-collection
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.dotpostcard.postcards
             UTTypeDescription: Postcard Collection
             UTTypeConformsTo:
               - public.database
               - public.data
             UTTypeTagSpecification:
               public.filename-extension:
-                - db
+                - postcards
 
 targets:
   Postcards-iOS:

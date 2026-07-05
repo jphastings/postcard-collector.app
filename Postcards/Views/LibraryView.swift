@@ -63,7 +63,7 @@ struct LibraryView: View {
                 ContentUnavailableView("Select a Postcard", systemImage: "photo")
             }
         }
-        // Finder/Files drops of .postcard.db / .postcard.* files anywhere on the window.
+        // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
             Task { await library.importSources(from: urls) }
             return true
