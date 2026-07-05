@@ -46,6 +46,11 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(results[0].rank, -1.3393966177299903)
     }
 
+    func testEmptySearchResultArrayDecodesToEmpty() throws {
+        let results = try decoder.decode([SearchResult].self, from: Data("[]".utf8))
+        XCTAssertTrue(results.isEmpty)
+    }
+
     func testLibraryHitDecodesTheNestedCardSummary() throws {
         let json = """
         [{"source":"/tmp/fixture.postcards","card":{"name":"lefthand-card","filename":"lefthand-card.postcard.jpeg","mimetype":"image/jpeg","flip":"left-hand","sent_on":"1990-02-20","sender_name":"Hans Zimmermann","recipient_name":"Greta Vogel","location_name":"Berlin, Germany","country_code":"DEU","latitude":52.52,"longitude":13.405,"front_px_w":947,"front_px_h":672,"has_back":true},"snippet":"\\u003cb\\u003eBerlin\\u003c/b\\u003e, Germany"}]

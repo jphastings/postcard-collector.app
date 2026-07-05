@@ -17,7 +17,7 @@ struct LibraryView: View {
                 List(selection: $selectedSource) {
                     Section("Library") {
                         ForEach(library.sources) { source in
-                            Label(source.displayName, systemImage: source.isCollection ? "photo.stack" : "photo")
+                            SourceRow(source: source)
                                 .tag(source)
                         }
                     }
@@ -209,6 +209,27 @@ private struct SingleCardSourceView: View {
             summary = try await GoCore.shared.summary(ofCardFileAt: path)
         } catch {
             loadError = error.localizedDescription
+        }
+    }
+}
+
+/// One row in the "Library" sidebar section: a collection's user-set title where one has
+/// been set (fetched from the Go core), falling back to `source.displayName` (the filename
+/// stem) otherwise.
+private struct SourceRow: View {
+    let source: LibrarySource
+
+    @State private var title: String?
+
+    var body: some View {
+        Label(title ?? source.displayName, systemImage: source.isCollection ? "photo.stack" : "photo")
+            .task(id: source.id) { await loadTitle() }
+    }
+
+    private func loadTitle() async {
+        guard source.isCollection else { return }
+        if let fetched = try? await GoCore.shared.title(ofCollectionAt: source.path), !fetched.isEmpty {
+            title = fetched
         }
     }
 }

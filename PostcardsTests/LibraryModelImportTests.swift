@@ -52,7 +52,7 @@ final class LibraryModelImportTests: XCTestCase {
         try FileManager.default.removeItem(at: picked)
 
         let cards = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
-        XCTAssertEqual(cards.count, 4)
+        XCTAssertEqual(cards.count, 5)
 
         let thumbnail = try await GoCore.shared.thumbnail(forCard: cards[0].name, inCollectionAt: source.path)
         XCTAssertFalse(thumbnail.isEmpty)

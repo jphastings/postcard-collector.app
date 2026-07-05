@@ -35,7 +35,7 @@ final class LibraryModel {
         self.importDirectory = importDirectory
 
         if let fixtureCollection = Bundle.main.url(forResource: "fixture", withExtension: "postcards") {
-            sources.append(.collection(path: fixtureCollection.path, displayName: "Sample Collection"))
+            sources.append(.collection(path: fixtureCollection.path, displayName: Self.displayName(for: fixtureCollection)))
         }
         if let fixtureCard = Bundle.main.url(forResource: "righthand-card.postcard", withExtension: "jpeg") {
             sources.append(.cardFile(path: fixtureCard.path, displayName: Self.displayName(for: fixtureCard)))

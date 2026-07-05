@@ -63,6 +63,12 @@ actor GoCore {
         return opened
     }
 
+    /// The collection's user-set title, or "" if none has been set.
+    func title(ofCollectionAt path: String) throws -> String {
+        let col = try collection(at: path)
+        return try Self.call({ col.title($0) })
+    }
+
     /// Every card in the collection, in storage order.
     func cardSummaries(inCollectionAt path: String) throws -> [CardSummary] {
         let col = try collection(at: path)

@@ -40,43 +40,51 @@ struct CollectionGridView: View {
     /// this rather than `CollectionGridView` needing to know about every kind.
     var resolveSourceName: (String) -> String = { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
 
-    @State private var cards: [CardSummary] = []
+    /// `nil` until the first load/search completes; distinguishes "still loading" from a
+    /// collection or search that has genuinely returned zero cards.
+    @State private var cards: [CardSummary]?
+    @State private var title: String?
     @State private var searchText = ""
     @State private var searchScope = GridSearchScope.thisCollection
     @State private var libraryHits: [LibraryHit] = []
     @State private var loadError: String?
+    @State private var loadErrorTitle = "Couldn't open collection"
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
 
     var body: some View {
         Group {
-            if searchScope == .everywhere && !searchText.isEmpty {
-                EverywhereResultsList(hits: libraryHits, selection: $selection, resolveSourceName: resolveSourceName)
-            } else if let loadError {
+            if let loadError {
                 ContentUnavailableView(
-                    "Couldn't open collection",
+                    loadErrorTitle,
                     systemImage: "exclamationmark.triangle",
                     description: Text(loadError)
                 )
-            } else if cards.isEmpty {
-                ProgressView()
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(cards) { card in
-                            Button {
-                                selection = .inCollection(path: source.path, summary: card)
-                            } label: {
-                                GridCell(source: source, card: card)
+            } else if searchScope == .everywhere && !searchText.isEmpty {
+                EverywhereResultsList(hits: libraryHits, selection: $selection, resolveSourceName: resolveSourceName)
+            } else if let cards {
+                if cards.isEmpty {
+                    emptyState
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(cards) { card in
+                                Button {
+                                    selection = .inCollection(path: source.path, summary: card)
+                                } label: {
+                                    GridCell(source: source, card: card)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding()
                     }
-                    .padding()
                 }
+            } else {
+                ProgressView()
             }
         }
-        .navigationTitle(source.displayName)
+        .navigationTitle(title ?? source.displayName)
         .searchable(text: $searchText, prompt: "Search this collection")
         .searchScopes($searchScope) {
             ForEach(GridSearchScope.allCases, id: \.self) { scope in
@@ -84,7 +92,17 @@ struct CollectionGridView: View {
             }
         }
         .task(id: source.id) { await loadCards() }
+        .task(id: source.id) { await loadTitle() }
         .task(id: SearchKey(text: searchText, scope: searchScope)) { await search() }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if searchText.isEmpty {
+            ContentUnavailableView("No Postcards", systemImage: "photo.stack")
+        } else {
+            ContentUnavailableView.search
+        }
     }
 
     private func loadCards() async {
@@ -92,7 +110,14 @@ struct CollectionGridView: View {
         do {
             cards = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
         } catch {
+            loadErrorTitle = "Couldn't open collection"
             loadError = error.localizedDescription
+        }
+    }
+
+    private func loadTitle() async {
+        if let fetched = try? await GoCore.shared.title(ofCollectionAt: source.path), !fetched.isEmpty {
+            title = fetched
         }
     }
 
@@ -102,17 +127,20 @@ struct CollectionGridView: View {
             await loadCards()
             return
         }
+        loadError = nil
         switch searchScope {
         case .thisCollection:
             do {
                 cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
             } catch {
+                loadErrorTitle = "Search failed"
                 loadError = error.localizedDescription
             }
         case .everywhere:
             do {
                 libraryHits = try await GoCore.shared.searchLibrary(query: searchText)
             } catch {
+                loadErrorTitle = "Search failed"
                 loadError = error.localizedDescription
             }
         }
@@ -164,39 +192,34 @@ private struct EverywhereResultsList: View {
     }
 }
 
+/// A pure thumbnail: no background plate, no rounded-corner clipping, no name/sender
+/// labels. Postcards can have real transparency (die-cut/torn scans), so a decorative
+/// plate behind the image would show through as a fake rectangular border — the cell
+/// shows only the card's own silhouette. `.contentShape(Rectangle())` keeps the whole
+/// cell tappable over transparent regions, and the accessibility label carries the name
+/// and description that used to be rendered as text.
 private struct GridCell: View {
     let source: LibrarySource
     let card: CardSummary
 
     @State private var thumbnail: PlatformImage?
+    @State private var frontDescription: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-                if let thumbnail {
-                    Image(platformImage: thumbnail)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    ProgressView()
-                }
-            }
-            .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            Text(card.name)
-                .font(.headline)
-                .lineLimit(1)
-
-            if let sender = card.senderName, let recipient = card.recipientName {
-                Text("\(sender) → \(recipient)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        Group {
+            if let thumbnail {
+                Image(platformImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ProgressView()
             }
         }
+        .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
+        .contentShape(Rectangle())
+        .accessibilityLabel(frontDescription ?? card.name)
         .task(id: card.id) { await loadThumbnail() }
+        .task(id: card.id) { await loadFrontDescription() }
     }
 
     private func loadThumbnail() async {
@@ -213,5 +236,11 @@ private struct GridCell: View {
         } catch {
             // Leave the placeholder showing; one cell's failure shouldn't disrupt the grid.
         }
+    }
+
+    private func loadFrontDescription() async {
+        guard let description = try? await GoCore.shared.metadata(forCard: card.name, inCollectionAt: source.path).front.description,
+              !description.isEmpty else { return }
+        frontDescription = description
     }
 }
