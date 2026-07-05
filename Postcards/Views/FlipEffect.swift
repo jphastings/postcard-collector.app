@@ -1,0 +1,119 @@
+import SwiftUI
+
+/// One face of the flipping card: a 3D rotation about a `FlipAxis` (with a fixed
+/// perspective matching the reference CSS's `perspective(1000px)`, scaled to SwiftUI's
+/// 0...1 unit) plus backface hiding.
+///
+/// `Animatable` is the load-bearing part: `animatableData` makes SwiftUI interpolate
+/// `angleDegrees` and re-evaluate `body` every frame of a `withAnimation` transaction.
+/// Visibility is then a step function of the LIVE angle — `FlipGeometry.showsFront`
+/// flips exactly at the 90° edge-on frame mid-animation — rather than an animated
+/// opacity between the transaction's endpoints, which would cross-fade the two sides
+/// like a ghost instead of hiding the averted face like a physical card.
+///
+/// (Internal rather than private so a rendering harness in the same module can drive it
+/// at fixed angles; the pure decision function lives in `FlipGeometry` for unit tests.)
+struct FlipFace: ViewModifier, Animatable {
+    /// This face's own rotation (the back face is constructed with the shared flip angle
+    /// + 180°, so each face tests its own normal against the viewer).
+    var angleDegrees: Double
+    var axis: FlipAxis
+
+    var animatableData: Double {
+        get { angleDegrees }
+        set { angleDegrees = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .rotation3DEffect(
+                .degrees(angleDegrees),
+                axis: (x: axis.x, y: axis.y, z: axis.z),
+                perspective: 0.5
+            )
+            .opacity(FlipGeometry.showsFront(atDegrees: angleDegrees) ? 1 : 0)
+    }
+}
+
+/// A postcard that tap-flips between its front and back, 3D-rotating about the axis
+/// appropriate to its `Flip` type (see `FlipGeometry`). Cards with `flip == .none`, or
+/// with no back image, are shown flat with no tap interaction.
+///
+/// Both faces stay mounted in one ZStack the whole time (no pop-in latency) and share a
+/// single display scale derived from the front: a hand flip's back renders at exactly the
+/// front's dimensions swapped — same area, same physical card — centred on the same point
+/// so the diagonal turn carries one rectangle onto the other. The view reserves the
+/// bounding box of both orientations (a square, for hand flips) so neither overflows.
+struct FlippableCardView: View {
+    let front: CGImage
+    let back: CGImage?
+    let flip: Flip
+    /// The front's pixel dimensions (from `CardSummary.frontPxW/H`), used for layout so
+    /// no image decode is needed to size the card.
+    let frontPixelSize: CGSize
+
+    @State private var angleDegrees: Double
+
+    init(front: CGImage, back: CGImage?, flip: Flip, frontPixelSize: CGSize, initialAngleDegrees: Double = 0) {
+        self.front = front
+        self.back = back
+        self.flip = flip
+        self.frontPixelSize = CGSize(
+            width: max(frontPixelSize.width, 1),
+            height: max(frontPixelSize.height, 1)
+        )
+        _angleDegrees = State(initialValue: initialAngleDegrees)
+    }
+
+    private var axis: FlipAxis? { back != nil ? FlipGeometry.axis(for: flip) : nil }
+
+    private var boundingSize: CGSize {
+        FlipGeometry.boundingSize(forFrontSize: frontPixelSize, flip: flip)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            faces(fittedIn: proxy.size)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .aspectRatio(boundingSize.width / boundingSize.height, contentMode: .fit)
+        .accessibilityAddTraits(axis == nil ? [] : .isButton)
+        .accessibilityLabel(
+            FlipGeometry.showsFront(atDegrees: angleDegrees) ? "Front of postcard" : "Back of postcard"
+        )
+    }
+
+    @ViewBuilder
+    private func faces(fittedIn available: CGSize) -> some View {
+        // ONE scale, from fitting the bounding box (not each side independently): both
+        // sides display at this same scale, so a hand flip's portrait back has exactly
+        // the landscape front's area with the dimensions swapped.
+        let scale = min(available.width / boundingSize.width, available.height / boundingSize.height)
+        let frontSize = CGSize(width: frontPixelSize.width * scale, height: frontPixelSize.height * scale)
+        let backSize = FlipGeometry.backSize(forFrontSize: frontSize, flip: flip)
+        let axis = axis ?? FlipAxis(x: 0, y: 1, z: 0)
+
+        ZStack {
+            face(front, size: frontSize, angleDegrees: angleDegrees, axis: axis)
+            if let back, self.axis != nil {
+                face(back, size: backSize, angleDegrees: angleDegrees + 180, axis: axis)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .shadow(color: .black.opacity(0.25), radius: 16, x: 8, y: 12)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard self.axis != nil else { return }
+            withAnimation(.easeInOut(duration: 1)) {
+                angleDegrees += 180
+            }
+        }
+    }
+
+    private func face(_ cgImage: CGImage, size: CGSize, angleDegrees: Double, axis: FlipAxis) -> some View {
+        Image(decorative: cgImage, scale: 1)
+            .resizable()
+            .frame(width: size.width, height: size.height)
+            .modifier(FlipFace(angleDegrees: angleDegrees, axis: axis))
+    }
+}
