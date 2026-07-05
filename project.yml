@@ -21,8 +21,22 @@ settings:
 # The Postcard Collection format uses the single-segment ".postcards" extension, so it can
 # be declared as a proper exported UTI (the app owns the type, giving a default handler,
 # icon, and Files/iCloud association) instead of the previous compound-extension workaround.
+#
+# Both platforms share one ubiquity container (iCloud.org.dotpostcard.collector) so a
+# collection dropped into Files/iCloud Drive on either platform syncs to the other.
+# NSUbiquitousContainerIsDocumentScopePublic + SupportedFolderLevels=Any is what makes the
+# "Postcards" folder show up under iCloud Drive in Files.app/Finder at all.
 targetTemplates:
   PostcardApp:
+    entitlements:
+      path: Postcards/Support/Postcards.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.org.dotpostcard.collector
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.org.dotpostcard.collector
     info:
       path: Postcards/Support/Info-${target_name}.plist
       properties:
@@ -48,6 +62,11 @@ targetTemplates:
             UTTypeTagSpecification:
               public.filename-extension:
                 - postcards
+        NSUbiquitousContainers:
+          iCloud.org.dotpostcard.collector:
+            NSUbiquitousContainerName: Postcards
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerSupportedFolderLevels: Any
 
 targets:
   Postcards-iOS:

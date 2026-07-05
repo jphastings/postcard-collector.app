@@ -7,10 +7,12 @@ import UniformTypeIdentifiers
 @main
 struct PostcardsApp: App {
     @State private var library = LibraryModel()
+    @State private var cloudLibrary = CloudLibrary()
 
     var body: some Scene {
         WindowGroup {
-            LibraryView(library: library)
+            LibraryView(library: library, cloudLibrary: cloudLibrary)
+                .task { await cloudLibrary.start() }
         }
         #if os(macOS)
         .commands {

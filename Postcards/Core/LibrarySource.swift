@@ -47,4 +47,14 @@ enum CardReference: Identifiable, Hashable {
         case .bareFile(_, let summary): return summary
         }
     }
+
+    /// Classifies a cross-source `LibraryHit` back into a reference by its source path's
+    /// extension — the same `.postcards` vs bare-file distinction `LibraryModel` uses.
+    init(hit: LibraryHit) {
+        if hit.source.lowercased().hasSuffix(".postcards") {
+            self = .inCollection(path: hit.source, summary: hit.card)
+        } else {
+            self = .bareFile(path: hit.source, summary: hit.card)
+        }
+    }
 }

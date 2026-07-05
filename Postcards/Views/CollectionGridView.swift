@@ -15,22 +15,44 @@ final class ThumbnailCache {
     }
 }
 
-/// A grid of every card in a collection, searchable via the collection's FTS index.
-/// Cell aspect ratios come from `CardSummary.frontPxW/H` alone, so the grid can lay
-/// itself out without decoding any image data.
+/// The two scopes `CollectionGridView`'s search bar offers: the FTS index of just this
+/// collection, or the cross-source Go `Library` fan-out over every currently-known
+/// collection and bare card file (kept in sync by `LibraryView`).
+enum GridSearchScope: String, CaseIterable, Hashable {
+    case thisCollection = "This Collection"
+    case everywhere = "Everywhere"
+}
+
+private struct SearchKey: Equatable {
+    var text: String
+    var scope: GridSearchScope
+}
+
+/// A grid of every card in a collection, searchable via the collection's FTS index or,
+/// with the "Everywhere" scope, the cross-source Go `Library`. Cell aspect ratios come
+/// from `CardSummary.frontPxW/H` alone, so the grid can lay itself out without decoding
+/// any image data.
 struct CollectionGridView: View {
     let source: LibrarySource
     @Binding var selection: CardReference?
+    /// Resolves a `LibraryHit.source` path to a display name for grouping "Everywhere"
+    /// results — sources can be bundled, imported, or iCloud, so `LibraryView` supplies
+    /// this rather than `CollectionGridView` needing to know about every kind.
+    var resolveSourceName: (String) -> String = { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
 
     @State private var cards: [CardSummary] = []
     @State private var searchText = ""
+    @State private var searchScope = GridSearchScope.thisCollection
+    @State private var libraryHits: [LibraryHit] = []
     @State private var loadError: String?
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
 
     var body: some View {
         Group {
-            if let loadError {
+            if searchScope == .everywhere && !searchText.isEmpty {
+                EverywhereResultsList(hits: libraryHits, selection: $selection, resolveSourceName: resolveSourceName)
+            } else if let loadError {
                 ContentUnavailableView(
                     "Couldn't open collection",
                     systemImage: "exclamationmark.triangle",
@@ -56,8 +78,13 @@ struct CollectionGridView: View {
         }
         .navigationTitle(source.displayName)
         .searchable(text: $searchText, prompt: "Search this collection")
+        .searchScopes($searchScope) {
+            ForEach(GridSearchScope.allCases, id: \.self) { scope in
+                Text(scope.rawValue).tag(scope)
+            }
+        }
         .task(id: source.id) { await loadCards() }
-        .task(id: searchText) { await search() }
+        .task(id: SearchKey(text: searchText, scope: searchScope)) { await search() }
     }
 
     private func loadCards() async {
@@ -71,13 +98,68 @@ struct CollectionGridView: View {
 
     private func search() async {
         guard !searchText.isEmpty else {
+            libraryHits = []
             await loadCards()
             return
         }
-        do {
-            cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
-        } catch {
-            loadError = error.localizedDescription
+        switch searchScope {
+        case .thisCollection:
+            do {
+                cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
+            } catch {
+                loadError = error.localizedDescription
+            }
+        case .everywhere:
+            do {
+                libraryHits = try await GoCore.shared.searchLibrary(query: searchText)
+            } catch {
+                loadError = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// "Everywhere" search results, grouped by source in the same order the Go `Library`
+/// returned them (collection hits ranked within each collection, then bare-file hits).
+private struct EverywhereResultsList: View {
+    let hits: [LibraryHit]
+    @Binding var selection: CardReference?
+    let resolveSourceName: (String) -> String
+
+    private var groupedBySource: [(source: String, hits: [LibraryHit])] {
+        var order: [String] = []
+        var bySource: [String: [LibraryHit]] = [:]
+        for hit in hits {
+            if bySource[hit.source] == nil { order.append(hit.source) }
+            bySource[hit.source, default: []].append(hit)
+        }
+        return order.map { ($0, bySource[$0] ?? []) }
+    }
+
+    var body: some View {
+        if hits.isEmpty {
+            ContentUnavailableView.search
+        } else {
+            List {
+                ForEach(groupedBySource, id: \.source) { group in
+                    Section(resolveSourceName(group.source)) {
+                        ForEach(group.hits) { hit in
+                            Button {
+                                selection = CardReference(hit: hit)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(hit.card.name).font(.headline)
+                                    Text(hit.snippet)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
         }
     }
 }
