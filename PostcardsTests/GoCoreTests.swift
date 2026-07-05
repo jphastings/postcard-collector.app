@@ -47,4 +47,69 @@ final class GoCoreTests: XCTestCase {
         let buffer = context.data!.assumingMemoryBound(to: UInt8.self)
         return buffer[3]
     }
+
+    // MARK: - Writes
+
+    /// A fresh temp directory per test, cleaned up afterwards, standing in for the app's
+    /// own container the way `LibraryModelImportTests` does for the import pipeline.
+    private func makeTempCollectionPath(_ filename: String = "roundtrip.postcards") throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "GoCoreTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory.appending(path: filename)
+    }
+
+    func testWriteRoundTripCreateAddListRemove() async throws {
+        let collectionPath = try makeTempCollectionPath().path
+
+        try await GoCore.shared.createCollection(at: collectionPath, title: "Round Trip")
+        let title = try await GoCore.shared.title(ofCollectionAt: collectionPath)
+        XCTAssertEqual(title, "Round Trip")
+        let emptyCards = try await GoCore.shared.cardSummaries(inCollectionAt: collectionPath)
+        XCTAssertTrue(emptyCards.isEmpty)
+
+        // Borrow a real card's bytes from the bundled fixture rather than hand-rolling one.
+        let fixturePath = try fixturePath()
+        let fixtureCards = try await GoCore.shared.cardSummaries(inCollectionAt: fixturePath)
+        let sourceCard = try XCTUnwrap(fixtureCards.first)
+        let data = try await GoCore.shared.image(forCard: sourceCard.name, inCollectionAt: fixturePath)
+
+        let added = try await GoCore.shared.addCard(filename: sourceCard.filename, data: data, toCollectionAt: collectionPath)
+        XCTAssertEqual(added.name, sourceCard.name)
+        // Invalidation must have happened: this reads through the same cached handle the
+        // create/list calls above already opened.
+        let cardsAfterAdd = try await GoCore.shared.cardSummaries(inCollectionAt: collectionPath)
+        XCTAssertEqual(cardsAfterAdd.map(\.name), [sourceCard.name])
+
+        try await GoCore.shared.removeCard(named: sourceCard.name, fromCollectionAt: collectionPath)
+        let cardsAfterRemove = try await GoCore.shared.cardSummaries(inCollectionAt: collectionPath)
+        XCTAssertTrue(cardsAfterRemove.isEmpty)
+    }
+
+    /// Regression test for `GoCore.moveCard`'s copy-then-remove ordering: a failure adding
+    /// to the target (a path whose parent directory doesn't exist) must never remove the
+    /// card from the source collection first.
+    func testMoveCardFailurePathLeavesSourceCollectionIntact() async throws {
+        let sourcePath = try makeTempCollectionPath("source.postcards").path
+        try await GoCore.shared.createCollection(at: sourcePath)
+
+        let fixturePath = try fixturePath()
+        let fixtureCards = try await GoCore.shared.cardSummaries(inCollectionAt: fixturePath)
+        let sourceCard = try XCTUnwrap(fixtureCards.first)
+        let data = try await GoCore.shared.image(forCard: sourceCard.name, inCollectionAt: fixturePath)
+        try await GoCore.shared.addCard(filename: sourceCard.filename, data: data, toCollectionAt: sourcePath)
+
+        let badTargetPath = "/nonexistent-\(UUID().uuidString)/target.postcards"
+
+        do {
+            try await GoCore.shared.moveCard(named: sourceCard.name, filename: sourceCard.filename, from: sourcePath, to: badTargetPath)
+            XCTFail("expected moving to a bad target path to fail")
+        } catch {
+            // Expected.
+        }
+
+        let cardsAfterFailedMove = try await GoCore.shared.cardSummaries(inCollectionAt: sourcePath)
+        XCTAssertEqual(cardsAfterFailedMove.map(\.name), [sourceCard.name], "a failed move must leave the source untouched")
+    }
 }

@@ -1,10 +1,15 @@
 import Foundation
 
-/// One thing the library can show: either an opened `.postcards` collection, or a bare
-/// `.postcard.*` file opened outside of any collection.
+/// One thing the library can show: either an opened `.postcards` collection, a bare
+/// `.postcard.*` file opened outside of any collection, or the synthetic "Single postcards"
+/// aggregate row (see `SinglePostcardsGridView`) standing in for every bare file at once.
 enum LibrarySource: Identifiable, Hashable {
     case collection(path: String, displayName: String)
     case cardFile(path: String, displayName: String)
+    /// Not a real file — `LibraryView` never puts this in `LibraryModel.sources` or
+    /// `CloudLibrary.items`; it only ever appears as the sidebar's pinned last row, so it
+    /// can be `List(selection:)`'s tag like any other source.
+    case singlePostcards
 
     var id: String { path }
 
@@ -12,6 +17,7 @@ enum LibrarySource: Identifiable, Hashable {
         switch self {
         case .collection(let path, _): return path
         case .cardFile(let path, _): return path
+        case .singlePostcards: return "single-postcards://aggregate"
         }
     }
 
@@ -19,6 +25,7 @@ enum LibrarySource: Identifiable, Hashable {
         switch self {
         case .collection(_, let name): return name
         case .cardFile(_, let name): return name
+        case .singlePostcards: return "Single postcards"
         }
     }
 
@@ -26,6 +33,17 @@ enum LibrarySource: Identifiable, Hashable {
         if case .collection = self { return true }
         return false
     }
+}
+
+/// One collection a card can be moved/copied into — the "known writable collections" list
+/// for the grid cells' "Move to Collection…"/"Copy to Collection…" submenus. Built fresh
+/// from `LibraryModel.sources` and `CloudLibrary.items` (imported + fully-downloaded
+/// iCloud collections only) each time `LibraryView` renders.
+struct WritableCollection: Identifiable, Hashable {
+    var path: String
+    var displayName: String
+
+    var id: String { path }
 }
 
 /// A single card, addressable back to the source it came from — either one card among

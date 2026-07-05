@@ -161,6 +161,56 @@ actor GoCore {
         }
     }
 
+    // MARK: - Writes
+
+    /// Every write below calls through to a transient, package-level Go function (see
+    /// `pkg/appcore/write.go`) that opens the file, makes one change, and closes it again —
+    /// entirely independent of this actor's long-lived read handles. Each one invalidates
+    /// its own cached handle(s) on success, so the next read reopens against the change;
+    /// callers don't need to (and, for cloud-backed paths, should prime the write with
+    /// `CloudLibrary.primeForGoCoreWrite(path:)` beforehand — this actor knows nothing
+    /// about iCloud).
+
+    /// Sets a collection's stored title.
+    func setTitle(_ title: String, ofCollectionAt path: String) throws {
+        try Self.call { AppcoreSetCollectionTitle(path, title, $0) }
+        invalidateSource(at: path)
+    }
+
+    /// Adds a card (raw web-format bytes + its filename) to the collection at `path`,
+    /// returning the added card's summary. An invalid or undecodable file errors without
+    /// changing the collection.
+    @discardableResult
+    func addCard(filename: String, data: Data, toCollectionAt path: String) throws -> CardSummary {
+        let json = try Self.call { AppcoreAddCardToCollection(path, filename, data, $0) }
+        invalidateSource(at: path)
+        return try Self.decode(CardSummary.self, from: json, context: "adding a card to \(path)")
+    }
+
+    /// Removes the named card from the collection at `path`. Errors if no card with that
+    /// name exists.
+    func removeCard(named name: String, fromCollectionAt path: String) throws {
+        try Self.call { AppcoreRemoveCardFromCollection(path, name, $0) }
+        invalidateSource(at: path)
+    }
+
+    /// Creates a new, empty collection file at `path` (erroring if it already exists),
+    /// optionally setting its title.
+    func createCollection(at path: String, title: String = "") throws {
+        try Self.call { AppcoreCreateCollection(path, title, $0) }
+        invalidateSource(at: path)
+    }
+
+    /// Moves a card from one collection to another: copies its raw bytes into `targetPath`
+    /// first, and only removes the original from `sourcePath` once that copy has
+    /// succeeded — so a failure partway through (e.g. a bad target path) always leaves the
+    /// source collection with the card still in it, never with it lost.
+    func moveCard(named name: String, filename: String, from sourcePath: String, to targetPath: String) throws {
+        let data = try image(forCard: name, inCollectionAt: sourcePath)
+        try addCard(filename: filename, data: data, toCollectionAt: targetPath)
+        try removeCard(named: name, fromCollectionAt: sourcePath)
+    }
+
     // MARK: - Cross-source library search
 
     /// Replaces the set of sources the "Everywhere" search scope fans out across.

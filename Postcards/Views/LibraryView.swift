@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The app's root: a sidebar of collections/loose files (bundled fixtures plus anything
-/// the user opens — file importer, ⌘O, drag-and-drop, or Open With), a grid of the
-/// selected collection's cards, and the selected card's detail.
+/// The app's root: a sidebar of collections (bundled fixtures are gone — see Feature 1;
+/// nothing is bundled), a grid of the selected collection's cards, and the selected card's
+/// detail. Bare `.postcard.*` files never get their own sidebar row (see Feature 2): they're
+/// aggregated into one "Single postcards" row pinned at the bottom.
 struct LibraryView: View {
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
@@ -11,27 +12,22 @@ struct LibraryView: View {
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
 
+    // Sidebar row actions (Feature 3).
+    @State private var renamingSource: LibrarySource?
+    @State private var renameText = ""
+    @State private var pendingDeletion: LibrarySource?
+    /// Bumped per-path after a successful rename so `SourceRow`/`CloudItemRow` re-fetch the
+    /// title instead of showing the stale cached one (their `.task(id:)` doesn't otherwise
+    /// change just because the title changed underneath them).
+    @State private var titleRefreshTokens: [String: Int] = [:]
+
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(selection: $selectedSource) {
-                    Section("Library") {
-                        ForEach(library.sources) { source in
-                            SourceRow(source: source)
-                                .tag(source)
-                        }
-                    }
-                    if cloudLibrary.containerState == .available {
-                        Section("iCloud") {
-                            ForEach(cloudLibrary.items) { item in
-                                if item.downloadState == .current {
-                                    CloudItemRow(item: item).tag(item.librarySource)
-                                } else {
-                                    CloudItemRow(item: item)
-                                }
-                            }
-                        }
-                    }
+                if hasAnySources {
+                    sourceList
+                } else {
+                    emptyLibraryView
                 }
                 if cloudLibrary.containerState == .unavailable {
                     Text("Sign in to iCloud to sync collections")
@@ -69,13 +65,56 @@ struct LibraryView: View {
             } message: {
                 Text(library.importError ?? "")
             }
+            .alert(
+                "Rename Collection",
+                isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })
+            ) {
+                TextField("Title", text: $renameText)
+                Button("Save") {
+                    if let source = renamingSource { Task { await renameCollection(source, to: renameText) } }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Enter a new title for this collection.")
+            }
+            .confirmationDialog(
+                pendingDeletion.map { "Delete “\($0.displayName)”?" } ?? "Delete?",
+                isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let pendingDeletion { Task { await deleteCollection(pendingDeletion) } }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This deletes the file. This can't be undone.")
+            }
         } content: {
-            if let selectedSource {
+            if !hasAnySources {
+                emptyLibraryView
+            } else if let selectedSource {
                 switch selectedSource {
                 case .collection:
-                    CollectionGridView(source: selectedSource, selection: $selectedCard, resolveSourceName: displayName(forSourcePath:))
+                    CollectionGridView(
+                        source: selectedSource,
+                        selection: $selectedCard,
+                        resolveSourceName: displayName(forSourcePath:),
+                        writableCollections: writableCollections,
+                        cloudLibrary: cloudLibrary
+                    )
                 case .cardFile(let path, _):
+                    // No longer reachable via the sidebar (bare files live only inside
+                    // "Single postcards" now), kept so the switch stays exhaustive and
+                    // safe if a bare-file source is ever selected some other way.
                     SingleCardSourceView(path: path, selection: $selectedCard)
+                case .singlePostcards:
+                    SinglePostcardsGridView(
+                        paths: singlePostcardPaths,
+                        selection: $selectedCard,
+                        writableCollections: writableCollections,
+                        cloudLibrary: cloudLibrary,
+                        onFileConsumed: { library.remove(path: $0) }
+                    )
                 }
             } else {
                 ContentUnavailableView("Select a Collection", systemImage: "photo.stack.fill")
@@ -121,6 +160,159 @@ struct LibraryView: View {
         }
     }
 
+    // MARK: - Sidebar
+
+    private var sourceList: some View {
+        List(selection: $selectedSource) {
+            Section("Library") {
+                ForEach(library.sources.filter(\.isCollection)) { source in
+                    SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                        .tag(source)
+                        .contextMenu { importedCollectionMenu(for: source) }
+                }
+            }
+            if cloudLibrary.containerState == .available {
+                Section("iCloud") {
+                    // Fully-downloaded bare files move into "Single postcards" below;
+                    // not-yet-downloaded ones stay here (aggregating them before they
+                    // exist locally would just mean showing progress rows in two places).
+                    ForEach(cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }) { item in
+                        if item.downloadState == .current {
+                            CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
+                                .tag(item.librarySource)
+                                .contextMenu { cloudCollectionMenu(for: item) }
+                        } else {
+                            CloudItemRow(item: item, refreshToken: 0)
+                        }
+                    }
+                }
+            }
+            if hasAnyBareCard {
+                Section {
+                    Label("Single postcards", systemImage: "photo.on.rectangle.angled")
+                        .accessibilityIdentifier("Single postcards")
+                        .tag(LibrarySource.singlePostcards)
+                }
+            }
+        }
+    }
+
+    private var emptyLibraryView: some View {
+        ContentUnavailableView {
+            Label("No Collections", systemImage: "tray")
+        } description: {
+            Text("Open a .postcards file, or drop postcards into iCloud Drive/Postcards.")
+        } actions: {
+            Button("Open…") { isImporting = true }
+        }
+    }
+
+    private var hasAnySources: Bool {
+        !library.sources.isEmpty || !cloudLibrary.items.isEmpty
+    }
+
+    /// Every bare `.postcard.*` file the app currently knows about, imported or synced —
+    /// only fully-downloaded iCloud ones (see `sourceList`'s comment on the iCloud section).
+    private var singlePostcardPaths: [String] {
+        var paths = library.sources.compactMap { source -> String? in
+            if case .cardFile(let path, _) = source { return path }
+            return nil
+        }
+        paths += cloudLibrary.items
+            .filter { !$0.isCollection && $0.downloadState == .current }
+            .map(\.path)
+        return paths
+    }
+
+    private var hasAnyBareCard: Bool { !singlePostcardPaths.isEmpty }
+
+    /// Every collection the app currently knows about — imported plus fully-downloaded
+    /// iCloud ones — for the grid cells' "Move to Collection…"/"Copy to Collection…" menus.
+    private var writableCollections: [WritableCollection] {
+        var collections = library.sources.compactMap { source -> WritableCollection? in
+            guard case .collection(let path, let name) = source else { return nil }
+            return WritableCollection(path: path, displayName: name)
+        }
+        collections += cloudLibrary.items
+            .filter { $0.isCollection && $0.downloadState == .current }
+            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
+        return collections
+    }
+
+    // MARK: - Sidebar row actions (Feature 3)
+
+    @ViewBuilder
+    private func importedCollectionMenu(for source: LibrarySource) -> some View {
+        Button("Rename…") {
+            renameText = source.displayName
+            renamingSource = source
+        }
+        // "Remove from Library" reads as a non-destructive "just forget it", but an
+        // imported collection's only copy lives in the app's own container — there's
+        // nothing else to "remove" it from, so this does delete that copy. "Delete…"
+        // below reaches the same end state, just behind an explicit confirmation.
+        Button("Remove from Library") {
+            Task { await removeFromLibrary(source) }
+        }
+        Divider()
+        Button("Delete…", role: .destructive) {
+            pendingDeletion = source
+        }
+    }
+
+    /// Only ever called for a fully-downloaded, `isCollection` item — see the filter in
+    /// `sourceList`'s iCloud section, which excludes non-collection items once they're
+    /// current (they move to "Single postcards" instead).
+    @ViewBuilder
+    private func cloudCollectionMenu(for item: CloudItem) -> some View {
+        Button("Rename…") {
+            renameText = item.displayName
+            renamingSource = item.librarySource
+        }
+        Divider()
+        // No "Remove from Library" here: iCloud collections come from the folder scan,
+        // so "removing" one from the sidebar without deleting the file would just have it
+        // reappear on the next `NSMetadataQuery` update. Only a real deletion is meaningful.
+        Button("Delete…", role: .destructive) {
+            pendingDeletion = item.librarySource
+        }
+    }
+
+    private func renameCollection(_ source: LibrarySource, to newTitle: String) async {
+        do {
+            if isCloudBacked(source.path) {
+                try await CloudLibrary.primeForGoCoreWrite(path: source.path)
+            }
+            try await GoCore.shared.setTitle(newTitle, ofCollectionAt: source.path)
+            titleRefreshTokens[source.path, default: 0] += 1
+        } catch {
+            library.importError = error.localizedDescription
+        }
+    }
+
+    private func removeFromLibrary(_ source: LibrarySource) async {
+        await GoCore.shared.invalidateSource(at: source.path)
+        try? FileManager.default.removeItem(atPath: source.path)
+        library.remove(path: source.path)
+        if selectedSource == source { selectedSource = nil }
+    }
+
+    private func deleteCollection(_ source: LibrarySource) async {
+        await GoCore.shared.invalidateSource(at: source.path)
+        do {
+            try await CloudLibrary.deleteCoordinated(at: source.path)
+        } catch {
+            library.importError = error.localizedDescription
+            return
+        }
+        library.remove(path: source.path)
+        if selectedSource == source { selectedSource = nil }
+    }
+
+    private func isCloudBacked(_ path: String) -> Bool {
+        cloudLibrary.items.contains { $0.path == path }
+    }
+
     /// DEBUG-only hook for UI tests: `-uitest-import <path>` runs the real import
     /// pipeline at launch, standing in for the un-automatable system file picker.
     private func runAutomationHookIfRequested() async {
@@ -141,6 +333,7 @@ struct LibraryView: View {
             switch source {
             case .collection(let path, _): collections.append(path)
             case .cardFile(let path, _): cardFiles.append(path)
+            case .singlePostcards: break
             }
         }
         for item in cloudLibrary.items where item.downloadState == .current {
@@ -169,6 +362,10 @@ struct LibraryView: View {
 
 /// The "content" column for a bare `.postcard.*` file source: there's only ever one card,
 /// so this just previews it and lets the user commit to viewing it in the detail column.
+///
+/// Since Feature 2, bare files no longer get their own sidebar row (they live inside
+/// "Single postcards"), so this view is currently unreachable in practice; it's kept
+/// because `LibrarySource.cardFile` is still a valid case of the selection type.
 private struct SingleCardSourceView: View {
     let path: String
     @Binding var selection: CardReference?
@@ -218,6 +415,7 @@ private struct SingleCardSourceView: View {
 /// stem) otherwise.
 private struct SourceRow: View {
     let source: LibrarySource
+    var refreshToken: Int = 0
 
     @State private var title: String?
 
@@ -226,7 +424,7 @@ private struct SourceRow: View {
             // Stable machine-facing handle for UI tests — the visible text is the
             // user-set title, which can change without breaking test selectors.
             .accessibilityIdentifier(source.displayName)
-            .task(id: source.id) { await loadTitle() }
+            .task(id: "\(source.id)#\(refreshToken)") { await loadTitle() }
     }
 
     private func loadTitle() async {
@@ -243,6 +441,7 @@ private struct SourceRow: View {
 /// keeps the filename stem — reading a title must never trigger a download.
 private struct CloudItemRow: View {
     let item: CloudItem
+    var refreshToken: Int = 0
 
     @State private var title: String?
 
@@ -263,9 +462,9 @@ private struct CloudItemRow: View {
             Image(systemName: item.isCollection ? "photo.stack" : "photo")
         }
         .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
-        // Keyed on the whole item so the title is fetched once the download completes
-        // (the state flip from .downloading/.remote to .current changes the id).
-        .task(id: item) { await loadTitle() }
+        // Keyed on the whole item (plus the rename-refresh token) so the title is fetched
+        // once the download completes or a rename lands.
+        .task(id: "\(item.id)#\(refreshToken)") { await loadTitle() }
     }
 
     private func loadTitle() async {

@@ -1,8 +1,9 @@
 import Foundation
 import Observation
 
-/// The set of sources shown in `LibraryView`: the bundled fixture collection/card plus
-/// anything the user has opened (file importer, ⌘O, drag-and-drop, or Open With).
+/// The set of sources shown in `LibraryView`: whatever the user has opened (file importer,
+/// ⌘O, drag-and-drop, or Open With). There's nothing bundled — a fresh install starts
+/// empty (see `LibraryView`'s empty-library state).
 ///
 /// Imported files are **copied into the app's own container** (Application
 /// Support/ImportedSources) and the copy is opened, rather than holding the original's
@@ -33,14 +34,6 @@ final class LibraryModel {
 
     init(importDirectory: URL = LibraryModel.defaultImportDirectory) {
         self.importDirectory = importDirectory
-
-        if let fixtureCollection = Bundle.main.url(forResource: "fixture", withExtension: "postcards") {
-            sources.append(.collection(path: fixtureCollection.path, displayName: Self.displayName(for: fixtureCollection)))
-        }
-        if let fixtureCard = Bundle.main.url(forResource: "righthand-card.postcard", withExtension: "jpeg") {
-            sources.append(.cardFile(path: fixtureCard.path, displayName: Self.displayName(for: fixtureCard)))
-        }
-
         restorePreviousImports()
     }
 
@@ -148,6 +141,13 @@ final class LibraryModel {
         } else {
             sources.append(source)
         }
+    }
+
+    /// Drops the source at `path` from the list — used by "Remove from Library"/"Delete…"
+    /// once the underlying file (and any cached Go core handle) is gone. A no-op if `path`
+    /// isn't a known source (e.g. it was never imported, only synced in from iCloud).
+    func remove(path: String) {
+        sources.removeAll { $0.path == path }
     }
 
     /// Re-adds everything previously copied into the import directory. Files were

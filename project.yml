@@ -77,10 +77,7 @@ targets:
     sources:
       - path: Postcards
         excludes:
-          - "Fixtures/**"
           - "Support/**"
-      - path: Postcards/Fixtures
-        buildPhase: resources
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
@@ -100,10 +97,7 @@ targets:
     sources:
       - path: Postcards
         excludes:
-          - "Fixtures/**"
           - "Support/**"
-      - path: Postcards/Fixtures
-        buildPhase: resources
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.mac
       INFOPLIST_KEY_NSHumanReadableCopyright: ""

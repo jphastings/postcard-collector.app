@@ -39,6 +39,10 @@ struct CollectionGridView: View {
     /// results — sources can be bundled, imported, or iCloud, so `LibraryView` supplies
     /// this rather than `CollectionGridView` needing to know about every kind.
     var resolveSourceName: (String) -> String = { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
+    /// Every collection a card can be moved/copied into (Feature 4), for the grid cells'
+    /// context menus — excludes this collection itself at the point of use.
+    var writableCollections: [WritableCollection] = []
+    let cloudLibrary: CloudLibrary
 
     /// `nil` until the first load/search completes; distinguishes "still loading" from a
     /// collection or search that has genuinely returned zero cards.
@@ -49,6 +53,7 @@ struct CollectionGridView: View {
     @State private var libraryHits: [LibraryHit] = []
     @State private var loadError: String?
     @State private var loadErrorTitle = "Couldn't open collection"
+    @State private var actionError: String?
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
 
@@ -72,7 +77,14 @@ struct CollectionGridView: View {
                                 Button {
                                     selection = .inCollection(path: source.path, summary: card)
                                 } label: {
-                                    GridCell(source: source, card: card)
+                                    GridCell(
+                                        source: source,
+                                        card: card,
+                                        writableCollections: writableCollections.filter { $0.path != source.path },
+                                        onCopy: { card, target in Task { await copyCard(card, to: target) } },
+                                        onMove: { card, target in Task { await moveCard(card, to: target) } },
+                                        onRemove: { card in Task { await removeFromCollection(card) } }
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -94,6 +106,14 @@ struct CollectionGridView: View {
         .task(id: source.id) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
         .task(id: SearchKey(text: searchText, scope: searchScope)) { await search() }
+        .alert(
+            "Couldn't complete that action",
+            isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
     }
 
     @ViewBuilder
@@ -143,6 +163,52 @@ struct CollectionGridView: View {
                 loadErrorTitle = "Search failed"
                 loadError = error.localizedDescription
             }
+        }
+    }
+
+    // MARK: - Card actions (Feature 4)
+
+    private func isCloudBacked(_ path: String) -> Bool {
+        cloudLibrary.items.contains { $0.path == path }
+    }
+
+    private func primeIfCloudBacked(_ path: String) async throws {
+        if isCloudBacked(path) {
+            try await CloudLibrary.primeForGoCoreWrite(path: path)
+        }
+    }
+
+    private func copyCard(_ card: CardSummary, to target: WritableCollection) async {
+        do {
+            let data = try await GoCore.shared.image(forCard: card.name, inCollectionAt: source.path)
+            try await primeIfCloudBacked(target.path)
+            try await GoCore.shared.addCard(filename: card.filename, data: data, toCollectionAt: target.path)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func moveCard(_ card: CardSummary, to target: WritableCollection) async {
+        do {
+            try await primeIfCloudBacked(source.path)
+            try await primeIfCloudBacked(target.path)
+            try await GoCore.shared.moveCard(named: card.name, filename: card.filename, from: source.path, to: target.path)
+            await loadCards()
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func removeFromCollection(_ card: CardSummary) async {
+        do {
+            try await primeIfCloudBacked(source.path)
+            try await GoCore.shared.removeCard(named: card.name, fromCollectionAt: source.path)
+            await loadCards()
+            if case .inCollection(let path, let summary) = selection, path == source.path, summary.name == card.name {
+                selection = nil
+            }
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 }
@@ -201,9 +267,14 @@ private struct EverywhereResultsList: View {
 private struct GridCell: View {
     let source: LibrarySource
     let card: CardSummary
+    var writableCollections: [WritableCollection] = []
+    var onCopy: (CardSummary, WritableCollection) -> Void = { _, _ in }
+    var onMove: (CardSummary, WritableCollection) -> Void = { _, _ in }
+    var onRemove: (CardSummary) -> Void = { _ in }
 
     @State private var thumbnail: PlatformImage?
     @State private var frontDescription: String?
+    @State private var confirmingRemoval = false
 
     var body: some View {
         Group {
@@ -222,6 +293,32 @@ private struct GridCell: View {
         .accessibilityIdentifier(card.name)
         .task(id: card.id) { await loadThumbnail() }
         .task(id: card.id) { await loadFrontDescription() }
+        .contextMenu {
+            Menu("Move to Collection…") {
+                ForEach(writableCollections) { target in
+                    Button(target.displayName) { onMove(card, target) }
+                }
+            }
+            .disabled(writableCollections.isEmpty)
+            Menu("Copy to Collection…") {
+                ForEach(writableCollections) { target in
+                    Button(target.displayName) { onCopy(card, target) }
+                }
+            }
+            .disabled(writableCollections.isEmpty)
+            Divider()
+            Button("Remove from Collection…", role: .destructive) { confirmingRemoval = true }
+        }
+        .confirmationDialog(
+            "Remove “\(card.name)” from this collection?",
+            isPresented: $confirmingRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) { onRemove(card) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This card only exists in this collection — it will be gone unless you copy it elsewhere first.")
+        }
     }
 
     private func loadThumbnail() async {

@@ -231,6 +231,45 @@ final class CloudLibrary {
         return try result.get()
     }
 
+    // MARK: - Coordinated writes
+
+    /// The write-side counterpart to `primeForGoCore`: brackets a no-op accessor in a
+    /// coordinated **write** so a concurrent iCloud sync yields for a beat before the real
+    /// write — performed afterwards, sequentially, via the Go core (which, like reads,
+    /// doesn't participate in `NSFileCoordinator` on its own) — touches the file. Call this
+    /// before any `GoCore` write to a path that might be iCloud-hosted.
+    nonisolated static func primeForGoCoreWrite(path: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try withCoordinatedWrite(at: path) { _ in }
+        }.value
+    }
+
+    /// Deletes the file at `path`, coordinating the delete so it's safe for iCloud-hosted
+    /// paths too (harmless, uncontended overhead for a purely local file).
+    nonisolated static func deleteCoordinated(at path: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try withCoordinatedWrite(at: path, options: .forDeleting) { deletableURL in
+                try FileManager.default.removeItem(at: deletableURL)
+            }
+        }.value
+    }
+
+    private nonisolated static func withCoordinatedWrite<T>(
+        at path: String,
+        options: NSFileCoordinator.WritingOptions = [],
+        _ body: (URL) throws -> T
+    ) throws -> T {
+        let url = URL(fileURLWithPath: path)
+        var coordinationError: NSError?
+        var result: Result<T, Error>?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: options, error: &coordinationError) { writableURL in
+            result = Result { try body(writableURL) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw CocoaError(.fileWriteUnknown) }
+        return try result.get()
+    }
+
     // MARK: - Predicate
 
     /// Matches `*.postcards` collections and bare `*.postcard.*` card files by their real
