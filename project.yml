@@ -120,6 +120,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Postcards/Core
+      - path: Postcards/Motion
       - path: PostcardsTests
         excludes:
           - "Resources/**"

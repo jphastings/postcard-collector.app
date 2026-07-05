@@ -53,6 +53,8 @@ struct FlippableCardView: View {
     let frontPixelSize: CGSize
 
     @State private var angleDegrees: Double
+    @State private var parallax = ParallaxModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     init(front: CGImage, back: CGImage?, flip: Flip, frontPixelSize: CGSize, initialAngleDegrees: Double = 0) {
         self.front = front
@@ -75,12 +77,33 @@ struct FlippableCardView: View {
         GeometryReader { proxy in
             faces(fittedIn: proxy.size)
                 .frame(width: proxy.size.width, height: proxy.size.height)
+                #if os(macOS)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        parallax.updateHover(location: location, in: proxy.size)
+                    case .ended:
+                        withAnimation(.easeOut(duration: 0.4)) {
+                            parallax.updateHover(location: nil, in: proxy.size)
+                        }
+                    }
+                }
+                #endif
         }
         .aspectRatio(boundingSize.width / boundingSize.height, contentMode: .fit)
         .accessibilityAddTraits(axis == nil ? [] : .isButton)
         .accessibilityLabel(
             FlipGeometry.showsFront(atDegrees: angleDegrees) ? "Front of postcard" : "Back of postcard"
         )
+        .onAppear { parallax.start() }
+        .onDisappear { parallax.stop() }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                parallax.start()
+            } else {
+                parallax.stop()
+            }
+        }
     }
 
     @ViewBuilder
@@ -100,7 +123,18 @@ struct FlippableCardView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .shadow(color: .black.opacity(0.25), radius: 16, x: 8, y: 12)
+        // Parallax tilts both faces together as one rigid object, as an extra rotation on
+        // top of the flip rather than folded into `angleDegrees` — it never touches the
+        // FlipFace modifiers above, so FlipGeometry.showsFront's hard 90° backface cut still
+        // only ever sees the live flip angle, untouched by however the card is tilted.
+        .rotation3DEffect(.degrees(parallax.tilt.y), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
+        .rotation3DEffect(.degrees(parallax.tilt.x), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+        .shadow(
+            color: .black.opacity(0.25),
+            radius: 16,
+            x: 8 + CGFloat(parallax.tilt.x) * Self.shadowPointsPerDegree,
+            y: 12 + CGFloat(parallax.tilt.y) * Self.shadowPointsPerDegree
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             guard self.axis != nil else { return }
@@ -109,6 +143,10 @@ struct FlippableCardView: View {
             }
         }
     }
+
+    /// How many extra shadow points shift per degree of tilt — a cheap way to sell the
+    /// parallax without a second shadow layer or per-frame geometry.
+    private static let shadowPointsPerDegree: CGFloat = 1.5
 
     private func face(_ cgImage: CGImage, size: CGSize, angleDegrees: Double, axis: FlipAxis) -> some View {
         Image(decorative: cgImage, scale: 1)
