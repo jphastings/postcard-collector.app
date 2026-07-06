@@ -79,7 +79,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -project Postcards.xcodeproj -scheme Postcards-macOS \
-            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
             build | tee build-macos.log
 
       - name: Build iOS (Simulator)
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -project Postcards.xcodeproj -scheme PostcardsTests \
-            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
             test | tee test.log
 
       - name: Upload logs on failure

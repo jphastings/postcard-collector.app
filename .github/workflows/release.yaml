@@ -68,6 +68,9 @@ jobs:
       NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
       NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -84,13 +87,14 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Import signing certificate
-        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' }}
+      - name: Import signing certificate & App Store Connect key
+        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' }}
         run: |
           CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/macos-signing.keychain-db"
 
           echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          echo -n "$ASC_KEY_BASE64" | base64 --decode -o "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -100,36 +104,47 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
       - name: Archive (signed)
-        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' }}
         run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+          # iCloud is a restricted entitlement that manually installed profiles can't
+          # carry, so signing must stay automatic (the project default) with cloud
+          # signing — the API key lets Xcode create/fetch a profile that includes it.
+          # The archive signs with whatever identity automatic signing picks; the
+          # export's method:developer-id is what selects Developer ID Application.
           xcodebuild archive -project Postcards.xcodeproj -scheme Postcards-macOS \
             -archivePath build/Postcards-macOS.xcarchive \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
-            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
           PLIST="$RUNNER_TEMP/ExportOptions-macOS.plist"
           plutil -create xml1 "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :method string developer-id" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :teamID string $DEVELOPMENT_TEAM" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :signingCertificate string Developer ID Application" "$PLIST"
 
           xcodebuild -exportArchive -archivePath build/Postcards-macOS.xcarchive \
-            -exportPath build/export-macos -exportOptionsPlist "$PLIST"
+            -exportPath build/export-macos -exportOptionsPlist "$PLIST" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Archive (unsigned)
-        if: ${{ env.BUILD_CERTIFICATE_BASE64 == '' }}
+        if: ${{ env.BUILD_CERTIFICATE_BASE64 == '' || env.ASC_KEY_ID == '' }}
         run: |
           xcodebuild archive -project Postcards.xcodeproj -scheme Postcards-macOS \
             -archivePath build/Postcards-macOS.xcarchive \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=NO
 
           mkdir -p build/export-macos
           # PRODUCT_NAME is $(TARGET_NAME) in project.yml, so the built bundle is Postcards-macOS.app.
           cp -R build/Postcards-macOS.xcarchive/Products/Applications/Postcards-macOS.app build/export-macos/
 
       - name: Notarize & staple
-        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' && env.NOTARY_KEY_ID != '' }}
+        if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' && env.NOTARY_KEY_ID != '' }}
         run: |
           KEY_PATH="$RUNNER_TEMP/notary_key.p8"
           echo -n "$NOTARY_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
@@ -164,7 +179,6 @@ jobs:
     env:
       IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
       IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
-      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -185,17 +199,14 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Import signing certificate & provisioning profile
-        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' }}
-        id: import-ios-signing
+      - name: Import signing certificate & App Store Connect key
+        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' }}
         run: |
           CERT_PATH="$RUNNER_TEMP/ios_distribution.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/ios-signing.keychain-db"
-          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
-          PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
 
           echo -n "$IOS_DIST_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
-          echo -n "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          echo -n "$ASC_KEY_BASE64" | base64 --decode -o "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -204,44 +215,23 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
           security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          mkdir -p "$PROFILES_DIR"
-          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
-          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")
-          cp "$PROFILE_PATH" "$PROFILES_DIR/$PROFILE_UUID.mobileprovision"
-
-          echo "profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
-
       - name: Archive (signed)
-        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' }}
         run: |
+          # Automatic signing (the project default) + cloud signing via the API key:
+          # iCloud is a restricted entitlement that manually installed profiles can't
+          # carry, so Xcode must be allowed to create/fetch the profile itself.
           xcodebuild archive -project Postcards.xcodeproj -scheme Postcards-iOS \
             -archivePath build/Postcards-iOS.xcarchive -destination 'generic/platform=iOS' \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Apple Distribution" \
-            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ steps.import-ios-signing.outputs.profile_name }}"
-
-      - name: Export .ipa (ad hoc)
-        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID == '' }}
-        run: |
-          PLIST="$RUNNER_TEMP/ExportOptions-iOS.plist"
-          plutil -create xml1 "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :method string ad-hoc" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :teamID string $DEVELOPMENT_TEAM" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:org.dotpostcard.collector string ${{ steps.import-ios-signing.outputs.profile_name }}" "$PLIST"
-
-          xcodebuild -exportArchive -archivePath build/Postcards-iOS.xcarchive \
-            -exportPath build/export-ios -exportOptionsPlist "$PLIST"
-
-          mkdir -p dist
-          cp build/export-ios/*.ipa dist/Postcards-iOS.ipa
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Upload to TestFlight
         if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 != '' && env.ASC_KEY_ID != '' }}
         run: |
           KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
-          echo -n "$ASC_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
 
           PLIST="$RUNNER_TEMP/ExportOptions-iOS-testflight.plist"
           plutil -create xml1 "$PLIST"
@@ -251,9 +241,6 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :destination string upload" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :teamID string $DEVELOPMENT_TEAM" "$PLIST"
 
-          # No manual signing here: -allowProvisioningUpdates + the API key lets
-          # cloud signing fetch an App Store profile itself, so this works even if
-          # the installed IOS_PROVISIONING_PROFILE is an ad hoc one.
           xcodebuild -exportArchive -archivePath build/Postcards-iOS.xcarchive \
             -exportPath build/export-ios -exportOptionsPlist "$PLIST" \
             -allowProvisioningUpdates \
@@ -264,7 +251,7 @@ jobs:
           echo "Uploaded Postcards-iOS ${GITHUB_REF_NAME} to TestFlight (App Store Connect, key $ASC_KEY_ID). No .ipa artifact is attached to the GitHub Release for this path." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build (unsigned, simulator)
-        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 == '' }}
+        if: ${{ env.IOS_DIST_CERTIFICATE_BASE64 == '' || env.ASC_KEY_ID == '' }}
         run: |
           xcodebuild -project Postcards.xcodeproj -scheme Postcards-iOS \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived \
@@ -281,9 +268,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Postcards-iOS
-          path: |
-            dist/Postcards-iOS.ipa
-            dist/Postcards-iOS-simulator.zip
+          # Only the unsigned fallback produces a file; the signed path uploads to
+          # TestFlight instead of writing an .ipa.
+          path: dist/Postcards-iOS-simulator.zip
           if-no-files-found: ignore
 
       - name: Delete temporary keychain
