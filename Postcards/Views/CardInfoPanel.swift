@@ -33,7 +33,8 @@ struct CardInfoPanel: View {
                         }
                     }
 
-                    if let latitude = location.latitude, let longitude = location.longitude {
+                    if LocationDisplay.hasCoordinates(location),
+                       let latitude = location.latitude, let longitude = location.longitude {
                         let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
                         Map(initialPosition: .region(
                             MKCoordinateRegion(center: coordinate, latitudinalMeters: 50_000, longitudinalMeters: 50_000)
@@ -65,10 +66,7 @@ struct CardInfoPanel: View {
 
     private var displayableLocation: Location? {
         let location = metadata.location
-        guard location.name != nil || (location.latitude != nil && location.longitude != nil) else {
-            return nil
-        }
-        return location
+        return LocationDisplay.showsSection(for: location) ? location : nil
     }
 
     private var hasContext: Bool {

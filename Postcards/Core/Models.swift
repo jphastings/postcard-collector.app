@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 /// The way a postcard's two sides are joined, mirroring `types.Flip` in the Go core.
@@ -225,6 +226,15 @@ struct CardSummary: Codable, Hashable, Identifiable, Sendable {
         case frontPxW = "front_px_w"
         case frontPxH = "front_px_h"
         case hasBack = "has_back"
+    }
+}
+
+extension CardSummary {
+    /// `nil` unless the card carries both a latitude and longitude — the gate for whether
+    /// it can appear as a pin in map mode (see `CollectionMapGating`).
+    var coordinate: CLLocationCoordinate2D? {
+        guard let latitude, let longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 

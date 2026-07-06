@@ -54,6 +54,12 @@ struct CollectionGridView: View {
     @State private var loadError: String?
     @State private var loadErrorTitle = "Couldn't open collection"
     @State private var actionError: String?
+    @State private var viewMode = CollectionViewMode.grid
+    /// Whether ANY card in the full, unfiltered collection has a coordinate — gates
+    /// `CollectionModeSwitcher`. Only updated by `loadCards()` (never by `search()`, which
+    /// can narrow `cards` to a search-filtered subset) so it always reflects the whole
+    /// collection, not whatever's currently displayed.
+    @State private var hasAnyLocation = false
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
 
@@ -65,6 +71,12 @@ struct CollectionGridView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(loadError)
                 )
+            } else if viewMode == .map {
+                if let cards {
+                    CollectionMapView(entries: mapEntries(from: cards), selection: $selection)
+                } else {
+                    ProgressView()
+                }
             } else if searchScope == .everywhere && !searchText.isEmpty {
                 EverywhereResultsList(hits: libraryHits, selection: $selection, resolveSourceName: resolveSourceName)
             } else if let cards {
@@ -97,15 +109,29 @@ struct CollectionGridView: View {
             }
         }
         .navigationTitle(title ?? source.displayName)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
+            }
+        }
         .searchable(text: $searchText, prompt: "Search this collection")
         .searchScopes($searchScope) {
-            ForEach(GridSearchScope.allCases, id: \.self) { scope in
-                Text(scope.rawValue).tag(scope)
+            // The "Everywhere" scope fans out across every known source, which doesn't map
+            // onto a single collection's pins — hidden in map mode rather than built out,
+            // since "This Collection" search already keeps working there for free (it just
+            // narrows the same `cards` array the map reads from).
+            if viewMode == .grid {
+                ForEach(GridSearchScope.allCases, id: \.self) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
             }
         }
         .task(id: source.id) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
         .task(id: SearchKey(text: searchText, scope: searchScope)) { await search() }
+        .onChange(of: viewMode) { _, newMode in
+            if newMode == .map { searchScope = .thisCollection }
+        }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -128,10 +154,19 @@ struct CollectionGridView: View {
     private func loadCards() async {
         loadError = nil
         do {
-            cards = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
+            let loaded = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
+            cards = loaded
+            hasAnyLocation = CollectionMapGating.isEnabled(for: loaded)
         } catch {
             loadErrorTitle = "Couldn't open collection"
             loadError = error.localizedDescription
+        }
+    }
+
+    private func mapEntries(from cards: [CardSummary]) -> [MapCardEntry] {
+        cards.compactMap { card in
+            guard card.coordinate != nil else { return nil }
+            return MapCardEntry(summary: card, reference: .inCollection(path: source.path, summary: card))
         }
     }
 

@@ -63,6 +63,10 @@ struct CardDetailView: View {
     private func load() async {
         splitImage = nil
         loadError = nil
+        // Must be reset too: otherwise, switching cards while the info sheet/inspector is
+        // already open leaves CardInfoPanel showing the PREVIOUS card's metadata — location,
+        // map and all — until the new fetch resolves.
+        metadata = nil
         let flip = reference.summary.flip
         do {
             async let imageData = GoCore.shared.image(for: reference)

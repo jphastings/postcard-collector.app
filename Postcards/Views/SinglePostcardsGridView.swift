@@ -24,6 +24,10 @@ struct SinglePostcardsGridView: View {
     @State private var searchText = ""
     @State private var loadError: String?
     @State private var actionError: String?
+    @State private var viewMode = CollectionViewMode.grid
+    /// Whether ANY loaded card has a coordinate — gates `CollectionModeSwitcher`. Computed
+    /// from the full `cards` load, not `filteredCards`, so a search never disables it.
+    @State private var hasAnyLocation = false
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
 
@@ -42,6 +46,12 @@ struct SinglePostcardsGridView: View {
         Group {
             if let loadError {
                 ContentUnavailableView("Couldn't open postcards", systemImage: "exclamationmark.triangle", description: Text(loadError))
+            } else if viewMode == .map {
+                if cards != nil {
+                    CollectionMapView(entries: mapEntries(from: filteredCards), selection: $selection)
+                } else {
+                    ProgressView()
+                }
             } else if cards != nil {
                 if filteredCards.isEmpty {
                     emptyState
@@ -72,6 +82,15 @@ struct SinglePostcardsGridView: View {
             }
         }
         .navigationTitle("Single postcards")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
+            }
+        }
+        // Search here is a client-side filter of the already-loaded `filteredCards` (see
+        // its computed property above), not a separate fetch/scope like
+        // `CollectionGridView`'s — so it keeps working in map mode for free, no extra
+        // wiring needed.
         .searchable(text: $searchText, prompt: "Search single postcards")
         .task(id: paths) { await loadCards() }
         .alert(
@@ -106,6 +125,14 @@ struct SinglePostcardsGridView: View {
             }
         }
         cards = loaded
+        hasAnyLocation = CollectionMapGating.isEnabled(for: loaded.map(\.summary))
+    }
+
+    private func mapEntries(from cards: [(path: String, summary: CardSummary)]) -> [MapCardEntry] {
+        cards.compactMap { path, summary in
+            guard summary.coordinate != nil else { return nil }
+            return MapCardEntry(summary: summary, reference: .bareFile(path: path, summary: summary))
+        }
     }
 
     // MARK: - Card actions (Feature 4)
