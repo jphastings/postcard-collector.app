@@ -1,8 +1,11 @@
+import CoreGraphics
 import CoreLocation
 
-/// One rendered map pin: every element whose card sits at exactly the same coordinate.
-/// Cards catalogued against the same place (same city lookup, say) land on one pin whose
-/// popover lists them all, instead of a stack of indistinguishable overlapping pins.
+/// One rendered map pin: every element whose card would draw at (or too close to) the same
+/// place on screen at the current zoom. Cards catalogued against the same city land on one
+/// pin whose popover lists them all, instead of a stack of indistinguishable overlapping
+/// pins — and nearby-but-distinct places merge or split as the camera zooms (see
+/// `MapPinClustering`).
 struct MapPinGroup<Element> {
     var coordinate: CLLocationCoordinate2D
     var elements: [Element]
@@ -41,6 +44,82 @@ enum MapPinGrouping {
     private struct CoordinateKey: Hashable {
         var latitude: Double
         var longitude: Double
+    }
+}
+
+/// Zoom-aware clustering in SCREEN space: pins whose rendered positions would overlap at
+/// the current camera merge into one group pin, and split back apart as zooming in spreads
+/// them past the threshold. Exact-coordinate duplicates are the degenerate case (distance
+/// 0 at every zoom) — they simply never split.
+enum MapPinClustering {
+    /// One pin's touch-target diameter: two pin centres closer than this on screen are
+    /// effectively on top of each other.
+    static let defaultThresholdPoints: CGFloat = 44
+
+    /// Clusters elements by pairwise screen distance ≤ `threshold`, merged TRANSITIVELY
+    /// (union-find): A near B and B near C puts all three in one cluster even when A and C
+    /// are far apart — chosen because the alternative (strict pairwise cliques) can't
+    /// partition consistently, and a chain of overlapping pins is unreadable as separate
+    /// markers anyway. The threshold is inclusive: exactly `threshold` apart still merges.
+    ///
+    /// Deterministic and order-stable: clusters appear in input order of their first
+    /// member, and each cluster's elements keep input order. Elements without a screen
+    /// point (unprojectable, e.g. off-screen at the current camera) stay as singletons —
+    /// they aren't visible to overlap anything, and the next camera change re-clusters.
+    static func clusters<Element>(
+        of elements: [Element],
+        threshold: CGFloat = defaultThresholdPoints,
+        screenPoint: (Element) -> CGPoint?
+    ) -> [[Element]] {
+        let points = elements.map(screenPoint)
+        var parent = Array(elements.indices)
+
+        func root(of index: Int) -> Int {
+            var index = index
+            while parent[index] != index {
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            }
+            return index
+        }
+
+        for i in elements.indices {
+            guard let a = points[i] else { continue }
+            for j in (i + 1)..<elements.count {
+                guard let b = points[j] else { continue }
+                if hypot(a.x - b.x, a.y - b.y) <= threshold {
+                    // Always attach the larger root under the smaller: every cluster's
+                    // root is its first member in input order, keeping output stable.
+                    let ri = root(of: i)
+                    let rj = root(of: j)
+                    if ri != rj {
+                        parent[max(ri, rj)] = min(ri, rj)
+                    }
+                }
+            }
+        }
+
+        var order: [Int] = []
+        var byRoot: [Int: [Element]] = [:]
+        for index in elements.indices {
+            let r = root(of: index)
+            if byRoot[r] == nil { order.append(r) }
+            byRoot[r, default: []].append(elements[index])
+        }
+        return order.compactMap { byRoot[$0] }
+    }
+
+    /// A merged marker's display coordinate: the members' arithmetic-mean coordinate.
+    /// Chosen over "first member's coordinate" because the marker stands for all of them —
+    /// it should sit between the places, not on an arbitrary one. A flat average is fine
+    /// at clustering scales (things close enough to overlap on screen are far from any
+    /// meridian-wrapping or great-circle concerns).
+    static func centroid(of coordinates: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        guard !coordinates.isEmpty else { return nil }
+        return CLLocationCoordinate2D(
+            latitude: coordinates.map(\.latitude).reduce(0, +) / Double(coordinates.count),
+            longitude: coordinates.map(\.longitude).reduce(0, +) / Double(coordinates.count)
+        )
     }
 }
 

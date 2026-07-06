@@ -2,9 +2,11 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-/// The collection view's "map mode" (see `CollectionModeSwitcher`): one pin per distinct
-/// coordinate, framed so all of them are visible on first appearance. Cards at exactly the
-/// same coordinate share a pin (see `MapPinGrouping`).
+/// The collection view's "map mode" (see `CollectionModeSwitcher`): pins framed so all of
+/// them are visible on first appearance, clustered by what would actually overlap ON
+/// SCREEN at the current camera (see `MapPinClustering`) — zooming in splits a merged pin
+/// back into its parts, zooming out merges neighbours, and exact-coordinate duplicates
+/// never split.
 ///
 /// Interaction: clicking a pin ALWAYS navigates — a single-card pin opens its card in the
 /// detail pane (same `selection` binding as tapping a grid cell); a multi-card pin rotates
@@ -20,6 +22,10 @@ struct CollectionMapView: View {
     /// The group whose popover is held open by click/tap (macOS hover shows popovers
     /// without touching this). At most one at a time.
     @State private var openGroupID: String?
+    /// The current zoom's screen-space clusters; `nil` until the first camera settle
+    /// makes projection possible, when exact-coordinate grouping stands in.
+    @State private var screenClusters: [MapPinGroup<MapCardEntry>]?
+    @State private var reclusterDebounce: Task<Void, Never>?
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
         self.entries = entries
@@ -33,42 +39,74 @@ struct CollectionMapView: View {
     }
 
     private var groups: [MapPinGroup<MapCardEntry>] {
-        MapPinGrouping.groups(of: entries) { $0.summary.coordinate }
+        screenClusters ?? MapPinGrouping.groups(of: entries) { $0.summary.coordinate }
     }
 
     var body: some View {
-        Map(position: $cameraPosition) {
-            ForEach(groups) { group in
-                // Qualified: `Models.swift` already declares its own `Annotation` (for
-                // postcard transcriptions), which shadows MapKit's SwiftUI `Annotation`
-                // content type in this module. The label builder is empty on purpose —
-                // always-visible names under every pin were clutter; names live in the
-                // popover instead.
-                MapKit.Annotation(coordinate: group.coordinate, anchor: .bottom) {
-                    MapPinAnnotation(
-                        group: group,
-                        isOpen: openGroupID == group.id,
-                        selection: selection,
-                        onPinClick: { pinClicked(group) },
-                        onNameClick: { reference in
-                            selection = reference
-                            withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
-                        }
-                    )
-                } label: {
-                    EmptyView()
+        MapReader { proxy in
+            Map(position: $cameraPosition) {
+                ForEach(groups) { group in
+                    // Qualified: `Models.swift` already declares its own `Annotation` (for
+                    // postcard transcriptions), which shadows MapKit's SwiftUI `Annotation`
+                    // content type in this module. The label builder is empty on purpose —
+                    // always-visible names under every pin were clutter; names live in the
+                    // popover instead.
+                    MapKit.Annotation(coordinate: group.coordinate, anchor: .bottom) {
+                        MapPinAnnotation(
+                            group: group,
+                            isOpen: openGroupID == group.id,
+                            selection: selection,
+                            onPinClick: { pinClicked(group) },
+                            onNameClick: { reference in
+                                selection = reference
+                                withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+                            }
+                        )
+                    } label: {
+                        EmptyView()
+                    }
                 }
             }
+            .mapControls {
+                MapCompass()
+                MapScaleView()
+            }
+            // Lets tapping empty water/land close whatever popover is open — Map's own
+            // gesture handling for panning/zooming is a drag/magnify, not a tap, so this
+            // doesn't interfere with it, and the pin buttons underneath consume their own
+            // taps first.
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+            }
+            // Re-cluster as the camera moves, debounced so continuous panning/zooming
+            // doesn't recompute (and re-diff annotations) on every frame — pins settle
+            // into merged/split form ~120ms after the gesture pauses.
+            .onMapCameraChange(frequency: .continuous) { _ in
+                reclusterDebounce?.cancel()
+                reclusterDebounce = Task {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    guard !Task.isCancelled else { return }
+                    recluster(with: proxy)
+                }
+            }
+            // A new entry set (search narrowing, collection switch) re-clusters
+            // immediately — its pins may bear no relation to the previous clusters.
+            .onChange(of: entries) { _, _ in
+                recluster(with: proxy)
+            }
         }
-        .mapControls {
-            MapCompass()
-            MapScaleView()
+    }
+
+    private func recluster(with proxy: MapProxy) {
+        let located = entries.filter { $0.summary.coordinate != nil }
+        let clusters = MapPinClustering.clusters(of: located) { entry in
+            entry.summary.coordinate.flatMap { proxy.convert($0, to: .local) }
         }
-        // Lets tapping empty water/land close whatever popover is open — Map's own gesture
-        // handling for panning/zooming is a drag/magnify, not a tap, so this doesn't
-        // interfere with it, and the pin buttons underneath consume their own taps first.
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+        screenClusters = clusters.compactMap { cluster in
+            guard let centroid = MapPinClustering.centroid(of: cluster.compactMap(\.summary.coordinate)) else {
+                return nil
+            }
+            return MapPinGroup(coordinate: centroid, elements: cluster)
         }
     }
 
