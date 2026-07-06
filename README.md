@@ -1,5 +1,7 @@
 # Postcards
 
+[![CI](https://github.com/jphastings/postcard-collector.app/actions/workflows/ci.yaml/badge.svg)](https://github.com/jphastings/postcard-collector.app/actions/workflows/ci.yaml)
+
 A read-only SwiftUI viewer for `*.postcards` collections and bare `*.postcard.*` files,
 over a Go core (see [dotpostcard](https://github.com/jphastings/dotpostcard)) vendored as
 an XCFramework. iOS 17+ and macOS 14+.
@@ -79,6 +81,14 @@ xcodebuild -project Postcards.xcodeproj -scheme Postcards-iOS \
 xcodebuild -project Postcards.xcodeproj -scheme PostcardsTests \
   -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO test
 ```
+
+## CI & releases
+
+GitHub Actions builds the XCFramework, generates the project, and runs `PostcardsTests` on every
+push/PR (`.github/workflows/ci.yaml`). Pushing a `v*` tag builds signed, notarized macOS and iOS
+release artifacts (`.github/workflows/release.yaml`), degrading gracefully to unsigned builds if
+signing secrets aren't configured. See [`docs/RELEASING.md`](docs/RELEASING.md) for the secrets
+list and release steps.
 
 ## Known simplifications (vs. the full project plan)
 

@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Pinned commit of jphastings/dotpostcard that provides Postcards.xcframework.
+  # Bump this once dotpostcard cuts a release tag covering this feature set, and
+  # switch to that tag instead of a raw commit (see docs/RELEASING.md).
+  DOTPOSTCARD_REF: v0.19.2
+
+jobs:
+  core:
+    name: Build Postcards.xcframework
+    runs-on: macos-15
+    steps:
+      - name: Checkout dotpostcard
+        uses: actions/checkout@v6
+        with:
+          repository: jphastings/dotpostcard
+          ref: ${{ env.DOTPOSTCARD_REF }}
+          path: dotpostcard
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: dotpostcard/go.mod
+          cache-dependency-path: dotpostcard/go.sum
+
+      # Bind is ~10min of cgo compilation across 3 targets; skip it entirely when
+      # this exact dotpostcard ref has already been built by a previous run.
+      - name: Cache built XCFramework
+        id: cache-xcframework
+        uses: actions/cache@v4
+        with:
+          path: dotpostcard/build/Postcards.xcframework
+          key: xcframework-${{ env.DOTPOSTCARD_REF }}
+
+      - name: gomobile init
+        if: steps.cache-xcframework.outputs.cache-hit != 'true'
+        working-directory: dotpostcard
+        run: go run golang.org/x/mobile/cmd/gomobile init
+
+      - name: Build XCFramework
+        if: steps.cache-xcframework.outputs.cache-hit != 'true'
+        working-directory: dotpostcard
+        run: make xcframework
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: Postcards.xcframework
+          path: dotpostcard/build/Postcards.xcframework
+          retention-days: 1
+
+  app:
+    name: Build & test app
+    needs: core
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: Postcards.xcframework
+          path: Frameworks/Postcards.xcframework
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build macOS
+        run: |
+          set -o pipefail
+          xcodebuild -project Postcards.xcodeproj -scheme Postcards-macOS \
+            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            build | tee build-macos.log
+
+      - name: Build iOS (Simulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project Postcards.xcodeproj -scheme Postcards-iOS \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO \
+            build | tee build-ios.log
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild -project Postcards.xcodeproj -scheme PostcardsTests \
+            -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+            test | tee test.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-and-test-logs
+          path: |
+            build-macos.log
+            build-ios.log
+            test.log
