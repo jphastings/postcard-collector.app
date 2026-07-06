@@ -4,11 +4,10 @@ import SwiftUI
 /// `.postcard.*` file the app knows about — imported or fully-downloaded from iCloud —
 /// shown together, since none of them belongs to a collection worth its own sidebar row.
 ///
-/// Unlike `CollectionGridView`, there's no Go-side FTS index spanning bare files (the Go
-/// `Library`'s bare-file search is a simple substring scan, built for the cross-source
-/// "Everywhere" scope) — searching here just filters the already-loaded summaries
-/// client-side, which is simpler and just as correct for what's typically a handful of
-/// loose cards.
+/// Search goes through the Go core (`GoCore.searchCardFiles`, a `Library` scoped to just
+/// these files) rather than a client-side filter over `CardSummary`, so "searchable text"
+/// has one definition everywhere: descriptions and transcriptions match here exactly as
+/// they do in a collection's FTS search.
 struct SinglePostcardsGridView: View {
     let paths: [String]
     @Binding var selection: CardReference?
@@ -18,63 +17,54 @@ struct SinglePostcardsGridView: View {
     /// so `LibraryModel` drops it from `sources` — a no-op if it was only ever an iCloud
     /// item, since `CloudLibrary`'s own metadata query notices the file is gone.
     var onFileConsumed: (String) -> Void = { _ in }
+    /// See `CollectionGridView.onCreateCollection`.
+    var onCreateCollection: ((String) async throws -> WritableCollection)?
 
     /// `nil` until the first load completes.
-    @State private var cards: [(path: String, summary: CardSummary)]?
+    @State private var cards: [MapCardEntry]?
+    /// `nil` while no search is active; the Go-side hits otherwise.
+    @State private var searchResults: [MapCardEntry]?
     @State private var searchText = ""
     @State private var loadError: String?
     @State private var actionError: String?
     @State private var viewMode = CollectionViewMode.grid
     /// Whether ANY loaded card has a coordinate — gates `CollectionModeSwitcher`. Computed
-    /// from the full `cards` load, not `filteredCards`, so a search never disables it.
+    /// from the full `cards` load, never search results, so a search can't disable it.
     @State private var hasAnyLocation = false
+    @State private var newCollectionPrompt: NewCollectionPrompt?
+    @State private var newCollectionTitle = ""
 
-    private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
-
-    private var filteredCards: [(path: String, summary: CardSummary)] {
-        guard let cards else { return [] }
-        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return cards }
-        return cards.filter { _, summary in
-            [summary.name, summary.senderName, summary.recipientName, summary.locationName]
-                .compactMap { $0 }
-                .contains { $0.lowercased().contains(needle) }
-        }
+    /// What both the grid and the map show: the search hits while a query is active, the
+    /// full load otherwise — so map pins are filtered by search exactly like grid cells.
+    private var displayedCards: [MapCardEntry]? {
+        searchText.isEmpty ? cards : searchResults
     }
 
     var body: some View {
         Group {
             if let loadError {
                 ContentUnavailableView("Couldn't open postcards", systemImage: "exclamationmark.triangle", description: Text(loadError))
-            } else if viewMode == .map {
-                if cards != nil {
-                    CollectionMapView(entries: mapEntries(from: filteredCards), selection: $selection)
-                } else {
-                    ProgressView()
-                }
-            } else if cards != nil {
-                if filteredCards.isEmpty {
+            } else if let displayedCards {
+                if viewMode == .map {
+                    CollectionMapView(entries: displayedCards.filter { $0.summary.coordinate != nil }, selection: $selection)
+                } else if displayedCards.isEmpty {
                     emptyState
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(filteredCards, id: \.path) { entry in
-                                Button {
-                                    selection = .bareFile(path: entry.path, summary: entry.summary)
-                                } label: {
-                                    BareGridCell(
-                                        path: entry.path,
-                                        card: entry.summary,
-                                        writableCollections: writableCollections,
-                                        onCopy: { card, target in Task { await copyCard(entry.path, card, to: target) } },
-                                        onMove: { card, target in Task { await moveCard(entry.path, card, to: target) } },
-                                        onDelete: { Task { await deleteFromDevice(entry.path) } }
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
+                    MasonryGrid(items: displayedCards, aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) }) { entry in
+                        Button {
+                            selection = entry.reference
+                        } label: {
+                            BareGridCell(
+                                path: entry.reference.sourcePath,
+                                card: entry.summary,
+                                writableCollections: writableCollections,
+                                onCopy: { card, target in Task { await copyCard(entry.reference.sourcePath, card, to: target) } },
+                                onMove: { card, target in Task { await moveCard(entry.reference.sourcePath, card, to: target) } },
+                                onNewCollection: { card, action in promptForNewCollection(path: entry.reference.sourcePath, card: card, action: action) },
+                                onDelete: { Task { await deleteFromDevice(entry.reference.sourcePath) } }
+                            )
                         }
-                        .padding()
+                        .buttonStyle(.plain)
                     }
                 }
             } else {
@@ -87,12 +77,9 @@ struct SinglePostcardsGridView: View {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
-        // Search here is a client-side filter of the already-loaded `filteredCards` (see
-        // its computed property above), not a separate fetch/scope like
-        // `CollectionGridView`'s — so it keeps working in map mode for free, no extra
-        // wiring needed.
         .searchable(text: $searchText, prompt: "Search single postcards")
         .task(id: paths) { await loadCards() }
+        .task(id: searchText) { await search() }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -100,6 +87,9 @@ struct SinglePostcardsGridView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(actionError ?? "")
+        }
+        .newCollectionAlert(prompt: $newCollectionPrompt, title: $newCollectionTitle) { prompt, collectionTitle in
+            await createCollectionAndTransfer(prompt, title: collectionTitle)
         }
     }
 
@@ -114,11 +104,12 @@ struct SinglePostcardsGridView: View {
 
     private func loadCards() async {
         loadError = nil
-        var loaded: [(path: String, summary: CardSummary)] = []
+        var loaded: [MapCardEntry] = []
         for path in paths {
             do {
                 try await primeIfCloudBacked(path)
-                loaded.append((path, try await GoCore.shared.summary(ofCardFileAt: path)))
+                let summary = try await GoCore.shared.summary(ofCardFileAt: path)
+                loaded.append(MapCardEntry(summary: summary, reference: .bareFile(path: path, summary: summary)))
             } catch {
                 // One unreadable file shouldn't blank the whole grid; it just won't appear.
                 continue
@@ -128,10 +119,16 @@ struct SinglePostcardsGridView: View {
         hasAnyLocation = CollectionMapGating.isEnabled(for: loaded.map(\.summary))
     }
 
-    private func mapEntries(from cards: [(path: String, summary: CardSummary)]) -> [MapCardEntry] {
-        cards.compactMap { path, summary in
-            guard summary.coordinate != nil else { return nil }
-            return MapCardEntry(summary: summary, reference: .bareFile(path: path, summary: summary))
+    private func search() async {
+        guard !searchText.isEmpty else {
+            searchResults = nil
+            return
+        }
+        do {
+            let hits = try await GoCore.shared.searchCardFiles(paths: paths, query: searchText)
+            searchResults = MapCardEntry.entries(fromHits: hits)
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 
@@ -194,6 +191,26 @@ struct SinglePostcardsGridView: View {
             selection = nil
         }
     }
+
+    // MARK: - New collection…
+
+    private func promptForNewCollection(path: String, card: CardSummary, action: CardTransferAction) {
+        newCollectionTitle = ""
+        newCollectionPrompt = NewCollectionPrompt(card: card, action: action, barePath: path)
+    }
+
+    private func createCollectionAndTransfer(_ prompt: NewCollectionPrompt, title: String) async {
+        guard let onCreateCollection, let barePath = prompt.barePath else { return }
+        do {
+            let target = try await onCreateCollection(title)
+            switch prompt.action {
+            case .move: await moveCard(barePath, prompt.card, to: target)
+            case .copy: await copyCard(barePath, prompt.card, to: target)
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
 }
 
 /// Like `GridCell`, but for a bare `.postcard.*` file: there's no Go-generated thumbnail
@@ -206,6 +223,7 @@ private struct BareGridCell: View {
     var writableCollections: [WritableCollection] = []
     var onCopy: (CardSummary, WritableCollection) -> Void = { _, _ in }
     var onMove: (CardSummary, WritableCollection) -> Void = { _, _ in }
+    var onNewCollection: (CardSummary, CardTransferAction) -> Void = { _, _ in }
     var onDelete: () -> Void = {}
 
     @State private var thumbnail: PlatformImage?
@@ -228,17 +246,19 @@ private struct BareGridCell: View {
         .task(id: path) { await loadThumbnail() }
         .contextMenu {
             Menu("Move to Collection…") {
+                Button("New collection…") { onNewCollection(card, .move) }
+                Divider()
                 ForEach(writableCollections) { target in
                     Button(target.displayName) { onMove(card, target) }
                 }
             }
-            .disabled(writableCollections.isEmpty)
             Menu("Copy to Collection…") {
+                Button("New collection…") { onNewCollection(card, .copy) }
+                Divider()
                 ForEach(writableCollections) { target in
                     Button(target.displayName) { onCopy(card, target) }
                 }
             }
-            .disabled(writableCollections.isEmpty)
             Divider()
             Button("Delete from Device…", role: .destructive) { confirmingDeletion = true }
         }

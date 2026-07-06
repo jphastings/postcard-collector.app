@@ -1,9 +1,15 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// The app's root: a sidebar of collections (bundled fixtures are gone — see Feature 1;
 /// nothing is bundled), a grid of the selected collection's cards, and the selected card's
 /// detail. Bare `.postcard.*` files never get their own sidebar row (see Feature 2): they're
-/// aggregated into one "Single postcards" row pinned at the bottom.
+/// aggregated into one "Single postcards" row pinned at the bottom, and the union of
+/// everything lives behind the "All collections" row pinned at the top. The sidebar picks
+/// the SCOPE; the content pane lists that scope's postcards (grid or map, narrowed by any
+/// active search); the detail pane shows the tapped postcard.
 struct LibraryView: View {
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
@@ -98,9 +104,9 @@ struct LibraryView: View {
                     CollectionGridView(
                         source: selectedSource,
                         selection: $selectedCard,
-                        resolveSourceName: displayName(forSourcePath:),
                         writableCollections: writableCollections,
-                        cloudLibrary: cloudLibrary
+                        cloudLibrary: cloudLibrary,
+                        onCreateCollection: { try await createCollection(titled: $0) }
                     )
                 case .cardFile(let path, _):
                     // No longer reachable via the sidebar (bare files live only inside
@@ -113,7 +119,15 @@ struct LibraryView: View {
                         selection: $selectedCard,
                         writableCollections: writableCollections,
                         cloudLibrary: cloudLibrary,
-                        onFileConsumed: { library.remove(path: $0) }
+                        onFileConsumed: { library.remove(path: $0) },
+                        onCreateCollection: { try await createCollection(titled: $0) }
+                    )
+                case .allCollections:
+                    AllCollectionsView(
+                        collectionPaths: writableCollections.map(\.path),
+                        barePaths: singlePostcardPaths,
+                        selection: $selectedCard,
+                        cloudLibrary: cloudLibrary
                     )
                 }
             } else {
@@ -150,13 +164,13 @@ struct LibraryView: View {
                 }
             }
         }
-        // Keeps the "Everywhere" search fan-out current as sources are imported, removed,
-        // or synced in from iCloud.
+        // Keeps the "All collections" search fan-out current as sources are imported,
+        // removed, or synced in from iCloud.
         .onChange(of: library.sources, initial: true) { _, _ in
-            Task { await syncEverywhereSearchSources() }
+            Task { await syncLibrarySearchSources() }
         }
         .onChange(of: cloudLibrary.items, initial: true) { _, _ in
-            Task { await syncEverywhereSearchSources() }
+            Task { await syncLibrarySearchSources() }
         }
     }
 
@@ -164,8 +178,13 @@ struct LibraryView: View {
 
     private var sourceList: some View {
         List(selection: $selectedSource) {
+            Section {
+                Label("All collections", systemImage: "square.stack.3d.up")
+                    .accessibilityIdentifier("All collections")
+                    .tag(LibrarySource.allCollections)
+            }
             Section("Library") {
-                ForEach(library.sources.filter(\.isCollection)) { source in
+                ForEach(importedCollectionSources) { source in
                     SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
                         .tag(source)
                         .contextMenu { importedCollectionMenu(for: source) }
@@ -211,6 +230,16 @@ struct LibraryView: View {
         !library.sources.isEmpty || !cloudLibrary.items.isEmpty
     }
 
+    /// The "Library" sidebar section's rows: imported collections, minus any whose path is
+    /// also an iCloud item — a collection created in the iCloud folder by the
+    /// "New collection…" flow is registered in `library.sources` for instant visibility,
+    /// then moves to the iCloud section once `CloudLibrary`'s metadata query notices it.
+    private var importedCollectionSources: [LibrarySource] {
+        library.sources.filter { source in
+            source.isCollection && !cloudLibrary.items.contains { $0.path == source.path }
+        }
+    }
+
     /// Every bare `.postcard.*` file the app currently knows about, imported or synced —
     /// only fully-downloaded iCloud ones (see `sourceList`'s comment on the iCloud section).
     private var singlePostcardPaths: [String] {
@@ -228,6 +257,8 @@ struct LibraryView: View {
 
     /// Every collection the app currently knows about — imported plus fully-downloaded
     /// iCloud ones — for the grid cells' "Move to Collection…"/"Copy to Collection…" menus.
+    /// Deduplicated by path: a just-created iCloud collection can briefly be in both
+    /// `library.sources` (registered for instant visibility) and `cloudLibrary.items`.
     private var writableCollections: [WritableCollection] {
         var collections = library.sources.compactMap { source -> WritableCollection? in
             guard case .collection(let path, let name) = source else { return nil }
@@ -236,7 +267,9 @@ struct LibraryView: View {
         collections += cloudLibrary.items
             .filter { $0.isCollection && $0.downloadState == .current }
             .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
-        return collections
+
+        var seen = Set<String>()
+        return collections.filter { seen.insert($0.path).inserted }
     }
 
     // MARK: - Sidebar row actions (Feature 3)
@@ -247,6 +280,7 @@ struct LibraryView: View {
             renameText = source.displayName
             renamingSource = source
         }
+        revealInFinderButton(path: source.path)
         // "Remove from Library" reads as a non-destructive "just forget it", but an
         // imported collection's only copy lives in the app's own container — there's
         // nothing else to "remove" it from, so this does delete that copy. "Delete…"
@@ -269,6 +303,9 @@ struct LibraryView: View {
             renameText = item.displayName
             renamingSource = item.librarySource
         }
+        // For iCloud items this reveals the LOCAL ubiquity URL — the synced file under
+        // ~/Library/Mobile Documents, which Finder presents as the iCloud Drive folder.
+        revealInFinderButton(path: item.path)
         Divider()
         // No "Remove from Library" here: iCloud collections come from the folder scan,
         // so "removing" one from the sidebar without deleting the file would just have it
@@ -276,6 +313,17 @@ struct LibraryView: View {
         Button("Delete…", role: .destructive) {
             pendingDeletion = item.librarySource
         }
+    }
+
+    /// macOS only: every real-file source can be revealed; iOS has no Finder (and Files
+    /// has no equivalent API), so the menus simply don't offer it there.
+    @ViewBuilder
+    private func revealInFinderButton(path: String) -> some View {
+        #if os(macOS)
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+        #endif
     }
 
     private func renameCollection(_ source: LibrarySource, to newTitle: String) async {
@@ -313,6 +361,39 @@ struct LibraryView: View {
         cloudLibrary.items.contains { $0.path == path }
     }
 
+    // MARK: - New collection… (grid context menus)
+
+    private struct NewCollectionError: LocalizedError {
+        let errorDescription: String?
+    }
+
+    /// Creates a new, empty collection for the grids' "New collection…" flow and returns
+    /// it as a move/copy target. Location: the iCloud Postcards Documents folder when the
+    /// ubiquity container is available — so it syncs and shows up on other devices like
+    /// any collection dropped there — otherwise the local ImportedSources directory, the
+    /// same place imports live, so `LibraryModel` restores it at the next launch.
+    /// Registered as a source immediately either way; a filename collision errors rather
+    /// than overwriting (keeping the title dialog simple).
+    private func createCollection(titled title: String) async throws -> WritableCollection {
+        let filename = CollectionNaming.filename(forTitle: title)
+        let directory: URL
+        if cloudLibrary.containerState == .available, let documents = cloudLibrary.documentsURL {
+            directory = documents
+        } else {
+            directory = LibraryModel.defaultImportDirectory
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let url = directory.appending(path: filename)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw NewCollectionError(errorDescription: "A collection file named “\(filename)” already exists.")
+        }
+
+        try await GoCore.shared.createCollection(at: url.path, title: title.trimmingCharacters(in: .whitespacesAndNewlines))
+        library.registerCollection(at: url)
+        return WritableCollection(path: url.path, displayName: CollectionNaming.stem(forTitle: title))
+    }
+
     /// DEBUG-only hook for UI tests: `-uitest-import <path>` runs the real import
     /// pipeline at launch, standing in for the un-automatable system file picker.
     private func runAutomationHookIfRequested() async {
@@ -323,9 +404,9 @@ struct LibraryView: View {
     }
 
     /// Replaces the Go `Library`'s source set with every collection/bare file currently
-    /// known — bundled, imported, and fully-downloaded cloud items — so "Everywhere"
-    /// search fans out across all of them.
-    private func syncEverywhereSearchSources() async {
+    /// known — imported and fully-downloaded cloud items — so "All collections" search
+    /// fans out across all of them (see `AllCollectionsView`).
+    private func syncLibrarySearchSources() async {
         var collections: [String] = []
         var cardFiles: [String] = []
 
@@ -333,7 +414,7 @@ struct LibraryView: View {
             switch source {
             case .collection(let path, _): collections.append(path)
             case .cardFile(let path, _): cardFiles.append(path)
-            case .singlePostcards: break
+            case .singlePostcards, .allCollections: break
             }
         }
         for item in cloudLibrary.items where item.downloadState == .current {
@@ -345,18 +426,6 @@ struct LibraryView: View {
         }
 
         try? await GoCore.shared.setLibrarySources(collections: collections, cardFiles: cardFiles)
-    }
-
-    /// Resolves a source path (from a `LibraryHit`) to a display name for grouping
-    /// "Everywhere" results, across all three places a source can come from.
-    private func displayName(forSourcePath path: String) -> String {
-        if let match = library.sources.first(where: { $0.path == path }) {
-            return match.displayName
-        }
-        if let match = cloudLibrary.items.first(where: { $0.path == path }) {
-            return match.displayName
-        }
-        return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
     }
 }
 

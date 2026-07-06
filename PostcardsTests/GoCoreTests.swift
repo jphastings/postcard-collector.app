@@ -112,4 +112,36 @@ final class GoCoreTests: XCTestCase {
         let cardsAfterFailedMove = try await GoCore.shared.cardSummaries(inCollectionAt: sourcePath)
         XCTAssertEqual(cardsAfterFailedMove.map(\.name), [sourceCard.name], "a failed move must leave the source untouched")
     }
+
+    // MARK: - Bare-file search
+
+    /// Materialises the fixture's lefthand-card as a bare `.postcard.jpeg` file in a fresh
+    /// temp directory (bare-file behaviour with real bytes, no bundled bare fixture needed).
+    private func makeBareLefthandCard() async throws -> URL {
+        let directory = try makeTempCollectionPath().deletingLastPathComponent()
+        let data = try await GoCore.shared.image(forCard: "lefthand-card", inCollectionAt: try fixturePath())
+        let bareURL = directory.appending(path: "lefthand-card.postcard.jpeg")
+        try data.write(to: bareURL)
+        return bareURL
+    }
+
+    /// Single postcards' search goes through the Go core (`searchCardFiles`), so its
+    /// "searchable text" matches collection FTS — including TRANSCRIPTIONS, which the old
+    /// client-side `CardSummary` filter could never see. The fixture's lefthand-card
+    /// carries "Grüße aus Berlin!" only in its back transcription.
+    func testBareFileSearchMatchesTranscriptionText() async throws {
+        let bareURL = try await makeBareLefthandCard()
+
+        let hits = try await GoCore.shared.searchCardFiles(paths: [bareURL.path], query: "Grüße aus")
+
+        XCTAssertEqual(hits.map(\.card.name), ["lefthand-card"], "transcription text must be searchable for bare files")
+        XCTAssertEqual(hits.first?.source, bareURL.path)
+    }
+
+    func testBareFileSearchMissReturnsNoHits() async throws {
+        let bareURL = try await makeBareLefthandCard()
+
+        let hits = try await GoCore.shared.searchCardFiles(paths: [bareURL.path], query: "zzz-no-such-text")
+        XCTAssertTrue(hits.isEmpty)
+    }
 }

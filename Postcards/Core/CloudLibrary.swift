@@ -98,6 +98,10 @@ final class CloudLibrary {
 
     private(set) var containerState: ContainerState = .resolving
     private(set) var items: [CloudItem] = []
+    /// The container's Documents folder (the visible "Postcards" folder in iCloud Drive),
+    /// once resolved — where the "New collection…" flow creates files when iCloud is
+    /// available, so they sync like any other dropped-in collection.
+    private(set) var documentsURL: URL?
 
     private let containerIdentifier: String
     private var query: NSMetadataQuery?
@@ -123,11 +127,12 @@ final class CloudLibrary {
             return documents
         }.value
 
-        guard documentsURL != nil else {
+        guard let documentsURL else {
             containerState = .unavailable
             return
         }
 
+        self.documentsURL = documentsURL
         containerState = .available
         startQuery()
     }

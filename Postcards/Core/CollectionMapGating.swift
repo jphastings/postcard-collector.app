@@ -1,4 +1,3 @@
-import CoreGraphics
 import CoreLocation
 
 /// Whether a collection has anything worth putting on a map, and what to put there — kept
@@ -14,26 +13,5 @@ enum CollectionMapGating {
     /// `MapRegionFitting` or counting pins.
     static func coordinates(in cards: [CardSummary]) -> [CLLocationCoordinate2D] {
         cards.compactMap(\.coordinate)
-    }
-}
-
-/// Sizing math for the compact card shown when a map pin is selected: `FlippableCardView`
-/// fits itself into whatever frame it's given, so this just picks that frame — the front ∪
-/// back bounding box (see `FlipGeometry.boundingSize`), scaled so its longer side matches
-/// `targetLongestSide`.
-enum MiniCardSizing {
-    static let defaultTargetLongestSide: CGFloat = 180
-
-    static func frameSize(
-        forFrontSize frontSize: CGSize,
-        flip: Flip,
-        targetLongestSide: CGFloat = defaultTargetLongestSide
-    ) -> CGSize {
-        let bounding = FlipGeometry.boundingSize(forFrontSize: frontSize, flip: flip)
-        guard bounding.width > 0, bounding.height > 0 else {
-            return CGSize(width: targetLongestSide, height: targetLongestSide)
-        }
-        let scale = targetLongestSide / max(bounding.width, bounding.height)
-        return CGSize(width: bounding.width * scale, height: bounding.height * scale)
     }
 }

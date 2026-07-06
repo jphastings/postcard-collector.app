@@ -10,6 +10,9 @@ enum LibrarySource: Identifiable, Hashable {
     /// `CloudLibrary.items`; it only ever appears as the sidebar's pinned last row, so it
     /// can be `List(selection:)`'s tag like any other source.
     case singlePostcards
+    /// Also synthetic: the sidebar's pinned FIRST row, showing the union of every card
+    /// from every known source at once (see `AllCollectionsView`).
+    case allCollections
 
     var id: String { path }
 
@@ -18,6 +21,7 @@ enum LibrarySource: Identifiable, Hashable {
         case .collection(let path, _): return path
         case .cardFile(let path, _): return path
         case .singlePostcards: return "single-postcards://aggregate"
+        case .allCollections: return "all-collections://aggregate"
         }
     }
 
@@ -26,6 +30,7 @@ enum LibrarySource: Identifiable, Hashable {
         case .collection(_, let name): return name
         case .cardFile(_, let name): return name
         case .singlePostcards: return "Single postcards"
+        case .allCollections: return "All collections"
         }
     }
 
@@ -46,6 +51,13 @@ struct WritableCollection: Identifiable, Hashable {
     var id: String { path }
 }
 
+/// Which of the two card-transfer context-menu actions a "New collection…" prompt should
+/// perform once the collection exists.
+enum CardTransferAction {
+    case move
+    case copy
+}
+
 /// A single card, addressable back to the source it came from — either one card among
 /// many in a collection, or the sole card in a bare file.
 enum CardReference: Identifiable, Hashable {
@@ -63,6 +75,15 @@ enum CardReference: Identifiable, Hashable {
         switch self {
         case .inCollection(_, let summary): return summary
         case .bareFile(_, let summary): return summary
+        }
+    }
+
+    /// The path of the file this card lives in — the collection file, or the bare file
+    /// itself.
+    var sourcePath: String {
+        switch self {
+        case .inCollection(let path, _): return path
+        case .bareFile(let path, _): return path
         }
     }
 

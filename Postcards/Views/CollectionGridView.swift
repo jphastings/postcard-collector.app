@@ -15,42 +15,29 @@ final class ThumbnailCache {
     }
 }
 
-/// The two scopes `CollectionGridView`'s search bar offers: the FTS index of just this
-/// collection, or the cross-source Go `Library` fan-out over every currently-known
-/// collection and bare card file (kept in sync by `LibraryView`).
-enum GridSearchScope: String, CaseIterable, Hashable {
-    case thisCollection = "This Collection"
-    case everywhere = "Everywhere"
-}
-
-private struct SearchKey: Equatable {
-    var text: String
-    var scope: GridSearchScope
-}
-
-/// A grid of every card in a collection, searchable via the collection's FTS index or,
-/// with the "Everywhere" scope, the cross-source Go `Library`. Cell aspect ratios come
-/// from `CardSummary.frontPxW/H` alone, so the grid can lay itself out without decoding
-/// any image data.
+/// A masonry grid of every card in one collection, searchable via the collection's FTS
+/// index (the Go core's one definition of searchable text: names, people, locations,
+/// descriptions, transcriptions, context). Cross-source search lives with the sidebar's
+/// "All collections" row (see `AllCollectionsView`), not here — the sidebar picks the
+/// scope, this pane lists the matches. Cell aspect ratios come from
+/// `CardSummary.frontPxW/H` alone, so the grid lays itself out without decoding images.
 struct CollectionGridView: View {
     let source: LibrarySource
     @Binding var selection: CardReference?
-    /// Resolves a `LibraryHit.source` path to a display name for grouping "Everywhere"
-    /// results — sources can be bundled, imported, or iCloud, so `LibraryView` supplies
-    /// this rather than `CollectionGridView` needing to know about every kind.
-    var resolveSourceName: (String) -> String = { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
     /// Every collection a card can be moved/copied into (Feature 4), for the grid cells'
     /// context menus — excludes this collection itself at the point of use.
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
+    /// Creates a new, empty collection for the context menus' "New collection…" action
+    /// and returns it as a move/copy target — supplied by `LibraryView`, which owns where
+    /// new collections live (iCloud vs local) and source registration.
+    var onCreateCollection: ((String) async throws -> WritableCollection)?
 
     /// `nil` until the first load/search completes; distinguishes "still loading" from a
     /// collection or search that has genuinely returned zero cards.
     @State private var cards: [CardSummary]?
     @State private var title: String?
     @State private var searchText = ""
-    @State private var searchScope = GridSearchScope.thisCollection
-    @State private var libraryHits: [LibraryHit] = []
     @State private var loadError: String?
     @State private var loadErrorTitle = "Couldn't open collection"
     @State private var actionError: String?
@@ -60,8 +47,8 @@ struct CollectionGridView: View {
     /// can narrow `cards` to a search-filtered subset) so it always reflects the whole
     /// collection, not whatever's currently displayed.
     @State private var hasAnyLocation = false
-
-    private let columns = [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 16)]
+    @State private var newCollectionPrompt: NewCollectionPrompt?
+    @State private var newCollectionTitle = ""
 
     var body: some View {
         Group {
@@ -77,31 +64,25 @@ struct CollectionGridView: View {
                 } else {
                     ProgressView()
                 }
-            } else if searchScope == .everywhere && !searchText.isEmpty {
-                EverywhereResultsList(hits: libraryHits, selection: $selection, resolveSourceName: resolveSourceName)
             } else if let cards {
                 if cards.isEmpty {
                     emptyState
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(cards) { card in
-                                Button {
-                                    selection = .inCollection(path: source.path, summary: card)
-                                } label: {
-                                    GridCell(
-                                        source: source,
-                                        card: card,
-                                        writableCollections: writableCollections.filter { $0.path != source.path },
-                                        onCopy: { card, target in Task { await copyCard(card, to: target) } },
-                                        onMove: { card, target in Task { await moveCard(card, to: target) } },
-                                        onRemove: { card in Task { await removeFromCollection(card) } }
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
+                    MasonryGrid(items: cards, aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) }) { card in
+                        Button {
+                            selection = .inCollection(path: source.path, summary: card)
+                        } label: {
+                            GridCell(
+                                source: source,
+                                card: card,
+                                writableCollections: writableCollections.filter { $0.path != source.path },
+                                onCopy: { card, target in Task { await copyCard(card, to: target) } },
+                                onMove: { card, target in Task { await moveCard(card, to: target) } },
+                                onNewCollection: { card, action in promptForNewCollection(card: card, action: action) },
+                                onRemove: { card in Task { await removeFromCollection(card) } }
+                            )
                         }
-                        .padding()
+                        .buttonStyle(.plain)
                     }
                 }
             } else {
@@ -114,24 +95,12 @@ struct CollectionGridView: View {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        // Search narrows the same `cards` array both the grid and the map read from, so
+        // map pins are filtered by an active search too.
         .searchable(text: $searchText, prompt: "Search this collection")
-        .searchScopes($searchScope) {
-            // The "Everywhere" scope fans out across every known source, which doesn't map
-            // onto a single collection's pins — hidden in map mode rather than built out,
-            // since "This Collection" search already keeps working there for free (it just
-            // narrows the same `cards` array the map reads from).
-            if viewMode == .grid {
-                ForEach(GridSearchScope.allCases, id: \.self) { scope in
-                    Text(scope.rawValue).tag(scope)
-                }
-            }
-        }
         .task(id: source.id) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
-        .task(id: SearchKey(text: searchText, scope: searchScope)) { await search() }
-        .onChange(of: viewMode) { _, newMode in
-            if newMode == .map { searchScope = .thisCollection }
-        }
+        .task(id: searchText) { await search() }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -139,6 +108,9 @@ struct CollectionGridView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(actionError ?? "")
+        }
+        .newCollectionAlert(prompt: $newCollectionPrompt, title: $newCollectionTitle) { prompt, collectionTitle in
+            await createCollectionAndTransfer(prompt, title: collectionTitle)
         }
     }
 
@@ -178,26 +150,15 @@ struct CollectionGridView: View {
 
     private func search() async {
         guard !searchText.isEmpty else {
-            libraryHits = []
             await loadCards()
             return
         }
         loadError = nil
-        switch searchScope {
-        case .thisCollection:
-            do {
-                cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
-            } catch {
-                loadErrorTitle = "Search failed"
-                loadError = error.localizedDescription
-            }
-        case .everywhere:
-            do {
-                libraryHits = try await GoCore.shared.searchLibrary(query: searchText)
-            } catch {
-                loadErrorTitle = "Search failed"
-                loadError = error.localizedDescription
-            }
+        do {
+            cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
+        } catch {
+            loadErrorTitle = "Search failed"
+            loadError = error.localizedDescription
         }
     }
 
@@ -246,49 +207,59 @@ struct CollectionGridView: View {
             actionError = error.localizedDescription
         }
     }
-}
 
-/// "Everywhere" search results, grouped by source in the same order the Go `Library`
-/// returned them (collection hits ranked within each collection, then bare-file hits).
-private struct EverywhereResultsList: View {
-    let hits: [LibraryHit]
-    @Binding var selection: CardReference?
-    let resolveSourceName: (String) -> String
+    // MARK: - New collection…
 
-    private var groupedBySource: [(source: String, hits: [LibraryHit])] {
-        var order: [String] = []
-        var bySource: [String: [LibraryHit]] = [:]
-        for hit in hits {
-            if bySource[hit.source] == nil { order.append(hit.source) }
-            bySource[hit.source, default: []].append(hit)
-        }
-        return order.map { ($0, bySource[$0] ?? []) }
+    private func promptForNewCollection(card: CardSummary, action: CardTransferAction) {
+        newCollectionTitle = ""
+        newCollectionPrompt = NewCollectionPrompt(card: card, action: action)
     }
 
-    var body: some View {
-        if hits.isEmpty {
-            ContentUnavailableView.search
-        } else {
-            List {
-                ForEach(groupedBySource, id: \.source) { group in
-                    Section(resolveSourceName(group.source)) {
-                        ForEach(group.hits) { hit in
-                            Button {
-                                selection = CardReference(hit: hit)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(hit.card.name).font(.headline)
-                                    Text(hit.snippet)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+    private func createCollectionAndTransfer(_ prompt: NewCollectionPrompt, title: String) async {
+        guard let onCreateCollection else { return }
+        do {
+            let target = try await onCreateCollection(title)
+            switch prompt.action {
+            case .move: await moveCard(prompt.card, to: target)
+            case .copy: await copyCard(prompt.card, to: target)
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+}
+
+/// The pending "New collection…" context-menu action: which card to transfer, and how,
+/// once the user has entered a title.
+struct NewCollectionPrompt {
+    var card: CardSummary
+    var action: CardTransferAction
+    /// For bare-file sources only (`SinglePostcardsGridView`): the file the card lives in.
+    var barePath: String?
+}
+
+extension View {
+    /// The shared "New collection…" title prompt: an alert with a text field, run by both
+    /// grid views. `perform` receives the pending transfer and the entered title.
+    func newCollectionAlert(
+        prompt: Binding<NewCollectionPrompt?>,
+        title: Binding<String>,
+        perform: @escaping (NewCollectionPrompt, String) async -> Void
+    ) -> some View {
+        alert(
+            "New Collection",
+            isPresented: Binding(get: { prompt.wrappedValue != nil }, set: { if !$0 { prompt.wrappedValue = nil } })
+        ) {
+            TextField("Title", text: title)
+            Button("Create") {
+                if let pending = prompt.wrappedValue {
+                    let collectionTitle = title.wrappedValue
+                    Task { await perform(pending, collectionTitle) }
                 }
             }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The postcard will be added to the new collection.")
         }
     }
 }
@@ -305,6 +276,7 @@ private struct GridCell: View {
     var writableCollections: [WritableCollection] = []
     var onCopy: (CardSummary, WritableCollection) -> Void = { _, _ in }
     var onMove: (CardSummary, WritableCollection) -> Void = { _, _ in }
+    var onNewCollection: (CardSummary, CardTransferAction) -> Void = { _, _ in }
     var onRemove: (CardSummary) -> Void = { _ in }
 
     @State private var thumbnail: PlatformImage?
@@ -330,17 +302,19 @@ private struct GridCell: View {
         .task(id: card.id) { await loadFrontDescription() }
         .contextMenu {
             Menu("Move to Collection…") {
+                Button("New collection…") { onNewCollection(card, .move) }
+                Divider()
                 ForEach(writableCollections) { target in
                     Button(target.displayName) { onMove(card, target) }
                 }
             }
-            .disabled(writableCollections.isEmpty)
             Menu("Copy to Collection…") {
+                Button("New collection…") { onNewCollection(card, .copy) }
+                Divider()
                 ForEach(writableCollections) { target in
                     Button(target.displayName) { onCopy(card, target) }
                 }
             }
-            .disabled(writableCollections.isEmpty)
             Divider()
             Button("Remove from Collection…", role: .destructive) { confirmingRemoval = true }
         }

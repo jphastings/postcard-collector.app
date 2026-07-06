@@ -135,6 +135,13 @@ final class LibraryModel {
         }
     }
 
+    /// Adds a just-created collection file (the "New collection…" flow) as a source
+    /// immediately — unlike `importSources` there's nothing to copy or validate, because
+    /// the file was created in place by `GoCore.createCollection` a moment ago.
+    func registerCollection(at url: URL) {
+        upsert(.collection(path: url.path, displayName: Self.displayName(for: url)))
+    }
+
     private func upsert(_ source: LibrarySource) {
         if let existing = sources.firstIndex(where: { $0.path == source.path }) {
             sources[existing] = source

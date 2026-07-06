@@ -213,7 +213,7 @@ actor GoCore {
 
     // MARK: - Cross-source library search
 
-    /// Replaces the set of sources the "Everywhere" search scope fans out across.
+    /// Replaces the set of sources the "All collections" search fans out across.
     func setLibrarySources(collections collectionPaths: [String], cardFiles cardFilePaths: [String]) throws {
         let payload = LibrarySourcesPayload(collections: collectionPaths, cards: cardFilePaths)
         let data = try JSONEncoder().encode(payload)
@@ -224,6 +224,20 @@ actor GoCore {
     func searchLibrary(query: String) throws -> [LibraryHit] {
         let json = try Self.call({ library.searchJSON(query, error: $0) })
         return try Self.decode([LibraryHit].self, from: json, context: "searching the library")
+    }
+
+    /// Searches ONLY the given bare `.postcard.*` files, via a transient Go `Library`
+    /// scoped to a cards-only source list — the shared `library`'s cross-source fan-out is
+    /// untouched. Exists so Single postcards' search shares the Go core's one definition
+    /// of a card's searchable text (descriptions, transcriptions, sender, location, …)
+    /// instead of a client-side filter over `CardSummary`'s few fields.
+    func searchCardFiles(paths: [String], query: String) throws -> [LibraryHit] {
+        let transient = AppcoreNewLibrary()!
+        let payload = LibrarySourcesPayload(collections: [], cards: paths)
+        let data = try JSONEncoder().encode(payload)
+        try transient.setSourcesJSON(String(decoding: data, as: UTF8.self))
+        let json = try Self.call({ transient.searchJSON(query, error: $0) })
+        return try Self.decode([LibraryHit].self, from: json, context: "searching bare card files")
     }
 
     // MARK: - JSON
