@@ -9,11 +9,15 @@ publish macOS + iOS artifacts to a GitHub Release — but only once you've added
 unsigned artifacts (an unsigned `.app.zip` on macOS, an unsigned iOS Simulator `.app.zip`
 instead of a TestFlight upload).
 
-Because the app uses iCloud — a *restricted* entitlement that manually installed provisioning
-profiles can't carry — signing uses Xcode's cloud-managed automatic signing
-(`-allowProvisioningUpdates` plus an App Store Connect API key), which creates/fetches profiles
-with the iCloud capability on the fly. This means the `ASC_*` secrets are required for signed
-builds of **both** platforms, not just the TestFlight upload.
+## One-time prerequisite: iCloud on the App IDs
+
+The app uses iCloud, a *capability* that must be enabled on each App ID in the developer
+portal before any provisioning profile can carry the entitlement. Under
+[Certificates, Identifiers & Profiles → Identifiers](https://developer.apple.com/account/resources/identifiers/list),
+edit both App IDs — `org.dotpostcard.collector` (iOS) and `org.dotpostcard.collector.mac`
+(macOS) — and enable **iCloud** (CloudKit/CloudDocuments) with the
+`iCloud.org.dotpostcard.collector` container. Any profile generated *before* this was enabled
+is invalid for this app: regenerate and re-download profiles after changing a capability.
 
 ## Repo secrets
 
@@ -25,6 +29,7 @@ Add these under **Settings → Secrets and variables → Actions**.
 | --- | --- |
 | `BUILD_CERTIFICATE_BASE64` | Your **Developer ID Application** certificate + private key, exported as a `.p12`, base64-encoded. |
 | `P12_PASSWORD` | The password you set when exporting the `.p12`. |
+| `MACOS_PROVISIONING_PROFILE_BASE64` | A **Developer ID** provisioning profile for `org.dotpostcard.collector.mac`, base64-encoded. |
 | `KEYCHAIN_PASSWORD` | Any password — used only to lock/unlock the throwaway CI keychain. Reused by the iOS job too. |
 
 **Exporting the certificate:**
@@ -37,6 +42,16 @@ If you don't have a Developer ID Application certificate yet, create one at
 [developer.apple.com → Certificates](https://developer.apple.com/account/resources/certificates/list)
 (type: "Developer ID Application"), download it, double-click to install it into your login
 keychain, then export as above.
+
+**Provisioning profile:** [developer.apple.com → Profiles](https://developer.apple.com/account/resources/profiles/list) →
+create a profile of type **Developer ID** (under "Distribution") for the
+`org.dotpostcard.collector.mac` App ID — this must be done *after* enabling iCloud on the App
+ID (see prerequisite above) or the profile won't carry the entitlement. Download the
+`.provisionprofile`, then:
+
+```sh
+base64 -i Postcards_Developer_ID.provisionprofile | pbcopy
+```
 
 ### Notarization (App Store Connect API key)
 
@@ -60,11 +75,19 @@ base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 | --- | --- |
 | `IOS_DIST_CERTIFICATE_BASE64` | Your **Apple Distribution** certificate + private key, exported as a `.p12`, base64-encoded (same export process as the macOS cert above, different certificate type). |
 | `IOS_P12_PASSWORD` | The password for that `.p12`. |
+| `IOS_PROVISIONING_PROFILE_BASE64` | An **App Store** provisioning profile for `org.dotpostcard.collector`, base64-encoded. |
 
-No provisioning profile secret is needed: cloud signing fetches/creates the profile itself.
-If you previously added `IOS_PROVISIONING_PROFILE_BASE64`, it's now unused and can be deleted.
+**Provisioning profile:** [developer.apple.com → Profiles](https://developer.apple.com/account/resources/profiles/list) →
+create an "App Store" distribution profile for the `org.dotpostcard.collector` App ID.
+As with the macOS profile, it must be (re)generated *after* enabling iCloud on the App ID —
+a profile created before that won't match the app's iCloud entitlements and the archive will
+fail. Download the `.mobileprovision`, then:
 
-### Cloud signing & TestFlight upload (App Store Connect API key)
+```sh
+base64 -i Postcards_App_Store.mobileprovision | pbcopy
+```
+
+### TestFlight upload (App Store Connect API key)
 
 | Secret | What it is |
 | --- | --- |
@@ -79,16 +102,11 @@ This is the same App Store Connect API key mechanism as the `NOTARY_*` secrets �
 builds may need **App Manager** depending on your team's setup — if uploads are rejected as
 unauthorized, mint a second key with the App Manager role for `ASC_*`.
 
-These secrets do double duty:
-
-- **Both platforms** archive with cloud-managed automatic signing
-  (`-allowProvisioningUpdates` + this key), so Xcode can provision the restricted iCloud
-  entitlement. Without `ASC_*`, both platforms fall back to unsigned artifacts, even if the
-  certificates are present.
-- **iOS** additionally exports with `method: app-store-connect` + `destination: upload`, which
-  sends the build straight to TestFlight instead of writing an `.ipa` — so no iOS file is
-  attached to the GitHub Release on the signed path; the upload is noted in the workflow's
-  step summary.
+Signing itself is fully manual (certificates + the installed profiles above); this key is only
+the **upload transport** for TestFlight. The signed iOS path exports with
+`method: app-store-connect` + `destination: upload`, which sends the build straight to
+TestFlight instead of writing an `.ipa` — so no iOS file is attached to the GitHub Release on
+the signed path; the upload is noted in the workflow's step summary.
 
 Before the first upload can succeed, the app must exist in App Store Connect: go to
 [App Store Connect → My Apps → +](https://appstoreconnect.apple.com/apps) and register
@@ -108,9 +126,9 @@ release notes and whatever artifacts the available secrets allow:
 | Secrets present | macOS artifact | iOS artifact |
 | --- | --- | --- |
 | None | `Postcards-macOS.zip` (unsigned `.app`) | `Postcards-iOS-simulator.zip` (unsigned Simulator build) |
-| ASC key + macOS cert | `Postcards-macOS.zip` (Developer ID signed, not notarized) | `Postcards-iOS-simulator.zip` |
-| ASC key + macOS cert + notary key | `Postcards-macOS.zip` (signed, notarized, stapled) | `Postcards-iOS-simulator.zip` |
-| ASC key + both certs + notary key | (as above) | Uploaded to TestFlight — no iOS file on the release (see step summary) |
+| macOS cert + macOS profile | `Postcards-macOS.zip` (Developer ID signed, not notarized) | `Postcards-iOS-simulator.zip` |
+| + notary key | `Postcards-macOS.zip` (signed, notarized, stapled) | `Postcards-iOS-simulator.zip` |
+| + iOS cert + iOS profile + ASC key | (as above) | Uploaded to TestFlight — no iOS file on the release (see step summary) |
 
 ## Bumping the pinned dotpostcard ref
 
