@@ -111,4 +111,87 @@ final class MapPinClusteringTests: XCTestCase {
         XCTAssertEqual(centroid?.latitude ?? .nan, 20, accuracy: 0.0001)
         XCTAssertEqual(centroid?.longitude ?? .nan, 40, accuracy: 0.0001)
     }
+
+    // MARK: - Membership (representative choice)
+
+    private struct Card: Identifiable, Equatable {
+        var id: String
+    }
+
+    func testFirstMemberOfEachGroupIsTheRepresentative() {
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), elements: [Card(id: "c")]),
+        ]
+        let membership = MapPinClustering.membership(of: groups)
+
+        XCTAssertEqual(membership["a"]?.isRepresentative, true)
+        XCTAssertEqual(membership["b"]?.isRepresentative, false)
+        XCTAssertEqual(membership["c"]?.isRepresentative, true, "a singleton is always its own representative")
+    }
+
+    func testMembershipMapsEveryElementToItsOwnGroup() {
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+        ]
+        let membership = MapPinClustering.membership(of: groups)
+        XCTAssertEqual(membership["a"]?.group.elements.map(\.id), ["a", "b"])
+        XCTAssertEqual(membership["b"]?.group.elements.map(\.id), ["a", "b"])
+        XCTAssertNil(membership["unknown"])
+    }
+
+    // MARK: - Offsets (cluster split/merge glide)
+
+    func testSingletonGroupHasZeroOffset() {
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), elements: [Card(id: "a")]),
+        ]
+        let offsets = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { _ in CGPoint(x: 10, y: 10) },
+            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 10) }
+        )
+        XCTAssertEqual(offsets["a"], .zero)
+    }
+
+    func testClusteredMembersOffsetTowardTheSharedCentroid() {
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+        ]
+        let points: [String: CGPoint] = ["a": CGPoint(x: 0, y: 0), "b": CGPoint(x: 20, y: 0)]
+        let offsets = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { points[$0.id] },
+            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 0) }
+        )
+        XCTAssertEqual(offsets["a"], CGSize(width: 10, height: 0))
+        XCTAssertEqual(offsets["b"], CGSize(width: -10, height: 0))
+    }
+
+    func testUnprojectableMemberIsOmittedRatherThanZero() {
+        // The view treats a missing entry as `.zero`, but the pure function itself must
+        // distinguish "couldn't project" from "happens to need no nudge" — otherwise a
+        // genuinely off-screen member could get a wrong, confidently-computed offset.
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a")]),
+        ]
+        let offsets = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { _ in nil },
+            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 0) }
+        )
+        XCTAssertNil(offsets["a"])
+    }
+
+    func testUnprojectableCentroidOmitsTheWholeGroup() {
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+        ]
+        let offsets = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { _ in CGPoint(x: 0, y: 0) },
+            projectedCentroidPoint: { _ in nil }
+        )
+        XCTAssertTrue(offsets.isEmpty)
+    }
 }

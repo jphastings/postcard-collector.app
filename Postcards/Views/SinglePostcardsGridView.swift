@@ -57,6 +57,7 @@ struct SinglePostcardsGridView: View {
                             BareGridCell(
                                 path: entry.reference.sourcePath,
                                 card: entry.summary,
+                                isSelected: selection == entry.reference,
                                 writableCollections: writableCollections,
                                 onCopy: { card, target in Task { await copyCard(entry.reference.sourcePath, card, to: target) } },
                                 onMove: { card, target in Task { await moveCard(entry.reference.sourcePath, card, to: target) } },
@@ -220,6 +221,7 @@ struct SinglePostcardsGridView: View {
 private struct BareGridCell: View {
     let path: String
     let card: CardSummary
+    var isSelected: Bool = false
     var writableCollections: [WritableCollection] = []
     var onCopy: (CardSummary, WritableCollection) -> Void = { _, _ in }
     var onMove: (CardSummary, WritableCollection) -> Void = { _, _ in }
@@ -241,6 +243,8 @@ private struct BareGridCell: View {
         }
         .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
+        .thumbnailHoverParallax()
+        .gridSelectionHighlight(isSelected)
         .accessibilityLabel(card.name)
         .accessibilityIdentifier(card.name)
         .task(id: path) { await loadThumbnail() }

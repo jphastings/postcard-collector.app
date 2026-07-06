@@ -52,7 +52,7 @@ struct AllCollectionsView: View {
                         Button {
                             selection = entry.reference
                         } label: {
-                            UnionGridCell(entry: entry)
+                            UnionGridCell(entry: entry, isSelected: selection == entry.reference)
                         }
                         .buttonStyle(.plain)
                     }
@@ -135,6 +135,7 @@ struct AllCollectionsView: View {
 /// unambiguous.
 private struct UnionGridCell: View {
     let entry: MapCardEntry
+    var isSelected: Bool = false
 
     @State private var thumbnail: PlatformImage?
 
@@ -150,6 +151,8 @@ private struct UnionGridCell: View {
         }
         .aspectRatio(CGFloat(entry.summary.frontPxW) / CGFloat(max(entry.summary.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
+        .thumbnailHoverParallax()
+        .gridSelectionHighlight(isSelected)
         .accessibilityLabel(entry.summary.name)
         .accessibilityIdentifier(entry.summary.name)
         .task(id: entry.id) { await loadThumbnail() }

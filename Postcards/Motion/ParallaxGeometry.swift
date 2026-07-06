@@ -49,7 +49,11 @@ enum ParallaxGeometry {
     /// positive `Tilt.y` recedes the card's TOP edge while SwiftUI's y grows downward —
     /// without the flip, the top edge would come nearer under the pointer while the left
     /// and right edges recede, making the two axes feel inconsistent.
-    static func tilt(hoverLocation: CGPoint, in size: CGSize, reduceMotion: Bool = false) -> Tilt {
+    ///
+    /// `maxDegrees` defaults to the type's own constant (the card-detail flip's lean) but
+    /// callers with a smaller/subtler use in mind — e.g. grid thumbnail hover — can pass a
+    /// reduced cap; the mapping and clamping behaviour are otherwise identical.
+    static func tilt(hoverLocation: CGPoint, in size: CGSize, reduceMotion: Bool = false, maxDegrees: Double = Self.maxDegrees) -> Tilt {
         guard !reduceMotion, size.width > 0, size.height > 0 else { return .zero }
         let normalizedX = (hoverLocation.x / size.width) * 2 - 1
         let normalizedY = (hoverLocation.y / size.height) * 2 - 1

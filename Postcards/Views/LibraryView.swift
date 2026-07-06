@@ -137,7 +137,20 @@ struct LibraryView: View {
             if let selectedCard {
                 CardDetailView(reference: selectedCard)
             } else {
+                // Carries the SAME `.primaryAction` toolbar slot as `CardDetailView`'s Info
+                // button (disabled, since there's no card to show info for) so a
+                // `NavigationSplitView`'s per-column toolbar merge sees an identical detail
+                // column contribution whether or not a card is selected — otherwise the
+                // content column's own toolbar items (e.g. `CollectionModeSwitcher`) shift
+                // position depending on what the detail column happens to contain (see that
+                // type's doc comment).
                 ContentUnavailableView("Select a Postcard", systemImage: "photo")
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Info", systemImage: "info.circle") {}
+                                .disabled(true)
+                        }
+                    }
             }
         }
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.

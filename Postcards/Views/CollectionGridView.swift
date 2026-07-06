@@ -75,6 +75,7 @@ struct CollectionGridView: View {
                             GridCell(
                                 source: source,
                                 card: card,
+                                isSelected: selection == .inCollection(path: source.path, summary: card),
                                 writableCollections: writableCollections.filter { $0.path != source.path },
                                 onCopy: { card, target in Task { await copyCard(card, to: target) } },
                                 onMove: { card, target in Task { await moveCard(card, to: target) } },
@@ -273,6 +274,7 @@ extension View {
 private struct GridCell: View {
     let source: LibrarySource
     let card: CardSummary
+    var isSelected: Bool = false
     var writableCollections: [WritableCollection] = []
     var onCopy: (CardSummary, WritableCollection) -> Void = { _, _ in }
     var onMove: (CardSummary, WritableCollection) -> Void = { _, _ in }
@@ -295,6 +297,8 @@ private struct GridCell: View {
         }
         .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
+        .thumbnailHoverParallax()
+        .gridSelectionHighlight(isSelected)
         .accessibilityLabel(frontDescription ?? card.name)
         // Stable machine-facing handle for UI tests; the label above stays human-readable.
         .accessibilityIdentifier(card.name)

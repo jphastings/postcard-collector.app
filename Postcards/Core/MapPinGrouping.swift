@@ -121,6 +121,48 @@ enum MapPinClustering {
             longitude: coordinates.map(\.longitude).reduce(0, +) / Double(coordinates.count)
         )
     }
+
+    /// Every element's current cluster, keyed by element id, plus whether it's that
+    /// cluster's REPRESENTATIVE — its first member in stable order. Only the representative
+    /// draws a cluster's interactive content (tap target, hover tracking, name popover);
+    /// every other member still needs its own group to compute the visual nudge that lets
+    /// it glide correctly once the cluster splits (see `offsets(of:...)` below and
+    /// `CollectionMapView`'s doc comment).
+    static func membership<Element: Identifiable>(
+        of groups: [MapPinGroup<Element>]
+    ) -> [Element.ID: (group: MapPinGroup<Element>, isRepresentative: Bool)] {
+        var result: [Element.ID: (group: MapPinGroup<Element>, isRepresentative: Bool)] = [:]
+        for group in groups {
+            for (index, element) in group.elements.enumerated() {
+                result[element.id] = (group, index == 0)
+            }
+        }
+        return result
+    }
+
+    /// The screen-space nudge — from each cluster member's own projected point to its
+    /// cluster's shared centroid point — that visually draws every member of a cluster onto
+    /// one shared spot while their MapKit annotation stays anchored at their own true
+    /// coordinate. Kept pure (plain projection closures rather than a live `MapProxy`) so
+    /// the glide math is testable without hosting a map. A member missing from the result
+    /// (its own or its centroid's point isn't projectable — e.g. off-screen) should be
+    /// treated as `.zero` by the caller, leaving it at its true position until the next
+    /// camera settle re-projects it.
+    static func offsets<Element: Identifiable>(
+        of groups: [MapPinGroup<Element>],
+        projectedElementPoint: (Element) -> CGPoint?,
+        projectedCentroidPoint: (CLLocationCoordinate2D) -> CGPoint?
+    ) -> [Element.ID: CGSize] {
+        var result: [Element.ID: CGSize] = [:]
+        for group in groups {
+            guard let centroidPoint = projectedCentroidPoint(group.coordinate) else { continue }
+            for element in group.elements {
+                guard let ownPoint = projectedElementPoint(element) else { continue }
+                result[element.id] = CGSize(width: centroidPoint.x - ownPoint.x, height: centroidPoint.y - ownPoint.y)
+            }
+        }
+        return result
+    }
 }
 
 /// A pin click always navigates; on a multi-card pin, successive clicks rotate through the

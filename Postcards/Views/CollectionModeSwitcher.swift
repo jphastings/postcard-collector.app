@@ -28,6 +28,17 @@ enum CollectionViewMode: String, CaseIterable, Identifiable {
 /// column's "Info" button (SwiftUI merges a `NavigationSplitView`'s per-column
 /// `.primaryAction` toolbar items in column order, so putting this at `.primaryAction` in
 /// the content column lands it right before the detail column's own `.primaryAction` item).
+///
+/// That merge is sensitive to what the DETAIL column's toolbar contributes: with nothing
+/// selected, `LibraryView`'s "Select a Postcard" placeholder used to contribute no toolbar
+/// items at all, and the merge would then drag this control to the trailing edge next to
+/// the search field instead of sitting beside the (now absent) Info button — visibly
+/// detached from the content pane it controls, and inconsistent with every other selection
+/// state. An in-pane `safeAreaInset` header was tried and rejected: it isn't the native
+/// toolbar's liquid-glass material, and it stops the grid/map reaching the very top of the
+/// window. The fix that keeps a real toolbar item is instead on the DETAIL side: the
+/// placeholder now carries a disabled stand-in for the Info button (see `LibraryView`), so
+/// the content column's own toolbar items never have to shift regardless of selection.
 struct CollectionModeSwitcher: View {
     @Binding var mode: CollectionViewMode
     var isEnabled: Bool

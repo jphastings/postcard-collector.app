@@ -11,9 +11,34 @@ import SwiftUI
 /// Interaction: clicking a pin ALWAYS navigates — a single-card pin opens its card in the
 /// detail pane (same `selection` binding as tapping a grid cell); a multi-card pin rotates
 /// through its cards on successive clicks (see `MapPinRotation`) while raising a popover
-/// naming them all, with a checkmark on the open one. Tapping a name in the popover opens
-/// that card directly. On macOS popovers also show on hover (single pins too, as a name
-/// preview) and stay up while the pointer remains over the pin or any of the name rows.
+/// naming them all, with an accent-tinted row for the open one. Tapping a name in the
+/// popover opens that card directly. On macOS popovers also show on hover (single pins too,
+/// as a name preview) and stay up while the pointer remains over the pin or any of the name
+/// rows.
+///
+/// Cluster split/merge animation: every located card owns exactly ONE annotation, keyed by
+/// its OWN card id — that identity never changes, so SwiftUI never tears one down and
+/// creates another as clustering changes (which is what caused pins to "pop" instead of
+/// glide). Each annotation sits at its card's true coordinate always (so MapKit's own
+/// per-frame projection keeps it correctly placed through ordinary panning/zooming with no
+/// help needed), and carries an additional `.offset()` — computed in SCREEN POINTS from that
+/// card's true position to its current cluster's shared centroid — that visually nudges it
+/// on top of its cluster-mates. `.offset` is a plain, reliable SwiftUI animatable (unlike
+/// MapKit's own annotation-coordinate bridging, which does not reliably interpolate), so
+/// wrapping a recluster in `withAnimation` makes every affected pin glide smoothly between
+/// "at the shared centroid" and "at its own coordinate" — split and merge are the same
+/// animation, run in opposite directions.
+///
+/// Every card in a cluster renders the SAME plain pin glyph (and badge) unconditionally —
+/// not just a chosen "representative" — so that when a cluster splits every member's pin is
+/// already on screen and simply glides to its own position, rather than popping into
+/// existence at the destination once it stops being merged. Because they share one screen
+/// point while clustered, this reads as a single pin. Only the cluster's representative (its
+/// first member, stable order) additionally carries the interactive layer: the tap target,
+/// hover tracking, and the name popover. That interactive content is what invariant (a)
+/// below warns mis-composites when merely opacity-hidden inside a MapKit annotation, so
+/// non-representative members skip it structurally (no button, no popover) rather than
+/// mounting and hiding it.
 struct CollectionMapView: View {
     let entries: [MapCardEntry]
     @Binding var selection: CardReference?
@@ -25,6 +50,11 @@ struct CollectionMapView: View {
     /// The current zoom's screen-space clusters; `nil` until the first camera settle
     /// makes projection possible, when exact-coordinate grouping stands in.
     @State private var screenClusters: [MapPinGroup<MapCardEntry>]?
+    /// Each located card's current visual nudge (in points) from its own true coordinate to
+    /// its cluster's shared centroid — `.zero` for a singleton. Recomputed alongside
+    /// `screenClusters`; see the type's doc comment for why this drives the glide instead of
+    /// moving each annotation's actual MapKit coordinate.
+    @State private var pinOffsets: [String: CGSize] = [:]
     @State private var reclusterDebounce: Task<Void, Never>?
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
@@ -38,81 +68,115 @@ struct CollectionMapView: View {
         }
     }
 
+    private var locatedEntries: [MapCardEntry] {
+        entries.filter { $0.summary.coordinate != nil }
+    }
+
     private var groups: [MapPinGroup<MapCardEntry>] {
         screenClusters ?? MapPinGrouping.groups(of: entries) { $0.summary.coordinate }
     }
 
+    /// Each located card's current cluster, plus whether it's that cluster's representative
+    /// (its first member in stable order) — keyed by card id (see `MapPinClustering.membership`).
+    private var membership: [String: (group: MapPinGroup<MapCardEntry>, isRepresentative: Bool)] {
+        MapPinClustering.membership(of: groups)
+    }
+
     var body: some View {
-        MapReader { proxy in
-            Map(position: $cameraPosition) {
-                ForEach(groups) { group in
-                    // Qualified: `Models.swift` already declares its own `Annotation` (for
-                    // postcard transcriptions), which shadows MapKit's SwiftUI `Annotation`
-                    // content type in this module. The label builder is empty on purpose —
-                    // always-visible names under every pin were clutter; names live in the
-                    // popover instead.
-                    MapKit.Annotation(coordinate: group.coordinate, anchor: .bottom) {
-                        MapPinAnnotation(
-                            group: group,
-                            isOpen: openGroupID == group.id,
-                            selection: selection,
-                            onPinClick: { pinClicked(group) },
-                            onNameClick: { reference in
-                                selection = reference
-                                withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+        GeometryReader { geometry in
+            MapReader { proxy in
+                Map(position: $cameraPosition) {
+                    ForEach(locatedEntries) { entry in
+                        if let info = membership[entry.id], let coordinate = entry.summary.coordinate {
+                            // Qualified: `Models.swift` already declares its own
+                            // `Annotation` (for postcard transcriptions), which shadows
+                            // MapKit's SwiftUI `Annotation` content type in this module.
+                            // The label builder is empty on purpose — always-visible names
+                            // under every pin were clutter; names live in the popover
+                            // instead. The coordinate is always this CARD's own true
+                            // location (never a centroid) — see the type's doc comment.
+                            MapKit.Annotation(coordinate: coordinate, anchor: .bottom) {
+                                MapPinAnnotation(
+                                    group: info.group,
+                                    isRepresentative: info.isRepresentative,
+                                    isOpen: openGroupID == info.group.id,
+                                    selection: selection,
+                                    pinOffset: pinOffsets[entry.id] ?? .zero,
+                                    maxPopoverHeight: MapPopoverSizing.maxHeight(forAvailableHeight: geometry.size.height),
+                                    onPinClick: { pinClicked(info.group) },
+                                    onNameClick: { reference in
+                                        selection = reference
+                                        withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+                                    }
+                                )
+                            } label: {
+                                EmptyView()
                             }
-                        )
-                    } label: {
-                        EmptyView()
+                        }
                     }
                 }
-            }
-            .mapControls {
-                MapCompass()
-                MapScaleView()
-            }
-            // Lets tapping empty water/land close whatever popover is open — Map's own
-            // gesture handling for panning/zooming is a drag/magnify, not a tap, so this
-            // doesn't interfere with it, and the pin buttons underneath consume their own
-            // taps first.
-            .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
-            }
-            // Re-cluster as the camera moves, debounced so continuous panning/zooming
-            // doesn't recompute (and re-diff annotations) on every frame — pins settle
-            // into merged/split form ~120ms after the gesture pauses.
-            .onMapCameraChange(frequency: .continuous) { _ in
-                reclusterDebounce?.cancel()
-                reclusterDebounce = Task {
-                    try? await Task.sleep(for: .milliseconds(120))
-                    guard !Task.isCancelled else { return }
+                .mapControls {
+                    MapCompass()
+                    MapScaleView()
+                }
+                // Lets tapping empty water/land close whatever popover is open — Map's own
+                // gesture handling for panning/zooming is a drag/magnify, not a tap, so this
+                // doesn't interfere with it, and the pin buttons underneath consume their
+                // own taps first.
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
+                }
+                // Re-cluster as the camera moves, debounced so continuous panning/zooming
+                // doesn't recompute (and re-diff annotations) on every frame — pins settle
+                // into merged/split form ~120ms after the gesture pauses. Animated: this is
+                // the only path that changes which cards share a pin, so it's the glide.
+                .onMapCameraChange(frequency: .continuous) { _ in
+                    reclusterDebounce?.cancel()
+                    reclusterDebounce = Task {
+                        try? await Task.sleep(for: .milliseconds(120))
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            recluster(with: proxy)
+                        }
+                    }
+                }
+                // A new entry set (search narrowing, collection switch) re-clusters
+                // immediately, unanimated — its pins may bear no relation to the previous
+                // clusters, so gliding between them would be meaningless motion.
+                .onChange(of: entries) { _, _ in
                     recluster(with: proxy)
                 }
-            }
-            // A new entry set (search narrowing, collection switch) re-clusters
-            // immediately — its pins may bear no relation to the previous clusters.
-            .onChange(of: entries) { _, _ in
-                recluster(with: proxy)
             }
         }
     }
 
     private func recluster(with proxy: MapProxy) {
-        let located = entries.filter { $0.summary.coordinate != nil }
+        let located = locatedEntries
         let clusters = MapPinClustering.clusters(of: located) { entry in
             entry.summary.coordinate.flatMap { proxy.convert($0, to: .local) }
         }
-        screenClusters = clusters.compactMap { cluster in
-            guard let centroid = MapPinClustering.centroid(of: cluster.compactMap(\.summary.coordinate)) else {
-                return nil
-            }
+        let newGroups: [MapPinGroup<MapCardEntry>] = clusters.compactMap { cluster in
+            guard let centroid = MapPinClustering.centroid(of: cluster.compactMap(\.summary.coordinate)) else { return nil }
             return MapPinGroup(coordinate: centroid, elements: cluster)
+        }
+
+        screenClusters = newGroups
+        pinOffsets = MapPinClustering.offsets(
+            of: newGroups,
+            projectedElementPoint: { entry in entry.summary.coordinate.flatMap { proxy.convert($0, to: .local) } },
+            projectedCentroidPoint: { coordinate in proxy.convert(coordinate, to: .local) }
+        )
+        // The open popover's group no longer exists once its cards no longer share a
+        // pin (a split/merge moved them apart or into a different cluster) — keeping a
+        // stale id around would just never match `group.id` again.
+        if let openGroupID, !newGroups.contains(where: { $0.id == openGroupID }) {
+            self.openGroupID = nil
         }
     }
 
     /// A pin click always navigates: to the single card, or the next co-located card in
     /// rotation. Multi-card pins also hold their name popover open so the rotation is
-    /// legible (which card is open gets a checkmark) — on iOS this is the only way the
+    /// legible (the open card gets an accent-tinted row) — on iOS this is the only way the
     /// list shows at all, there being no hover.
     private func pinClicked(_ group: MapPinGroup<MapCardEntry>) {
         if let next = MapPinRotation.next(in: group.elements.map(\.reference), after: selection) {
@@ -124,8 +188,10 @@ struct CollectionMapView: View {
     }
 }
 
-/// One pin's content: the pin glyph (badged with a count when several cards share the
-/// coordinate) plus a column of names growing UPWARD from just above it.
+/// One card's annotation content: every card in a cluster renders the plain pin glyph (see
+/// the file's doc comment for why), plus — for the cluster's representative only — the
+/// interactive tap target, hover tracking, and a column of names growing UPWARD from just
+/// above the pin.
 ///
 /// Anchor invariant: the annotation reserves the popover's exact space permanently via a
 /// `.hidden()` copy of the popover itself (self-measuring — no magic sizes, correct under
@@ -134,11 +200,14 @@ struct CollectionMapView: View {
 /// REAL popover is only mounted while showing, as a bottom-aligned overlay on that slot:
 /// the row nearest the pin stays adjacent and the list extends up the screen. Keeping the
 /// visible copy conditionally mounted (rather than a permanently-mounted, opacity-hidden
-/// layer) also gives Map's annotation bridging nothing stale to composite.
+/// layer) also gives Map's annotation bridging nothing stale to composite — invariant (a).
 private struct MapPinAnnotation: View {
     let group: MapPinGroup<MapCardEntry>
+    let isRepresentative: Bool
     let isOpen: Bool
     let selection: CardReference?
+    let pinOffset: CGSize
+    let maxPopoverHeight: CGFloat
     let onPinClick: () -> Void
     let onNameClick: (CardReference) -> Void
 
@@ -146,7 +215,7 @@ private struct MapPinAnnotation: View {
     @State private var hoverHideTask: Task<Void, Never>?
 
     private var isSingle: Bool { group.elements.count == 1 }
-    private var showsPopover: Bool { isOpen || isHovered }
+    private var showsPopover: Bool { isRepresentative && (isOpen || isHovered) }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -160,9 +229,28 @@ private struct MapPinAnnotation: View {
                             .transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
                     }
                 }
-            hoverTracked(pinButton)
+            if isRepresentative {
+                hoverTracked(pinButton)
+            } else {
+                // Not interactive and not separately accessible: this card's pin is
+                // visually identical to (and exactly overlapping) the representative's,
+                // existing only so ITS OWN position glides correctly when the cluster
+                // later splits — see the file's doc comment.
+                pinGlyph
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
+        .offset(pinOffset)
         .animation(.easeInOut(duration: 0.15), value: showsPopover)
+        // Explicit, VALUE-scoped animation rather than relying on the ambient transaction
+        // `CollectionMapView.recluster()` opens with `withAnimation`: each annotation's
+        // content is hosted by MapKit's own bridging (the same boundary invariant (a)
+        // warns about elsewhere in this file), which does not reliably forward an outer
+        // transaction into that hosted content — exactly why `showsPopover` above already
+        // gets its own explicit `.animation(value:)` instead of an ambient one. Without
+        // this, `pinOffset` changes (the whole split/merge glide) would silently snap.
+        .animation(.easeInOut(duration: 0.35), value: pinOffset)
         // No contentShape here: the container's empty region (the reserved slot while
         // hidden, and the 6pt gap) must stay transparent to map gestures. Hover
         // continuity across the pin→names gap is handled by the grace timer below.
@@ -190,23 +278,30 @@ private struct MapPinAnnotation: View {
         #endif
     }
 
+    /// The pin's glyph and count badge — shared between the representative's interactive
+    /// button and the other members' plain, non-interactive copy, so the two render
+    /// pixel-identically and overlap seamlessly while clustered.
+    private var pinGlyph: some View {
+        Image(systemName: "mappin.circle.fill")
+            .font(.title2)
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, .red)
+            .background(Circle().fill(.white).padding(3))
+            .overlay(alignment: .topTrailing) {
+                if !isSingle {
+                    Text("\(group.elements.count)")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .padding(3)
+                        .background(Circle().fill(.blue))
+                        .offset(x: 7, y: -7)
+                }
+            }
+    }
+
     private var pinButton: some View {
         Button(action: onPinClick) {
-            Image(systemName: "mappin.circle.fill")
-                .font(.title2)
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .red)
-                .background(Circle().fill(.white).padding(3))
-                .overlay(alignment: .topTrailing) {
-                    if !isSingle {
-                        Text("\(group.elements.count)")
-                            .font(.caption2.bold())
-                            .foregroundStyle(.white)
-                            .padding(3)
-                            .background(Circle().fill(.blue))
-                            .offset(x: 7, y: -7)
-                    }
-                }
+            pinGlyph
         }
         .buttonStyle(.plain)
         // Stable machine-facing handle for UI tests, same convention as the grid cells:
@@ -228,38 +323,47 @@ private struct MapPinAnnotation: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
             } else {
-                ForEach(group.elements) { entry in
-                    Button {
-                        onNameClick(entry.reference)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(entry.summary.name)
-                                .font(.callout)
-                            Spacer(minLength: 0)
-                            // Marks where the pin-click rotation currently sits. Always
-                            // mounted (hidden by opacity) so the row's width — and with
-                            // it the reserved slot and annotation frame — doesn't change
-                            // as the checkmark hops between rows.
-                            Image(systemName: "checkmark")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .opacity(entry.reference == selection ? 1 : 0)
+                // Capped and scrollable (Feature 3): a pin with many co-located cards
+                // grows only up to `maxPopoverHeight` before the list scrolls, rather
+                // than the popover overrunning the map. The hidden measuring twin above
+                // applies the exact same cap, so the anchor invariant holds regardless of
+                // how many rows there are.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(group.elements) { entry in
+                            nameRow(for: entry)
+                            if entry.id != group.elements.last?.id {
+                                Divider()
+                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier(entry.summary.name)
-                    if entry.id != group.elements.last?.id {
-                        Divider()
                     }
                 }
+                .frame(maxHeight: maxPopoverHeight)
             }
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .shadow(radius: 6, y: 3)
         .fixedSize()
+    }
+
+    /// One name row; an accent-tinted background marks whichever card the pin-click
+    /// rotation currently has open (Feature 4) — the row's only indicator, replacing the
+    /// earlier checkmark so there's exactly one clear signal instead of two.
+    private func nameRow(for entry: MapCardEntry) -> some View {
+        let isCurrentlyOpen = entry.reference == selection
+        return Button {
+            onNameClick(entry.reference)
+        } label: {
+            Text(entry.summary.name)
+                .font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isCurrentlyOpen ? Color.accentColor.opacity(0.18) : Color.clear)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(entry.summary.name)
+        .accessibilityAddTraits(isCurrentlyOpen ? .isSelected : [])
     }
 }
