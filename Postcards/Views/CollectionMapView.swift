@@ -87,11 +87,16 @@ struct CollectionMapView: View {
 }
 
 /// One pin's content: the pin glyph (badged with a count when several cards share the
-/// coordinate) plus a name popover above it.
+/// coordinate) plus a column of names growing UPWARD from just above it.
 ///
-/// The popover is mounted in the layout PERMANENTLY (hidden via opacity, not `if`) so the
-/// annotation's frame — and with it the `.bottom` anchor Map pins to the coordinate — is
-/// identical whether or not the names are showing: the pin itself never moves.
+/// Anchor invariant: the annotation reserves the popover's exact space permanently via a
+/// `.hidden()` copy of the popover itself (self-measuring — no magic sizes, correct under
+/// Dynamic Type and any number of names), so the annotation's frame is identical whether
+/// or not the names are showing and Map's `.bottom` anchor — the pin — never moves. The
+/// REAL popover is only mounted while showing, as a bottom-aligned overlay on that slot:
+/// the row nearest the pin stays adjacent and the list extends up the screen. Keeping the
+/// visible copy conditionally mounted (rather than a permanently-mounted, opacity-hidden
+/// layer) also gives Map's annotation bridging nothing stale to composite.
 private struct MapPinAnnotation: View {
     let group: MapPinGroup<MapCardEntry>
     let isOpen: Bool
@@ -107,18 +112,21 @@ private struct MapPinAnnotation: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            hoverTracked(popover)
-                .opacity(showsPopover ? 1 : 0)
-                .scaleEffect(showsPopover ? 1 : 0.9, anchor: .bottom)
-                // A hidden popover must be inert: no taps, no hover, no VoiceOver — and
-                // crucially it must NOT block panning/tapping the map just above the pin.
-                .allowsHitTesting(showsPopover)
-                .accessibilityHidden(!showsPopover)
-                .animation(.easeInOut(duration: 0.15), value: showsPopover)
+            // The reserved slot: identical geometry to the real popover, never rendered,
+            // never hit-testable, invisible to accessibility — map gestures pass through.
+            popover
+                .hidden()
+                .overlay(alignment: .bottom) {
+                    if showsPopover {
+                        hoverTracked(popover)
+                            .transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
+                    }
+                }
             hoverTracked(pinButton)
         }
-        // No contentShape here: the container's empty region (the reserved popover slot
-        // while hidden, and the 6pt gap) must stay transparent to map gestures. Hover
+        .animation(.easeInOut(duration: 0.15), value: showsPopover)
+        // No contentShape here: the container's empty region (the reserved slot while
+        // hidden, and the 6pt gap) must stay transparent to map gestures. Hover
         // continuity across the pin→names gap is handled by the grace timer below.
     }
 
@@ -190,12 +198,14 @@ private struct MapPinAnnotation: View {
                             Text(entry.summary.name)
                                 .font(.callout)
                             Spacer(minLength: 0)
-                            // Marks where the pin-click rotation currently sits.
-                            if entry.reference == selection {
-                                Image(systemName: "checkmark")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            // Marks where the pin-click rotation currently sits. Always
+                            // mounted (hidden by opacity) so the row's width — and with
+                            // it the reserved slot and annotation frame — doesn't change
+                            // as the checkmark hops between rows.
+                            Image(systemName: "checkmark")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .opacity(entry.reference == selection ? 1 : 0)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12)
