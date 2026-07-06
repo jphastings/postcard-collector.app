@@ -6,18 +6,19 @@ import SwiftUI
 /// coordinate, framed so all of them are visible on first appearance. Cards at exactly the
 /// same coordinate share a pin (see `MapPinGrouping`).
 ///
-/// Interaction: a single-card pin opens its card in the detail pane directly on click/tap —
-/// same `selection` binding as tapping a grid cell. A multi-card pin never opens anything
-/// directly; it raises a popover listing each card's name, and tapping a name opens that
-/// card. On macOS the popover also shows on hover (for single pins too, as a preview of the
-/// name), and stays up while the pointer remains over the pin or any of the name rows.
+/// Interaction: clicking a pin ALWAYS navigates — a single-card pin opens its card in the
+/// detail pane (same `selection` binding as tapping a grid cell); a multi-card pin rotates
+/// through its cards on successive clicks (see `MapPinRotation`) while raising a popover
+/// naming them all, with a checkmark on the open one. Tapping a name in the popover opens
+/// that card directly. On macOS popovers also show on hover (single pins too, as a name
+/// preview) and stay up while the pointer remains over the pin or any of the name rows.
 struct CollectionMapView: View {
     let entries: [MapCardEntry]
     @Binding var selection: CardReference?
 
     @State private var cameraPosition: MapCameraPosition
-    /// The group whose popover is open by click/tap (macOS hover shows popovers without
-    /// touching this). At most one at a time.
+    /// The group whose popover is held open by click/tap (macOS hover shows popovers
+    /// without touching this). At most one at a time.
     @State private var openGroupID: String?
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
@@ -47,8 +48,9 @@ struct CollectionMapView: View {
                     MapPinAnnotation(
                         group: group,
                         isOpen: openGroupID == group.id,
-                        onToggle: { toggle(group) },
-                        onOpen: { reference in
+                        selection: selection,
+                        onPinClick: { pinClicked(group) },
+                        onNameClick: { reference in
                             selection = reference
                             withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
                         }
@@ -70,20 +72,32 @@ struct CollectionMapView: View {
         }
     }
 
-    private func toggle(_ group: MapPinGroup<MapCardEntry>) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            openGroupID = (openGroupID == group.id) ? nil : group.id
+    /// A pin click always navigates: to the single card, or the next co-located card in
+    /// rotation. Multi-card pins also hold their name popover open so the rotation is
+    /// legible (which card is open gets a checkmark) — on iOS this is the only way the
+    /// list shows at all, there being no hover.
+    private func pinClicked(_ group: MapPinGroup<MapCardEntry>) {
+        if let next = MapPinRotation.next(in: group.elements.map(\.reference), after: selection) {
+            selection = next
+        }
+        if group.elements.count > 1 {
+            withAnimation(.easeInOut(duration: 0.2)) { openGroupID = group.id }
         }
     }
 }
 
 /// One pin's content: the pin glyph (badged with a count when several cards share the
-/// coordinate) plus, when open/hovered, a name popover anchored above it.
+/// coordinate) plus a name popover above it.
+///
+/// The popover is mounted in the layout PERMANENTLY (hidden via opacity, not `if`) so the
+/// annotation's frame — and with it the `.bottom` anchor Map pins to the coordinate — is
+/// identical whether or not the names are showing: the pin itself never moves.
 private struct MapPinAnnotation: View {
     let group: MapPinGroup<MapCardEntry>
     let isOpen: Bool
-    let onToggle: () -> Void
-    let onOpen: (CardReference) -> Void
+    let selection: CardReference?
+    let onPinClick: () -> Void
+    let onNameClick: (CardReference) -> Void
 
     @State private var isHovered = false
     @State private var hoverHideTask: Task<Void, Never>?
@@ -93,42 +107,45 @@ private struct MapPinAnnotation: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if showsPopover {
-                popover
-                    .transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
-            }
-            pinButton
+            hoverTracked(popover)
+                .opacity(showsPopover ? 1 : 0)
+                .scaleEffect(showsPopover ? 1 : 0.9, anchor: .bottom)
+                // A hidden popover must be inert: no taps, no hover, no VoiceOver — and
+                // crucially it must NOT block panning/tapping the map just above the pin.
+                .allowsHitTesting(showsPopover)
+                .accessibilityHidden(!showsPopover)
+                .animation(.easeInOut(duration: 0.15), value: showsPopover)
+            hoverTracked(pinButton)
         }
-        // One contiguous hover region covering pin, popover, AND the gap between them, so
-        // moving the pointer from the pin up into the name rows never counts as an exit.
-        .contentShape(Rectangle())
+        // No contentShape here: the container's empty region (the reserved popover slot
+        // while hidden, and the 6pt gap) must stay transparent to map gestures. Hover
+        // continuity across the pin→names gap is handled by the grace timer below.
+    }
+
+    /// macOS: entering either the pin or the (visible) popover keeps the names up; the
+    /// hide is delayed so the pointer can cross the small gap between them — the names
+    /// remain until neither is hovered. Other platforms: untouched.
+    private func hoverTracked(_ view: some View) -> some View {
         #if os(macOS)
-        .onHover { hovering in
+        return view.onHover { hovering in
             hoverHideTask?.cancel()
             if hovering {
-                withAnimation(.easeInOut(duration: 0.15)) { isHovered = true }
+                isHovered = true
             } else {
-                // Short grace before hiding: pointer wobbles across the popover's rounded
-                // corners (momentarily outside the shape) mustn't dismiss the names.
                 hoverHideTask = Task {
                     try? await Task.sleep(for: .milliseconds(250))
                     guard !Task.isCancelled else { return }
-                    withAnimation(.easeInOut(duration: 0.15)) { isHovered = false }
+                    isHovered = false
                 }
             }
         }
+        #else
+        return view
         #endif
     }
 
     private var pinButton: some View {
-        Button {
-            if isSingle {
-                // Single card: the pin IS the card — open it directly, like a grid cell.
-                onOpen(group.elements[0].reference)
-            } else {
-                onToggle()
-            }
-        } label: {
+        Button(action: onPinClick) {
             Image(systemName: "mappin.circle.fill")
                 .font(.title2)
                 .symbolRenderingMode(.palette)
@@ -167,14 +184,23 @@ private struct MapPinAnnotation: View {
             } else {
                 ForEach(group.elements) { entry in
                     Button {
-                        onOpen(entry.reference)
+                        onNameClick(entry.reference)
                     } label: {
-                        Text(entry.summary.name)
-                            .font(.callout)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
+                        HStack(spacing: 6) {
+                            Text(entry.summary.name)
+                                .font(.callout)
+                            Spacer(minLength: 0)
+                            // Marks where the pin-click rotation currently sits.
+                            if entry.reference == selection {
+                                Image(systemName: "checkmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier(entry.summary.name)

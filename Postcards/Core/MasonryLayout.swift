@@ -32,16 +32,19 @@ enum MasonryLayout {
     }
 
     /// How many columns fit the available content width at roughly `targetColumnWidth`
-    /// per column: floor((width + spacing) / (target + spacing)), never below
-    /// `minimumColumns` (two columns even on an iPhone in portrait).
+    /// per column: floor((width + spacing) / (target + spacing)). Two columns are kept
+    /// down to `minimumColumnWidth` each (comfortably below the target, so an iPhone in
+    /// portrait still gets two); once even that no longer fits — narrow split-view panes —
+    /// the layout drops to a single full-width column rather than squeezing two unusably
+    /// narrow ones.
     static func columnCount(
         forAvailableWidth width: Double,
         targetColumnWidth: Double = 180,
-        spacing: Double = 16,
-        minimumColumns: Int = 2
+        minimumColumnWidth: Double = 150,
+        spacing: Double = 16
     ) -> Int {
-        guard width > 0 else { return minimumColumns }
+        guard width >= minimumColumnWidth * 2 + spacing else { return 1 }
         let fitted = Int((width + spacing) / (targetColumnWidth + spacing))
-        return max(fitted, minimumColumns)
+        return max(fitted, 2)
     }
 }

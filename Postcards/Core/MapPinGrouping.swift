@@ -43,3 +43,18 @@ enum MapPinGrouping {
         var longitude: Double
     }
 }
+
+/// A pin click always navigates; on a multi-card pin, successive clicks rotate through the
+/// co-located cards.
+enum MapPinRotation {
+    /// Which element a pin click should open: the one AFTER `current` when `current` is in
+    /// the group (wrapping around at the end), otherwise the group's first element. A
+    /// single-element group therefore always yields that element; only an empty group
+    /// yields `nil`.
+    static func next<Element: Equatable>(in elements: [Element], after current: Element?) -> Element? {
+        guard let current, let index = elements.firstIndex(of: current) else {
+            return elements.first
+        }
+        return elements[(index + 1) % elements.count]
+    }
+}

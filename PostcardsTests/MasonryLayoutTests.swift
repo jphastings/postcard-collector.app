@@ -75,8 +75,17 @@ final class MasonryLayoutTests: XCTestCase {
     // MARK: - Column count adaptation
 
     func testNarrowPhoneWidthStillGetsTwoColumns() {
-        // ~iPhone portrait content width: one 180pt column would "fit", but the floor is 2.
+        // ~iPhone portrait content width: below the 180pt-per-column target but above the
+        // 150pt-per-column minimum, so it holds at two columns.
         XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 343), 2)
+    }
+
+    func testVeryNarrowPanesDropToASingleColumn() {
+        // Two columns need 2×150 + 16 = 316pt; anything under that gets one full-width
+        // column, exactly at the boundary two.
+        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 315.9), 1)
+        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 316), 2)
+        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 200), 1)
     }
 
     func testColumnCountGrowsWithWidth() {
@@ -86,8 +95,8 @@ final class MasonryLayoutTests: XCTestCase {
         XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 1200), 6)
     }
 
-    func testDegenerateWidthFallsBackToTheMinimum() {
-        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 0), 2)
-        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: -100), 2)
+    func testDegenerateWidthFallsBackToASingleColumn() {
+        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: 0), 1)
+        XCTAssertEqual(MasonryLayout.columnCount(forAvailableWidth: -100), 1)
     }
 }
