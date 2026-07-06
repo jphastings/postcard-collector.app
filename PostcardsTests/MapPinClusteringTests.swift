@@ -194,4 +194,34 @@ final class MapPinClusteringTests: XCTestCase {
         )
         XCTAssertTrue(offsets.isEmpty)
     }
+
+    func testOffsetsAreProjectionDependentSoMustBeRecomputedPerCameraSettle() {
+        // The same cluster projected under two cameras yields different point vectors —
+        // offsets computed at one camera are stale (wrong length and direction) at
+        // another. This is why `CollectionMapView` recomputes offsets exactly when the
+        // camera settles (`.onMapCameraChange(frequency: .onEnd)`): recomputing
+        // mid-gesture would aim every glide at projections that stop being true a frame
+        // later, and reusing pre-zoom offsets after the settle would glide along
+        // wrong-looking pre-zoom vectors.
+        let groups = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+        ]
+        let zoomedOut: [String: CGPoint] = ["a": CGPoint(x: 100, y: 100), "b": CGPoint(x: 110, y: 100)]
+        let zoomedIn: [String: CGPoint] = ["a": CGPoint(x: 50, y: 100), "b": CGPoint(x: 250, y: 100)]
+
+        let before = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { zoomedOut[$0.id] },
+            projectedCentroidPoint: { _ in CGPoint(x: 105, y: 100) }
+        )
+        let after = MapPinClustering.offsets(
+            of: groups,
+            projectedElementPoint: { zoomedIn[$0.id] },
+            projectedCentroidPoint: { _ in CGPoint(x: 150, y: 100) }
+        )
+
+        XCTAssertEqual(before["a"], CGSize(width: 5, height: 0))
+        XCTAssertEqual(after["a"], CGSize(width: 100, height: 0))
+        XCTAssertNotEqual(before["b"], after["b"], "a zoom changes every member's offset vector")
+    }
 }
