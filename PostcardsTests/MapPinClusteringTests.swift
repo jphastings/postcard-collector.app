@@ -140,88 +140,85 @@ final class MapPinClusteringTests: XCTestCase {
         XCTAssertNil(membership["unknown"])
     }
 
-    // MARK: - Offsets (cluster split/merge glide)
+    // MARK: - FLIP deltas (cluster split/merge glide)
 
-    func testSingletonGroupHasZeroOffset() {
-        let groups = [
-            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), elements: [Card(id: "a")]),
-        ]
-        let offsets = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { _ in CGPoint(x: 10, y: 10) },
-            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 10) }
-        )
-        XCTAssertEqual(offsets["a"], .zero)
+    /// Fixed screen projection for delta tests: 10 points per degree on each axis.
+    private func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint? {
+        CGPoint(x: coordinate.longitude * 10, y: coordinate.latitude * -10)
     }
 
-    func testClusteredMembersOffsetTowardTheSharedCentroid() {
-        let groups = [
-            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
+    func testSplitMembersGetTheInverseDeltaFromCentroidToOwnCoordinate() {
+        // A 2-cluster at centroid (0, 5) splits into singletons at (0,0) and (0,10):
+        // each pin's new anchor is its own coordinate, and the inverse delta points BACK
+        // at the old centroid — applied as an initial offset and animated to zero, the
+        // pin glides centroid → own spot.
+        let centroid = CLLocationCoordinate2D(latitude: 0, longitude: 5)
+        let a = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        let b = CLLocationCoordinate2D(latitude: 0, longitude: 10)
+        let old = [MapPinGroup(coordinate: centroid, elements: [Card(id: "a"), Card(id: "b")])]
+        let new = [
+            MapPinGroup(coordinate: a, elements: [Card(id: "a")]),
+            MapPinGroup(coordinate: b, elements: [Card(id: "b")]),
         ]
-        let points: [String: CGPoint] = ["a": CGPoint(x: 0, y: 0), "b": CGPoint(x: 20, y: 0)]
-        let offsets = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { points[$0.id] },
-            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 0) }
-        )
-        XCTAssertEqual(offsets["a"], CGSize(width: 10, height: 0))
-        XCTAssertEqual(offsets["b"], CGSize(width: -10, height: 0))
+
+        let deltas = MapPinClustering.flipDeltas(from: old, to: new, projectedPoint: project)
+
+        XCTAssertEqual(deltas["a"], CGSize(width: 50, height: 0), "a's old point (50) minus its new point (0)")
+        XCTAssertEqual(deltas["b"], CGSize(width: -50, height: 0), "b's old point (50) minus its new point (100)")
     }
 
-    func testUnprojectableMemberIsOmittedRatherThanZero() {
-        // The view treats a missing entry as `.zero`, but the pure function itself must
-        // distinguish "couldn't project" from "happens to need no nudge" — otherwise a
-        // genuinely off-screen member could get a wrong, confidently-computed offset.
-        let groups = [
-            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a")]),
+    func testMergeIsTheSameTransitionInReverse() {
+        let centroid = CLLocationCoordinate2D(latitude: 0, longitude: 5)
+        let a = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        let b = CLLocationCoordinate2D(latitude: 0, longitude: 10)
+        let singles = [
+            MapPinGroup(coordinate: a, elements: [Card(id: "a")]),
+            MapPinGroup(coordinate: b, elements: [Card(id: "b")]),
         ]
-        let offsets = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { _ in nil },
-            projectedCentroidPoint: { _ in CGPoint(x: 10, y: 0) }
-        )
-        XCTAssertNil(offsets["a"])
+        let merged = [MapPinGroup(coordinate: centroid, elements: [Card(id: "a"), Card(id: "b")])]
+
+        let deltas = MapPinClustering.flipDeltas(from: singles, to: merged, projectedPoint: project)
+
+        XCTAssertEqual(deltas["a"], CGSize(width: -50, height: 0))
+        XCTAssertEqual(deltas["b"], CGSize(width: 50, height: 0))
     }
 
-    func testUnprojectableCentroidOmitsTheWholeGroup() {
-        let groups = [
-            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
-        ]
-        let offsets = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { _ in CGPoint(x: 0, y: 0) },
-            projectedCentroidPoint: { _ in nil }
-        )
-        XCTAssertTrue(offsets.isEmpty)
+    func testUnmovedDisplayCoordinateGetsNoDelta() {
+        // A pin whose display coordinate didn't change has nothing to glide — no entry,
+        // so the view never even perturbs its offset.
+        let spot = CLLocationCoordinate2D(latitude: 3, longitude: 3)
+        let old = [MapPinGroup(coordinate: spot, elements: [Card(id: "a")])]
+        let new = [MapPinGroup(coordinate: spot, elements: [Card(id: "a")])]
+        XCTAssertTrue(MapPinClustering.flipDeltas(from: old, to: new, projectedPoint: project).isEmpty)
     }
 
-    func testOffsetsAreProjectionDependentSoMustBeRecomputedPerCameraSettle() {
-        // The same cluster projected under two cameras yields different point vectors —
-        // offsets computed at one camera are stale (wrong length and direction) at
-        // another. This is why `CollectionMapView` recomputes offsets exactly when the
-        // camera settles (`.onMapCameraChange(frequency: .onEnd)`): recomputing
-        // mid-gesture would aim every glide at projections that stop being true a frame
-        // later, and reusing pre-zoom offsets after the settle would glide along
-        // wrong-looking pre-zoom vectors.
-        let groups = [
-            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a"), Card(id: "b")]),
-        ]
-        let zoomedOut: [String: CGPoint] = ["a": CGPoint(x: 100, y: 100), "b": CGPoint(x: 110, y: 100)]
-        let zoomedIn: [String: CGPoint] = ["a": CGPoint(x: 50, y: 100), "b": CGPoint(x: 250, y: 100)]
+    func testFreshElementGetsNoDelta() {
+        // An element with no old group (just appeared — e.g. a search widened) must not
+        // fly in from anywhere; it simply appears at its anchor.
+        let old: [MapPinGroup<Card>] = []
+        let new = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), elements: [Card(id: "a")])]
+        XCTAssertTrue(MapPinClustering.flipDeltas(from: old, to: new, projectedPoint: project).isEmpty)
+    }
 
-        let before = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { zoomedOut[$0.id] },
-            projectedCentroidPoint: { _ in CGPoint(x: 105, y: 100) }
-        )
-        let after = MapPinClustering.offsets(
-            of: groups,
-            projectedElementPoint: { zoomedIn[$0.id] },
-            projectedCentroidPoint: { _ in CGPoint(x: 150, y: 100) }
-        )
+    func testUnprojectableEndpointGetsNoDeltaRatherThanAWrongOne() {
+        let old = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 5), elements: [Card(id: "a")])]
+        let new = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a")])]
+        let deltas = MapPinClustering.flipDeltas(from: old, to: new) { _ in nil }
+        XCTAssertTrue(deltas.isEmpty, "no glide beats a confidently-wrong one for an off-screen pin")
+    }
 
-        XCTAssertEqual(before["a"], CGSize(width: 5, height: 0))
-        XCTAssertEqual(after["a"], CGSize(width: 100, height: 0))
-        XCTAssertNotEqual(before["b"], after["b"], "a zoom changes every member's offset vector")
+    func testDeltasAreProjectedAtOneCamera() {
+        // Both endpoints project through the SAME closure — the settled camera. A delta
+        // is only meaningful at the camera it was projected under, which is why
+        // `CollectionMapView` computes them exactly at `.onEnd` and snaps them away the
+        // moment a new gesture begins.
+        let old = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 5), elements: [Card(id: "a")])]
+        let new = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), elements: [Card(id: "a")])]
+
+        let atOneZoom = MapPinClustering.flipDeltas(from: old, to: new) { CGPoint(x: $0.longitude * 10, y: 0) }
+        let atAnother = MapPinClustering.flipDeltas(from: old, to: new) { CGPoint(x: $0.longitude * 40, y: 0) }
+
+        XCTAssertEqual(atOneZoom["a"], CGSize(width: 50, height: 0))
+        XCTAssertEqual(atAnother["a"], CGSize(width: 200, height: 0), "the same geographic move is a different pixel vector at a different zoom")
     }
 }

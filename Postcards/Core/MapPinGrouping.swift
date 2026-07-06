@@ -125,9 +125,8 @@ enum MapPinClustering {
     /// Every element's current cluster, keyed by element id, plus whether it's that
     /// cluster's REPRESENTATIVE — its first member in stable order. Only the representative
     /// draws a cluster's interactive content (tap target, hover tracking, name popover);
-    /// every other member still needs its own group to compute the visual nudge that lets
-    /// it glide correctly once the cluster splits (see `offsets(of:...)` below and
-    /// `CollectionMapView`'s doc comment).
+    /// every other member still needs its own group because the group's coordinate is the
+    /// element's DISPLAY coordinate (see `CollectionMapView`'s doc comment).
     static func membership<Element: Identifiable>(
         of groups: [MapPinGroup<Element>]
     ) -> [Element.ID: (group: MapPinGroup<Element>, isRepresentative: Bool)] {
@@ -140,28 +139,37 @@ enum MapPinClustering {
         return result
     }
 
-    /// The screen-space nudge — from each cluster member's own projected point to its
-    /// cluster's shared centroid point — that visually draws every member of a cluster onto
-    /// one shared spot while their MapKit annotation stays anchored at their own true
-    /// coordinate. Kept pure (plain projection closures rather than a live `MapProxy`) so
-    /// the glide math is testable without hosting a map. A member missing from the result
-    /// (its own or its centroid's point isn't projectable — e.g. off-screen) should be
-    /// treated as `.zero` by the caller, leaving it at its true position until the next
-    /// camera settle re-projects it.
-    static func offsets<Element: Identifiable>(
-        of groups: [MapPinGroup<Element>],
-        projectedElementPoint: (Element) -> CGPoint?,
-        projectedCentroidPoint: (CLLocationCoordinate2D) -> CGPoint?
+    /// FLIP glide deltas for a membership change: every element is displayed at its
+    /// group's coordinate (own coordinate when singleton, cluster centroid otherwise), so
+    /// when reclustering moves an element from one group to another its pin JUMPS to the
+    /// new geographic anchor — the returned delta is the screen-space vector (old display
+    /// point − new display point, both projected at the SAME settled camera) that, applied
+    /// as an initial `.offset` and animated to zero, makes the pin visually glide from
+    /// where it stood to its new anchor instead.
+    ///
+    /// Only elements that actually moved get an entry: same display coordinate → no entry
+    /// (nothing to glide); an element with no old group (fresh to the map) → no entry
+    /// (appearing pins shouldn't fly in from anywhere); either endpoint unprojectable
+    /// (off-screen) → no entry (no glide beats a wrong one). Kept pure — a plain
+    /// projection closure rather than a live `MapProxy` — so the math is testable without
+    /// hosting a map.
+    static func flipDeltas<Element: Identifiable>(
+        from oldGroups: [MapPinGroup<Element>],
+        to newGroups: [MapPinGroup<Element>],
+        projectedPoint: (CLLocationCoordinate2D) -> CGPoint?
     ) -> [Element.ID: CGSize] {
-        var result: [Element.ID: CGSize] = [:]
-        for group in groups {
-            guard let centroidPoint = projectedCentroidPoint(group.coordinate) else { continue }
+        let oldMembership = membership(of: oldGroups)
+        var deltas: [Element.ID: CGSize] = [:]
+        for group in newGroups {
             for element in group.elements {
-                guard let ownPoint = projectedElementPoint(element) else { continue }
-                result[element.id] = CGSize(width: centroidPoint.x - ownPoint.x, height: centroidPoint.y - ownPoint.y)
+                guard let old = oldMembership[element.id]?.group.coordinate else { continue }
+                let new = group.coordinate
+                guard old.latitude != new.latitude || old.longitude != new.longitude else { continue }
+                guard let oldPoint = projectedPoint(old), let newPoint = projectedPoint(new) else { continue }
+                deltas[element.id] = CGSize(width: oldPoint.x - newPoint.x, height: oldPoint.y - newPoint.y)
             }
         }
-        return result
+        return deltas
     }
 }
 
