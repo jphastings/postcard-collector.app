@@ -201,19 +201,18 @@ struct LibraryView: View {
                     .accessibilityIdentifier("All collections")
                     .tag(LibrarySource.allCollections)
             }
-            Section("Library") {
-                ForEach(importedCollectionSources) { source in
-                    SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
-                        .tag(source)
-                        .contextMenu { importedCollectionMenu(for: source) }
+            if !importedCollectionSources.isEmpty {
+                Section("Library") {
+                    ForEach(importedCollectionSources) { source in
+                        SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                            .tag(source)
+                            .contextMenu { importedCollectionMenu(for: source) }
+                    }
                 }
             }
-            if cloudLibrary.containerState == .available {
+            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty {
                 Section("iCloud") {
-                    // Fully-downloaded bare files move into "Single postcards" below;
-                    // not-yet-downloaded ones stay here (aggregating them before they
-                    // exist locally would just mean showing progress rows in two places).
-                    ForEach(cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }) { item in
+                    ForEach(cloudSidebarItems) { item in
                         if item.downloadState == .current {
                             CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
                                 .tag(item.librarySource)
@@ -256,6 +255,14 @@ struct LibraryView: View {
         library.sources.filter { source in
             source.isCollection && !cloudLibrary.items.contains { $0.path == source.path }
         }
+    }
+
+    /// The "iCloud" sidebar section's rows: fully-downloaded bare files move into "Single
+    /// postcards" below instead (aggregating them before they exist locally would just mean
+    /// showing progress rows in two places), so only collections and not-yet-downloaded bare
+    /// files stay here.
+    private var cloudSidebarItems: [CloudItem] {
+        cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }
     }
 
     /// Every bare `.postcard.*` file the app currently knows about, imported or synced —
