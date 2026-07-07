@@ -221,4 +221,63 @@ final class MapPinClusteringTests: XCTestCase {
         XCTAssertEqual(atOneZoom["a"], CGSize(width: 50, height: 0))
         XCTAssertEqual(atAnother["a"], CGSize(width: 200, height: 0), "the same geographic move is a different pixel vector at a different zoom")
     }
+
+    // MARK: - Motion visual groups (choreography: what pins LOOK like mid-glide)
+
+    private struct LocatedCard: Identifiable {
+        var id: String
+        var coordinate: CLLocationCoordinate2D?
+    }
+
+    func testGroupsTouchedByTheMoveDecomposeIntoPlainSingletons() {
+        // A merging pair mid-glide must read as two plain pins converging — no badge
+        // until the motion completes — so the positional 2-cluster decomposes visually.
+        let a = LocatedCard(id: "a", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0))
+        let b = LocatedCard(id: "b", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 10))
+        let positional = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 5), elements: [a, b])]
+
+        let visual = MapPinClustering.motionVisualGroups(positional: positional, moved: ["a", "b"], ownCoordinate: \.coordinate)
+
+        XCTAssertEqual(visual.map { $0.elements.map(\.id) }, [["a"], ["b"]])
+        XCTAssertEqual(visual[0].coordinate.longitude, 0, "each singleton identifies by its element's own coordinate")
+        XCTAssertEqual(visual[1].coordinate.longitude, 10)
+    }
+
+    func testUntouchedGroupsKeepTheirAggregateAppearance() {
+        // A cluster no member of which moved keeps its badge through someone else's glide.
+        let a = LocatedCard(id: "a", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0))
+        let b = LocatedCard(id: "b", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 1))
+        let c = LocatedCard(id: "c", coordinate: CLLocationCoordinate2D(latitude: 5, longitude: 5))
+        let positional = [
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0.5), elements: [a, b]),
+            MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 5, longitude: 5), elements: [c]),
+        ]
+
+        let visual = MapPinClustering.motionVisualGroups(positional: positional, moved: ["c"], ownCoordinate: \.coordinate)
+
+        XCTAssertEqual(visual.map { $0.elements.map(\.id) }, [["a", "b"], ["c"]], "the untouched pair stays grouped (badge intact)")
+    }
+
+    func testOnePartiallyMovedGroupDecomposesEntirely() {
+        // A pin gliding INTO an existing cluster: the whole receiving cluster reads as
+        // plain pins during the motion, so no badge leads the movement; the badge (with
+        // the new count) appears only at completion.
+        let a = LocatedCard(id: "a", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0))
+        let b = LocatedCard(id: "b", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 1))
+        let positional = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0.5), elements: [a, b])]
+
+        let visual = MapPinClustering.motionVisualGroups(positional: positional, moved: ["b"], ownCoordinate: \.coordinate)
+
+        XCTAssertEqual(visual.map { $0.elements.map(\.id) }, [["a"], ["b"]])
+    }
+
+    func testNoMovesMeansVisualEqualsPositional() {
+        let a = LocatedCard(id: "a", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0))
+        let b = LocatedCard(id: "b", coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 1))
+        let positional = [MapPinGroup(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0.5), elements: [a, b])]
+
+        let visual = MapPinClustering.motionVisualGroups(positional: positional, moved: [], ownCoordinate: \.coordinate)
+
+        XCTAssertEqual(visual.map { $0.elements.map(\.id) }, [["a", "b"]])
+    }
 }

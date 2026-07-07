@@ -33,28 +33,47 @@ import SwiftUI
 /// the screen-space delta from its old displayed position to its new one (both projected
 /// at the settled camera — see `MapPinClustering.flipDeltas`) is applied as an initial
 /// INVERSE `.offset` in the same non-animated update (so nothing visibly moves yet), and
-/// that offset is then animated to zero on the next frame — the pin visually glides from
-/// where it stood to its new geo anchor and ends offset-free, so subsequent gestures track
-/// geography exactly. Split and merge are the same transition in opposite directions.
+/// that offset is then animated to zero — the pin visually glides from where it stood to
+/// its new geo anchor and ends offset-free, so subsequent gestures track geography
+/// exactly. The animated phase is RENDER-ANCHORED: it triggers from a `.task(id:)` inside
+/// the annotation content, which runs only after the snapped phase has been committed —
+/// a fixed timer here raced the first render, and losing that race collapsed both phases
+/// into one frame (net-zero attribute change, no glide, pins teleporting).
+///
+/// Membership is TWO-LAYERED so badges never lead the motion (the choreography):
+/// - POSITIONAL membership (`screenClusters`) drives each annotation's geo coordinate and
+///   the FLIP offsets. It updates at the settle, always.
+/// - VISUAL membership (`visualClusters`) drives badges, popover contents, and which of a
+///   stack of overlapping pins is visible. While a glide is in motion, every group with a
+///   moved member decomposes into plain singletons (`MapPinClustering.motionVisualGroups`),
+///   so a SPLIT reads as: badge off → the single pin becomes several plain pins → they
+///   glide apart; and a MERGE reads as: plain pins glide together → THEN the count badge
+///   fades in (~120ms) and the now perfectly-stacked redundant pins turn invisible.
+///   Visual membership resolves back to positional in the glide's completion
+///   (`withAnimation(completionCriteria: .logicallyComplete)`, plus a duration-matched
+///   fallback in case the hosted-content boundary swallows the completion callback).
 ///
 /// Trade-off, deliberate: if a new gesture starts mid-glide, all glide offsets snap to
-/// zero immediately (non-animated) — affected pins jump by at most the remaining glide
-/// distance, but stay geo-correct throughout the gesture, which beats gliding along a
-/// screen vector that stops meaning anything as the zoom changes. The next settle re-runs
-/// the FLIP. Distinguishing a real gesture from the `.continuous` echo of the settle
-/// itself (delivery order between the two frequencies isn't contractual) is
-/// `MapCameraMotion.isSettledEcho`'s job.
+/// zero immediately (non-animated) AND visual membership resolves straight to its final
+/// state — affected pins jump by at most the remaining glide distance, but stay
+/// geo-correct throughout the gesture, and badges are never left mid-sequence.
+/// Distinguishing a real gesture from the `.continuous` echo of the settle itself
+/// (delivery order between the two frequencies isn't contractual, and the echo's camera
+/// carries floating-point drift) is `MapCameraMotion.isMaterialMotion`'s job — an exact
+/// camera comparison here once classified that drift as motion and cancelled every glide
+/// on the frame it started (the other half of the teleport bug).
 ///
-/// Every card in a cluster renders the SAME plain pin glyph (and badge) unconditionally —
-/// not just a chosen "representative" — so that when a cluster splits every member's pin is
-/// already on screen and simply glides to its own position, rather than popping into
-/// existence at the destination once it stops being merged. Because they share one display
-/// coordinate while clustered, this reads as a single pin. Only the cluster's representative
-/// (its first member, stable order) additionally carries the interactive layer: the tap
-/// target, hover tracking, and the name popover. That interactive content is what invariant
-/// (a) below warns mis-composites when merely opacity-hidden inside a MapKit annotation, so
-/// non-representative members skip it structurally (no button, no popover) rather than
-/// mounting and hiding it.
+/// Every card keeps ONE STRUCTURALLY IDENTICAL annotation at all times — the same button,
+/// glyph, badge and popover slot whether it's a cluster's visible representative or a
+/// hidden stacked member — with visibility and interactivity driven by opacity and
+/// hit-testing rather than by swapping views, so SwiftUI never rebuilds a pin's content
+/// mid-choreography (a structural swap resets identity and kills in-flight animations).
+/// Only the VISUAL group's representative (first member, stable order) is visible and
+/// interactive; the rest sit exactly stacked, invisible and untouchable, ready to glide
+/// out as themselves when their cluster splits. The popover overlay stays conditionally
+/// mounted per invariant (a) below — that compositor quirk bites live interactive
+/// content; a static glyph's opacity is the same technique the popover's own row tints
+/// already use safely.
 struct CollectionMapView: View {
     let entries: [MapCardEntry]
     @Binding var selection: CardReference?
@@ -63,9 +82,14 @@ struct CollectionMapView: View {
     /// The group whose popover is held open by click/tap (macOS hover shows popovers
     /// without touching this). At most one at a time.
     @State private var openGroupID: String?
-    /// The current zoom's screen-space clusters; `nil` until the first camera settle
-    /// makes projection possible, when exact-coordinate grouping stands in.
+    /// POSITIONAL membership — the current zoom's screen-space clusters; `nil` until the
+    /// first camera settle makes projection possible, when exact-coordinate grouping
+    /// stands in. Drives annotation coordinates and FLIP offsets.
     @State private var screenClusters: [MapPinGroup<MapCardEntry>]?
+    /// VISUAL membership during a glide (see the type's doc comment) — badges, popover
+    /// contents and stacked-pin visibility read from this; `nil` means "same as
+    /// positional", the steady state.
+    @State private var visualClusters: [MapPinGroup<MapCardEntry>]?
     /// The active FLIP's per-card inverse deltas (old display point − new, at the settled
     /// camera; see the type's doc comment) — set when a settle changes membership, cleared
     /// the moment a new gesture starts. Cards without an entry aren't gliding.
@@ -75,12 +99,15 @@ struct CollectionMapView: View {
     /// clearing `glideDeltas` zeroes every offset instantly regardless of where this
     /// value's in-flight animation currently is — that's the gesture-interrupt snap.
     @State private var glideProgress: CGFloat = 0
-    /// Schedules the glide's animated phase one frame after the snap phase (the inverse
-    /// offset must actually render before animating away, or there's nothing to glide
-    /// from); cancelled whenever a gesture or a newer settle supersedes the glide.
-    @State private var glideTask: Task<Void, Never>?
+    /// Bumped each settle that starts a glide; the annotations' `.task(id:)` — the
+    /// render-anchored phase-2 trigger — re-runs on each new value, after the snapped
+    /// phase-1 content has been committed.
+    @State private var glideGeneration = 0
+    /// Bumped on EVERY settle; glide completions capture it so a completion from a
+    /// superseded settle can't resolve a newer choreography early.
+    @State private var settleGeneration = 0
     /// The camera recorded at the last settle, for telling real gestures apart from the
-    /// settle's own `.continuous` echo (see `MapCameraMotion.isSettledEcho`).
+    /// settle's own `.continuous` echo (see `MapCameraMotion.isMaterialMotion`).
     @State private var settledCamera: MapCamera?
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
@@ -98,14 +125,28 @@ struct CollectionMapView: View {
         entries.filter { $0.summary.coordinate != nil }
     }
 
+    /// The FLIP glide's duration; the badge fade at a merge's end is deliberately much
+    /// shorter — it's a reveal, not a movement.
+    static let glideDuration: TimeInterval = 0.35
+
     private var groups: [MapPinGroup<MapCardEntry>] {
         screenClusters ?? MapPinGrouping.groups(of: entries) { $0.summary.coordinate }
     }
 
-    /// Each located card's current cluster, plus whether it's that cluster's representative
-    /// (its first member in stable order) — keyed by card id (see `MapPinClustering.membership`).
-    private var membership: [String: (group: MapPinGroup<MapCardEntry>, isRepresentative: Bool)] {
+    private var visualGroups: [MapPinGroup<MapCardEntry>] {
+        visualClusters ?? groups
+    }
+
+    /// Each located card's POSITIONAL cluster (coordinate + FLIP source of truth), plus
+    /// whether it's that cluster's representative — keyed by card id.
+    private var positionalMembership: [String: (group: MapPinGroup<MapCardEntry>, isRepresentative: Bool)] {
         MapPinClustering.membership(of: groups)
+    }
+
+    /// Each located card's VISUAL cluster (badge/popover/visibility source of truth) —
+    /// identical to `positionalMembership` except while a glide's choreography is running.
+    private var visualMembership: [String: (group: MapPinGroup<MapCardEntry>, isRepresentative: Bool)] {
+        MapPinClustering.membership(of: visualGroups)
     }
 
     var body: some View {
@@ -113,27 +154,30 @@ struct CollectionMapView: View {
             MapReader { proxy in
                 Map(position: $cameraPosition) {
                     ForEach(locatedEntries) { entry in
-                        if let info = membership[entry.id] {
+                        if let positional = positionalMembership[entry.id], let visual = visualMembership[entry.id] {
                             // Qualified: `Models.swift` already declares its own
                             // `Annotation` (for postcard transcriptions), which shadows
                             // MapKit's SwiftUI `Annotation` content type in this module.
                             // The label builder is empty on purpose — always-visible names
                             // under every pin were clutter; names live in the popover
-                            // instead. The coordinate is this card's DISPLAY position —
-                            // its group's coordinate (own lat/long when singleton, the
-                            // cluster centroid otherwise), so MapKit itself keeps the pin
-                            // geographically anchored through every gesture — see the
-                            // type's doc comment.
-                            MapKit.Annotation(coordinate: info.group.coordinate, anchor: .bottom) {
+                            // instead. The coordinate is this card's POSITIONAL display
+                            // position — its cluster's coordinate (own lat/long when
+                            // singleton, the centroid otherwise), so MapKit itself keeps
+                            // the pin geographically anchored through every gesture; the
+                            // pin's APPEARANCE follows its VISUAL group — see the type's
+                            // doc comment on the two layers.
+                            MapKit.Annotation(coordinate: positional.group.coordinate, anchor: .bottom) {
                                 MapPinAnnotation(
-                                    group: info.group,
-                                    isRepresentative: info.isRepresentative,
-                                    isOpen: openGroupID == info.group.id,
+                                    group: visual.group,
+                                    isRepresentative: visual.isRepresentative,
+                                    isOpen: openGroupID == visual.group.id,
                                     selection: selection,
                                     glideDelta: glideDeltas[entry.id] ?? .zero,
                                     glideProgress: glideProgress,
+                                    glideGeneration: glideGeneration,
                                     maxPopoverHeight: MapPopoverSizing.maxHeight(forAvailableHeight: geometry.size.height),
-                                    onPinClick: { pinClicked(info.group) },
+                                    onGlideReady: startGlide,
+                                    onPinClick: { pinClicked(visual.group) },
                                     onNameClick: { reference in
                                         selection = reference
                                         withAnimation(.easeInOut(duration: 0.2)) { openGroupID = nil }
@@ -164,13 +208,14 @@ struct CollectionMapView: View {
                     settledCamera = context.camera
                     recluster(with: proxy)
                 }
-                // A camera CHANGE (as opposed to a settle, or the settle's own echo —
-                // see `MapCameraMotion`) means a gesture is underway: snap any in-flight
-                // glide to zero so every pin sits exactly on its geo anchor for the whole
-                // gesture. The jump is at most the glide's remaining distance — the
-                // documented trade-off in the type's doc comment.
+                // A MATERIAL camera change (as opposed to a settle, or the settle's own
+                // floating-point-drifted echo — see `MapCameraMotion`) means a gesture is
+                // underway: snap any in-flight glide to zero and resolve its visual
+                // membership, so every pin sits exactly on its geo anchor, correctly
+                // badged, for the whole gesture. The jump is at most the glide's
+                // remaining distance — the documented trade-off in the type's doc comment.
                 .onMapCameraChange(frequency: .continuous) { context in
-                    guard !MapCameraMotion.isSettledEcho(context.camera, of: settledCamera) else { return }
+                    guard MapCameraMotion.isMaterialMotion(context.camera, since: settledCamera) else { return }
                     cancelGlideIfActive()
                 }
                 // A new entry set (search narrowing, collection switch) re-clusters
@@ -200,41 +245,95 @@ struct CollectionMapView: View {
             proxy.convert(coordinate, to: .local)
         }
 
-        glideTask?.cancel()
+        settleGeneration += 1
         screenClusters = newGroups
-        // Phase 1 (this update, nothing animated — `MapPinAnnotation`'s glide animation
-        // only engages when `glideProgress` becomes 0): coordinates jump to their new geo
-        // anchors while the full-strength inverse offsets (`progress == 1`) hold every
-        // moved pin visually where it was.
         glideDeltas = deltas
-        glideProgress = deltas.isEmpty ? 0 : 1
-        if !deltas.isEmpty {
-            // Phase 2, one frame later (the snap must actually render first, or there's
-            // nothing to glide from): animate the offsets away — the glide.
-            glideTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(32))
-                guard !Task.isCancelled else { return }
-                glideProgress = 0
+        if deltas.isEmpty {
+            // Nothing moved: no choreography — visuals match positions immediately.
+            visualClusters = nil
+            glideProgress = 0
+        } else {
+            // Phase 1 (this update, nothing animated — the annotations' glide animation
+            // only engages when `glideProgress` becomes 0): coordinates jump to their new
+            // geo anchors while the full-strength inverse offsets (`progress == 1`) hold
+            // every moved pin visually where it was; simultaneously, every group touched
+            // by the change decomposes VISUALLY into plain singletons — a splitting
+            // cluster's badge disappears right here, before any motion, and a merging
+            // cluster's badge won't exist until the glide completes.
+            visualClusters = MapPinClustering.motionVisualGroups(
+                positional: newGroups,
+                moved: Set(deltas.keys),
+                ownCoordinate: { $0.summary.coordinate }
+            )
+            glideProgress = 1
+            // Phase 2 — the glide itself — is triggered by the annotations' render-
+            // anchored `.task(id: glideGeneration)` (see `MapPinAnnotation`), so it can't
+            // race this update's render. The backup below covers the task never firing
+            // (hosted-content lifecycle quirks): by 80ms the snap has long rendered, so
+            // triggering from here is safe too. Both paths funnel into `startGlide`,
+            // which is idempotent.
+            glideGeneration += 1
+            let generation = settleGeneration
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard generation == settleGeneration else { return }
+                startGlide()
             }
         }
 
-        // The open popover's group no longer exists once its cards no longer share a
-        // pin (a split/merge moved them apart or into a different cluster) — keeping a
-        // stale id around would just never match `group.id` again.
-        if let openGroupID, !newGroups.contains(where: { $0.id == openGroupID }) {
+        // The open popover's (visual) group no longer exists once its cards no longer
+        // share a pin — keeping a stale id around would just never match again.
+        let validGroupIDs = Set((visualClusters ?? newGroups).map(\.id))
+        if let openGroupID, !validGroupIDs.contains(openGroupID) {
             self.openGroupID = nil
         }
     }
 
+    /// Phase 2 of the FLIP: animates the held-back offsets to zero — the visible glide —
+    /// and resolves visual membership when the motion completes (badges appear AFTER
+    /// pins have converged; see the choreography in the type's doc comment). Idempotent:
+    /// called once per glide by whichever of the render-anchored task or the backup
+    /// timer gets there first.
+    private func startGlide() {
+        guard glideProgress == 1 else { return }
+        let generation = settleGeneration
+        withAnimation(.easeInOut(duration: Self.glideDuration), completionCriteria: .logicallyComplete) {
+            glideProgress = 0
+        } completion: {
+            resolveVisualMembership(afterSettle: generation)
+        }
+        // The annotations' value-scoped animation is what actually drives the hosted
+        // content (see `MapPinAnnotation`); if that hosting boundary swallows the
+        // transaction's completion callback, this duration-matched fallback resolves the
+        // choreography instead. Also idempotent.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(Int(Self.glideDuration * 1000) + 80))
+            resolveVisualMembership(afterSettle: generation)
+        }
+    }
+
+    /// The choreography's final beat: visual membership snaps back to positional — a
+    /// merged cluster's badge fades in (the badge's own appear-animation; see
+    /// `MapPinAnnotation`) and its redundant, now perfectly-stacked pins turn invisible.
+    /// No-ops for superseded settles and for already-resolved choreography.
+    private func resolveVisualMembership(afterSettle generation: Int) {
+        guard generation == settleGeneration else { return }
+        guard visualClusters != nil || !glideDeltas.isEmpty else { return }
+        visualClusters = nil
+        glideDeltas = [:]
+    }
+
     /// The gesture-interrupt snap (see the type's doc comment on the trade-off): zeroing
     /// the deltas zeroes every rendered offset instantly — `delta × progress` is zero
-    /// whatever `progress`'s in-flight animation is doing — leaving every pin exactly on
-    /// its geo anchor for MapKit to track through the gesture.
+    /// whatever `progress`'s in-flight animation is doing — and visual membership resolves
+    /// straight to its final state, so pins are geo-anchored and correctly badged for the
+    /// whole gesture. `glideProgress` is deliberately left alone: it isn't rendered once
+    /// the deltas are gone, and changing it here would engage the value-scoped glide
+    /// animation on the very change that must snap.
     private func cancelGlideIfActive() {
-        guard !glideDeltas.isEmpty else { return }
-        glideTask?.cancel()
+        guard visualClusters != nil || !glideDeltas.isEmpty else { return }
         glideDeltas = [:]
-        glideProgress = 0
+        visualClusters = nil
     }
 
     /// A pin click always navigates: to the single card, or the next co-located card in
@@ -251,10 +350,12 @@ struct CollectionMapView: View {
     }
 }
 
-/// One card's annotation content: every card in a cluster renders the plain pin glyph (see
-/// the file's doc comment for why), plus — for the cluster's representative only — the
-/// interactive tap target, hover tracking, and a column of names growing UPWARD from just
-/// above the pin.
+/// One card's annotation content: a structurally constant stack — popover slot, pin
+/// button, badge — whose visibility and interactivity are driven by the card's VISUAL
+/// group (see the file's doc comment on the two membership layers): only the visual
+/// representative is visible and clickable; a hidden stacked member renders the identical
+/// structure at opacity 0 so its view identity (and any in-flight glide animation)
+/// survives every membership change.
 ///
 /// Anchor invariant: the annotation reserves the popover's exact space permanently via a
 /// `.hidden()` copy of the popover itself (self-measuring — no magic sizes, correct under
@@ -265,7 +366,10 @@ struct CollectionMapView: View {
 /// visible copy conditionally mounted (rather than a permanently-mounted, opacity-hidden
 /// layer) also gives Map's annotation bridging nothing stale to composite — invariant (a).
 private struct MapPinAnnotation: View {
+    /// The card's VISUAL group — drives the badge, popover names, and visibility.
     let group: MapPinGroup<MapCardEntry>
+    /// Whether this card is its VISUAL group's representative (first member): the one
+    /// visible, hit-testable pin of a stack.
     let isRepresentative: Bool
     let isOpen: Bool
     let selection: CardReference?
@@ -276,7 +380,10 @@ private struct MapPinAnnotation: View {
     /// rendered offset is `glideDelta × glideProgress`, so a cleared delta zeroes the
     /// offset instantly regardless of this value's in-flight animation.
     let glideProgress: CGFloat
+    /// Re-triggers the render-anchored `.task(id:)` below — the glide's phase-2 trigger.
+    let glideGeneration: Int
     let maxPopoverHeight: CGFloat
+    let onGlideReady: () -> Void
     let onPinClick: () -> Void
     let onNameClick: (CardReference) -> Void
 
@@ -302,18 +409,16 @@ private struct MapPinAnnotation: View {
                             .transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
                     }
                 }
-            if isRepresentative {
-                hoverTracked(pinButton)
-            } else {
-                // Not interactive and not separately accessible: this card's pin is
-                // visually identical to (and exactly overlapping) the representative's,
-                // existing only so the card keeps its own always-mounted annotation —
-                // ready to glide out as ITSELF when the cluster later splits — see the
-                // file's doc comment.
-                pinGlyph
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
+            // ALWAYS the same button structure, whether or not this card is the visible
+            // representative — swapping between a button and a plain glyph on membership
+            // changes would rebuild the subtree and reset its identity mid-choreography
+            // (see the file's doc comment). Hidden stacked members are opacity-0 and
+            // untouchable; the opacity technique is safe here (invariant (a)'s compositor
+            // quirk bites live interactive content — hit-testing is off when hidden).
+            hoverTracked(pinButton)
+                .opacity(isRepresentative ? 1 : 0)
+                .allowsHitTesting(isRepresentative)
+                .accessibilityHidden(!isRepresentative)
         }
         .offset(glideOffset)
         .animation(.easeInOut(duration: 0.15), value: showsPopover)
@@ -328,7 +433,16 @@ private struct MapPinAnnotation: View {
         // instantaneously with it — passes `nil` and doesn't animate. Changes driven by
         // `glideDelta` alone (the gesture-interrupt clear) aren't tied to this value, so
         // they snap too.
-        .animation(glideProgress == 0 ? .easeInOut(duration: 0.35) : nil, value: glideProgress)
+        .animation(glideProgress == 0 ? .easeInOut(duration: CollectionMapView.glideDuration) : nil, value: glideProgress)
+        // The glide's phase-2 trigger, RENDER-ANCHORED: `.task(id:)` re-runs when the
+        // generation changes, and only after this annotation's phase-1 content (snapped
+        // offset, decomposed visual groups) has been committed — a fixed-delay timer
+        // raced that first render and could collapse both phases into one frame (no
+        // glide at all). Every gliding annotation calls in; `onGlideReady` is idempotent.
+        .task(id: glideGeneration) {
+            guard glideDelta != .zero else { return }
+            onGlideReady()
+        }
         // No contentShape here: the container's empty region (the reserved slot while
         // hidden, and the 6pt gap) must stay transparent to map gestures. Hover
         // continuity across the pin→names gap is handled by the grace timer below.
@@ -356,9 +470,12 @@ private struct MapPinAnnotation: View {
         #endif
     }
 
-    /// The pin's glyph and count badge — shared between the representative's interactive
-    /// button and the other members' plain, non-interactive copy, so the two render
-    /// pixel-identically and overlap seamlessly while clustered.
+    /// The pin's glyph and count badge. The badge is PERMANENTLY MOUNTED and driven by
+    /// opacity/scale — conditional mounting would change the pin's structure between
+    /// clustered and unclustered states, resetting identity mid-choreography. Appearing
+    /// (a merge's final beat, after the glide completes) fades/scales in over ~120ms;
+    /// disappearing (a split's first beat, before any motion) snaps off instantly — the
+    /// nil animation when `badgeVisible` turns false — so badges never lead the movement.
     private var pinGlyph: some View {
         Image(systemName: "mappin.circle.fill")
             .font(.title2)
@@ -366,16 +483,21 @@ private struct MapPinAnnotation: View {
             .foregroundStyle(.white, .red)
             .background(Circle().fill(.white).padding(3))
             .overlay(alignment: .topTrailing) {
-                if !isSingle {
-                    Text("\(group.elements.count)")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.white)
-                        .padding(3)
-                        .background(Circle().fill(.blue))
-                        .offset(x: 7, y: -7)
-                }
+                // max(…, 2): the text needs SOME content while hidden at count 1; a real
+                // count is only ever visible when the group has more than one member.
+                Text("\(max(group.elements.count, 2))")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(Circle().fill(.blue))
+                    .offset(x: 7, y: -7)
+                    .opacity(badgeVisible ? 1 : 0)
+                    .scaleEffect(badgeVisible ? 1 : 0.5)
+                    .animation(badgeVisible ? .easeOut(duration: 0.12) : nil, value: badgeVisible)
             }
     }
+
+    private var badgeVisible: Bool { !isSingle }
 
     private var pinButton: some View {
         Button(action: onPinClick) {

@@ -171,6 +171,32 @@ enum MapPinClustering {
         }
         return deltas
     }
+
+    /// The VISUAL membership shown while a FLIP glide is in motion (see
+    /// `CollectionMapView`'s two-layer choreography): any group containing a moved element
+    /// decomposes into per-element singletons — every pin in motion reads as a plain,
+    /// unaggregated pin (no badges lead the movement) — while groups untouched by this
+    /// recluster keep their aggregate appearance, badge and all. Splits and merges are the
+    /// same rule: a splitting cluster's badge disappears the instant motion begins, and a
+    /// merging cluster's badge only appears once the glide completes and visual membership
+    /// resolves back to the positional grouping.
+    ///
+    /// Each decomposed singleton takes its element's OWN coordinate (falling back to the
+    /// group's) — coordinates here identify visual groups (popover open-state), they don't
+    /// position anything, but distinct ids keep one gliding pin's popover from opening its
+    /// former cluster-mates'.
+    static func motionVisualGroups<Element: Identifiable>(
+        positional: [MapPinGroup<Element>],
+        moved: Set<Element.ID>,
+        ownCoordinate: (Element) -> CLLocationCoordinate2D?
+    ) -> [MapPinGroup<Element>] {
+        positional.flatMap { group -> [MapPinGroup<Element>] in
+            guard group.elements.contains(where: { moved.contains($0.id) }) else { return [group] }
+            return group.elements.map { element in
+                MapPinGroup(coordinate: ownCoordinate(element) ?? group.coordinate, elements: [element])
+            }
+        }
+    }
 }
 
 /// A pin click always navigates; on a multi-card pin, successive clicks rotate through the
