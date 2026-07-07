@@ -520,8 +520,7 @@ private struct MapPinAnnotation: View {
                     .background(Circle().fill(.blue))
                     .offset(x: 7, y: -7)
                     .opacity(badgeVisible ? 1 : 0)
-                    .scaleEffect(badgeVisible ? 1 : 0.5)
-                    .animation(badgeVisible ? .easeOut(duration: 0.12) : nil, value: badgeVisible)
+                    .animation(badgeVisible ? .easeOut(duration: 0.15) : nil, value: badgeVisible)
             }
     }
 
