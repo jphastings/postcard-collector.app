@@ -6,10 +6,9 @@ on:
   pull_request:
 
 env:
-  # Pinned commit of jphastings/dotpostcard that provides Postcards.xcframework.
-  # Bump this once dotpostcard cuts a release tag covering this feature set, and
-  # switch to that tag instead of a raw commit (see docs/RELEASING.md).
-  DOTPOSTCARD_REF: v0.19.2
+  # Pinned release tag of jphastings/dotpostcard that provides Postcards.xcframework.
+  # Bump to a newer tag when picking up framework changes (see docs/RELEASING.md).
+  DOTPOSTCARD_REF: v0.20.0
 
 jobs:
   core:

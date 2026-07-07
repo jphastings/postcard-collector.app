@@ -10,7 +10,7 @@ permissions:
 
 env:
   # Keep in sync with ci.yaml — see the comment there for the bump procedure.
-  DOTPOSTCARD_REF: v0.19.2
+  DOTPOSTCARD_REF: v0.20.0
   DEVELOPMENT_TEAM: 7L3537S658
 
 jobs:
