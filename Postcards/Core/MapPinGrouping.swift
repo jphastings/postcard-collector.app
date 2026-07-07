@@ -199,6 +199,27 @@ enum MapPinClustering {
     }
 }
 
+/// When a FLIP glide's ANIMATED progress counts as arrived at its target — the decision
+/// behind `CollectionMapView`'s per-member glide-completion reporting. SwiftUI feeds the
+/// glide modifier interpolated progress values every frame (via `Animatable`), and the
+/// frame that reaches (a whisker above) zero IS the animation's true completion, measured
+/// inside the hosted annotation content where the animation actually runs — unlike
+/// `withAnimation`'s transaction completion, which MapKit's hosting boundary reports
+/// without ever running the animation.
+enum MapGlideArrival {
+    /// Easing curves approach the target asymptotically before the exact final frame;
+    /// anything inside this is a sub-pixel remainder — geometrically coincident on screen.
+    static let terminalProgress: CGFloat = 0.001
+
+    /// Arrived = this pin was genuinely gliding (a non-zero delta) AND its interpolated
+    /// progress has reached the terminal band around zero. Pins that never moved (zero
+    /// delta) never "arrive" — their reports would be meaningless — and phase 1's snap to
+    /// progress 1 is the opposite end of the animation, not an arrival.
+    static func hasArrived(progress: CGFloat, delta: CGSize) -> Bool {
+        delta != .zero && progress <= terminalProgress
+    }
+}
+
 /// A pin click always navigates; on a multi-card pin, successive clicks rotate through the
 /// co-located cards.
 enum MapPinRotation {

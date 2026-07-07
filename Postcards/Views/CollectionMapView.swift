@@ -49,9 +49,16 @@ import SwiftUI
 ///   so a SPLIT reads as: badge off → the single pin becomes several plain pins → they
 ///   glide apart; and a MERGE reads as: plain pins glide together → THEN the count badge
 ///   fades in (~120ms) and the now perfectly-stacked redundant pins turn invisible.
-///   Visual membership resolves back to positional in the glide's completion
-///   (`withAnimation(completionCriteria: .logicallyComplete)`, plus a duration-matched
-///   fallback in case the hosted-content boundary swallows the completion callback).
+///   Visual membership resolves back to positional only when the glide has ACTUALLY
+///   finished: each gliding member reports terminal progress from inside its own
+///   annotation content (`GlideOffsetEffect`, the Animatable-`animatableData` completion
+///   technique — see `MapGlideArrival`), and resolution runs once every member of the
+///   settle has arrived, with a duration-matched timer as fallback. NOT from
+///   `withAnimation(completionCriteria:)`: that completion is tied to the OUTER
+///   transaction, which animates nothing here (MapKit's hosting boundary is why the glide
+///   runs on a value-scoped animation inside the content), so `.logicallyComplete` fired
+///   at t≈0 and hid a merge's stacked pins before their glide drew a single frame — pins
+///   vanished in place instead of gliding.
 ///
 /// Trade-off, deliberate: if a new gesture starts mid-glide, all glide offsets snap to
 /// zero immediately (non-animated) AND visual membership resolves straight to its final
@@ -106,6 +113,10 @@ struct CollectionMapView: View {
     /// Bumped on EVERY settle; glide completions capture it so a completion from a
     /// superseded settle can't resolve a newer choreography early.
     @State private var settleGeneration = 0
+    /// The gliding members that have reported terminal progress this settle (see
+    /// `GlideOffsetEffect`/`glideArrived`); once it covers every key of `glideDeltas`,
+    /// the choreography's final beat runs. Reset by every settle and interrupt.
+    @State private var glideArrivals: Set<String> = []
     /// The camera recorded at the last settle, for telling real gestures apart from the
     /// settle's own `.continuous` echo (see `MapCameraMotion.isMaterialMotion`).
     @State private var settledCamera: MapCamera?
@@ -177,6 +188,7 @@ struct CollectionMapView: View {
                                     glideGeneration: glideGeneration,
                                     maxPopoverHeight: MapPopoverSizing.maxHeight(forAvailableHeight: geometry.size.height),
                                     onGlideReady: startGlide,
+                                    onGlideArrival: { glideArrived(entry.id) },
                                     onPinClick: { pinClicked(visual.group) },
                                     onNameClick: { reference in
                                         selection = reference
@@ -248,6 +260,7 @@ struct CollectionMapView: View {
         settleGeneration += 1
         screenClusters = newGroups
         glideDeltas = deltas
+        glideArrivals = []
         if deltas.isEmpty {
             // Nothing moved: no choreography — visuals match positions immediately.
             visualClusters = nil
@@ -289,26 +302,41 @@ struct CollectionMapView: View {
         }
     }
 
-    /// Phase 2 of the FLIP: animates the held-back offsets to zero — the visible glide —
-    /// and resolves visual membership when the motion completes (badges appear AFTER
-    /// pins have converged; see the choreography in the type's doc comment). Idempotent:
-    /// called once per glide by whichever of the render-anchored task or the backup
-    /// timer gets there first.
+    /// Phase 2 of the FLIP: animates the held-back offsets to zero — the visible glide.
+    /// Idempotent: called once per glide by whichever of the render-anchored task or the
+    /// backup timer gets there first.
+    ///
+    /// Resolution of the choreography (badges after convergence) is NOT gated on this
+    /// transaction's completion: the outer transaction animates nothing — the glide runs
+    /// on the value-scoped animation inside each annotation's hosted content — so
+    /// `withAnimation(completionCriteria:)` reported "logically complete" at t≈0 and hid
+    /// a merge's stacked pins before their glide drew a frame. Instead each gliding
+    /// member reports its own terminal progress from inside the animation
+    /// (`GlideOffsetEffect` → `glideArrived`), with the duration-matched timer below as
+    /// the fallback for anything that keeps the reports from arriving.
     private func startGlide() {
         guard glideProgress == 1 else { return }
         let generation = settleGeneration
-        withAnimation(.easeInOut(duration: Self.glideDuration), completionCriteria: .logicallyComplete) {
+        withAnimation(.easeInOut(duration: Self.glideDuration)) {
             glideProgress = 0
-        } completion: {
-            resolveVisualMembership(afterSettle: generation)
         }
-        // The annotations' value-scoped animation is what actually drives the hosted
-        // content (see `MapPinAnnotation`); if that hosting boundary swallows the
-        // transaction's completion callback, this duration-matched fallback resolves the
-        // choreography instead. Also idempotent.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(Int(Self.glideDuration * 1000) + 80))
             resolveVisualMembership(afterSettle: generation)
+        }
+    }
+
+    /// One gliding member's animation reached its target (see `GlideOffsetEffect`). Once
+    /// every member of the CURRENT settle's glide has arrived, the choreography resolves.
+    /// Self-guarding against staleness: a newer settle resets `glideArrivals` and snaps
+    /// `glideProgress` back to 1, so reports from a superseded animation can't resolve
+    /// the new choreography early; duplicate reports (interpolation can graze the
+    /// terminal band over several frames) are absorbed by the set.
+    private func glideArrived(_ id: String) {
+        guard glideProgress == 0, glideDeltas[id] != nil else { return }
+        glideArrivals.insert(id)
+        if glideArrivals.isSuperset(of: glideDeltas.keys) {
+            resolveVisualMembership(afterSettle: settleGeneration)
         }
     }
 
@@ -333,6 +361,7 @@ struct CollectionMapView: View {
     private func cancelGlideIfActive() {
         guard visualClusters != nil || !glideDeltas.isEmpty else { return }
         glideDeltas = [:]
+        glideArrivals = []
         visualClusters = nil
     }
 
@@ -384,6 +413,9 @@ private struct MapPinAnnotation: View {
     let glideGeneration: Int
     let maxPopoverHeight: CGFloat
     let onGlideReady: () -> Void
+    /// This card's glide animation reached its target (reported from INSIDE the animation
+    /// by `GlideOffsetEffect`) — the choreography's true completion signal.
+    let onGlideArrival: () -> Void
     let onPinClick: () -> Void
     let onNameClick: (CardReference) -> Void
 
@@ -392,10 +424,6 @@ private struct MapPinAnnotation: View {
 
     private var isSingle: Bool { group.elements.count == 1 }
     private var showsPopover: Bool { isRepresentative && (isOpen || isHovered) }
-
-    private var glideOffset: CGSize {
-        CGSize(width: glideDelta.width * glideProgress, height: glideDelta.height * glideProgress)
-    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -420,7 +448,7 @@ private struct MapPinAnnotation: View {
                 .allowsHitTesting(isRepresentative)
                 .accessibilityHidden(!isRepresentative)
         }
-        .offset(glideOffset)
+        .modifier(GlideOffsetEffect(delta: glideDelta, progress: glideProgress, onArrival: onGlideArrival))
         .animation(.easeInOut(duration: 0.15), value: showsPopover)
         // The FLIP glide. Explicit, VALUE-SCOPED animation rather than an ambient
         // `withAnimation` in `CollectionMapView`: each annotation's content is hosted by
@@ -553,6 +581,44 @@ private struct MapPinAnnotation: View {
     }
 
     private var chipClipMargin: CGFloat { 3 }
+}
+
+/// The FLIP glide's offset (`delta × progress`) with TRUE completion reporting, measured
+/// inside the hosted annotation content where the value-scoped animation actually runs.
+/// `Animatable` is the load-bearing part (the same technique `FlipFace` uses for its
+/// backface cut): SwiftUI calls the `animatableData` setter with interpolated progress
+/// every frame of the glide, so the frame that reaches the terminal band around zero IS
+/// the animation's real completion (`MapGlideArrival.hasArrived`). This exists because
+/// `withAnimation(_:completionCriteria:completion:)` reports on the OUTER transaction —
+/// which animates nothing here, since MapKit's hosting boundary is why the glide runs on
+/// a value-scoped animation inside the content — so `.logicallyComplete` fired at t≈0 and
+/// resolved a merge's visuals (hiding its stacked pins) before the glide drew one frame.
+///
+/// Non-animated changes never report: an interrupt clears `delta` (so `hasArrived` is
+/// false whatever the progress), and phase 1's snap sets progress to 1, the far end of
+/// the terminal band. Grazing the band across several closing frames can report more than
+/// once; the parent's arrival set absorbs duplicates.
+private struct GlideOffsetEffect: ViewModifier, Animatable {
+    var delta: CGSize
+    var progress: CGFloat
+    var onArrival: () -> Void
+
+    var animatableData: CGFloat {
+        get { progress }
+        set {
+            progress = newValue
+            if MapGlideArrival.hasArrived(progress: newValue, delta: delta) {
+                // Async: this setter runs during render interpolation, and the callback
+                // mutates view state, which must not happen mid-render.
+                let report = onArrival
+                DispatchQueue.main.async(execute: report)
+            }
+        }
+    }
+
+    func body(content: Content) -> some View {
+        content.offset(CGSize(width: delta.width * progress, height: delta.height * progress))
+    }
 }
 
 /// One name chip in a pin's popover: its own rounded `.regularMaterial` plate with a
