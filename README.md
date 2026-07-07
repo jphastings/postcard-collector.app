@@ -100,3 +100,7 @@ list and release steps.
   but `CollectionGridView` only wires up per-collection search for now — an "Everywhere"
   search scope over every open source is the natural next step, once there's a
   motivating multi-source scenario (iCloud).
+
+# Thanks
+
+The (noticably hand-made 😅) app icon uses 'postcard' by Gung Yoga from <a href="https://thenounproject.com/browse/icons/term/postcard/" target="_blank" title="postcard Icons">Noun Project</a> (CC BY 3.0)

@@ -80,9 +80,10 @@ targets:
           - "Support/**"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
       INFOPLIST_KEY_UILaunchScreen_Generation: true
-      INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+      INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
       TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - framework: Frameworks/Postcards.xcframework
@@ -100,6 +101,7 @@ targets:
           - "Support/**"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.mac
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       INFOPLIST_KEY_NSHumanReadableCopyright: ""
       COMBINE_HIDPI_IMAGES: true
       ENABLE_HARDENED_RUNTIME: true
