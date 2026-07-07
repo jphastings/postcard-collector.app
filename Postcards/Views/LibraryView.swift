@@ -14,6 +14,8 @@ struct LibraryView: View {
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     @State private var selectedSource: LibrarySource?
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
@@ -96,43 +98,46 @@ struct LibraryView: View {
                 Text("This deletes the file. This can't be undone.")
             }
         } content: {
-            if !hasAnySources {
-                emptyLibraryView
-            } else if let selectedSource {
-                switch selectedSource {
-                case .collection:
-                    CollectionGridView(
-                        source: selectedSource,
-                        selection: $selectedCard,
-                        writableCollections: writableCollections,
-                        cloudLibrary: cloudLibrary,
-                        onCreateCollection: { try await createCollection(titled: $0) }
-                    )
-                case .cardFile(let path, _):
-                    // No longer reachable via the sidebar (bare files live only inside
-                    // "Single postcards" now), kept so the switch stays exhaustive and
-                    // safe if a bare-file source is ever selected some other way.
-                    SingleCardSourceView(path: path, selection: $selectedCard)
-                case .singlePostcards:
-                    SinglePostcardsGridView(
-                        paths: singlePostcardPaths,
-                        selection: $selectedCard,
-                        writableCollections: writableCollections,
-                        cloudLibrary: cloudLibrary,
-                        onFileConsumed: { library.remove(path: $0) },
-                        onCreateCollection: { try await createCollection(titled: $0) }
-                    )
-                case .allCollections:
-                    AllCollectionsView(
-                        collectionPaths: writableCollections.map(\.path),
-                        barePaths: singlePostcardPaths,
-                        selection: $selectedCard,
-                        cloudLibrary: cloudLibrary
-                    )
+            Group {
+                if !hasAnySources {
+                    emptyLibraryView
+                } else if let selectedSource {
+                    switch selectedSource {
+                    case .collection:
+                        CollectionGridView(
+                            source: selectedSource,
+                            selection: $selectedCard,
+                            writableCollections: writableCollections,
+                            cloudLibrary: cloudLibrary,
+                            onCreateCollection: { try await createCollection(titled: $0) }
+                        )
+                    case .cardFile(let path, _):
+                        // No longer reachable via the sidebar (bare files live only inside
+                        // "Single postcards" now), kept so the switch stays exhaustive and
+                        // safe if a bare-file source is ever selected some other way.
+                        SingleCardSourceView(path: path, selection: $selectedCard)
+                    case .singlePostcards:
+                        SinglePostcardsGridView(
+                            paths: singlePostcardPaths,
+                            selection: $selectedCard,
+                            writableCollections: writableCollections,
+                            cloudLibrary: cloudLibrary,
+                            onFileConsumed: { library.remove(path: $0) },
+                            onCreateCollection: { try await createCollection(titled: $0) }
+                        )
+                    case .allCollections:
+                        AllCollectionsView(
+                            collectionPaths: writableCollections.map(\.path),
+                            barePaths: singlePostcardPaths,
+                            selection: $selectedCard,
+                            cloudLibrary: cloudLibrary
+                        )
+                    }
+                } else {
+                    ContentUnavailableView("Select a Collection", systemImage: "photo.stack.fill")
                 }
-            } else {
-                ContentUnavailableView("Select a Collection", systemImage: "photo.stack.fill")
             }
+            .modifier(CompactDetailPush(selectedCard: $selectedCard, isCompact: horizontalSizeClass == .compact))
         } detail: {
             if let selectedCard {
                 CardDetailView(reference: selectedCard)
@@ -293,6 +298,11 @@ struct LibraryView: View {
             renameText = source.displayName
             renamingSource = source
         }
+        if cloudLibrary.containerState == .available {
+            Button("Add to iCloud…") {
+                Task { await addToICloud(source) }
+            }
+        }
         revealInFinderButton(path: source.path)
         // "Remove from Library" reads as a non-destructive "just forget it", but an
         // imported collection's only copy lives in the app's own container — there's
@@ -372,6 +382,30 @@ struct LibraryView: View {
 
     private func isCloudBacked(_ path: String) -> Bool {
         cloudLibrary.items.contains { $0.path == path }
+    }
+
+    /// Registers the moved file as a source immediately, same reasoning as
+    /// `createCollection`: instant visibility, then it moves to the iCloud section once
+    /// `CloudLibrary`'s metadata query notices it.
+    private func addToICloud(_ source: LibrarySource) async {
+        guard let documentsURL = cloudLibrary.documentsURL else { return }
+        let sourceURL = URL(fileURLWithPath: source.path)
+        let destinationURL = documentsURL.appending(path: sourceURL.lastPathComponent)
+        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+            library.importError = "A collection file named “\(sourceURL.lastPathComponent)” already exists in iCloud."
+            return
+        }
+        await GoCore.shared.invalidateSource(at: source.path)
+        do {
+            try await CloudLibrary.moveToCloud(from: source.path, to: destinationURL)
+            library.remove(path: source.path)
+            library.registerCollection(at: destinationURL)
+            if selectedSource == source {
+                selectedSource = .collection(path: destinationURL.path, displayName: source.displayName)
+            }
+        } catch {
+            library.importError = error.localizedDescription
+        }
     }
 
     // MARK: - New collection… (grid context menus)
@@ -513,6 +547,26 @@ private struct SourceRow: View {
         guard source.isCollection else { return }
         if let fetched = try? await GoCore.shared.title(ofCollectionAt: source.path), !fetched.isEmpty {
             title = fetched
+        }
+    }
+}
+
+/// On compact-width devices (iPhone), `NavigationSplitView`'s third "detail" column is
+/// never made visible by the framework's own navigation — only `List(selection:)` changes
+/// auto-push there, and the content pane's masonry grids aren't lists. Push the tapped
+/// card explicitly within the content column's own navigation stack instead; on regular
+/// width the `detail:` column already shows it directly, so this is a no-op there.
+private struct CompactDetailPush: ViewModifier {
+    @Binding var selectedCard: CardReference?
+    let isCompact: Bool
+
+    func body(content: Content) -> some View {
+        if isCompact {
+            content.navigationDestination(item: $selectedCard) { card in
+                CardDetailView(reference: card)
+            }
+        } else {
+            content
         }
     }
 }

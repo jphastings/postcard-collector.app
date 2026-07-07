@@ -259,6 +259,16 @@ final class CloudLibrary {
         }.value
     }
 
+    /// Moves a local file into the iCloud ubiquity container, transitioning it to a synced
+    /// item — the move-side counterpart to `deleteCoordinated`. Used by "Add to iCloud…" to
+    /// promote an imported collection so it starts syncing like anything dropped into the
+    /// iCloud Postcards folder directly.
+    nonisolated static func moveToCloud(from sourcePath: String, to destinationURL: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.setUbiquitous(true, itemAt: URL(fileURLWithPath: sourcePath), destinationURL: destinationURL)
+        }.value
+    }
+
     private nonisolated static func withCoordinatedWrite<T>(
         at path: String,
         options: NSFileCoordinator.WritingOptions = [],
