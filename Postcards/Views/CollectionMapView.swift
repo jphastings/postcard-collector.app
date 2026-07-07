@@ -519,8 +519,12 @@ private struct MapPinAnnotation: View {
                     .padding(3)
                     .background(Circle().fill(.blue))
                     .offset(x: 7, y: -7)
+                    // No animation in either direction: an animated appearance also
+                    // animates the badge's frame settling within the annotation (the
+                    // popover slot can resize in the same resolve), which reads as the
+                    // badge "dropping in" from far above the pin.
                     .opacity(badgeVisible ? 1 : 0)
-                    .animation(badgeVisible ? .easeOut(duration: 0.15) : nil, value: badgeVisible)
+                    .animation(nil, value: badgeVisible)
             }
     }
 
