@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.4.0"
+    MARKETING_VERSION: "0.4.1"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: true
     ENABLE_USER_SCRIPT_SANDBOXING: true
@@ -179,6 +179,7 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.watchkitapp
       INFOPLIST_KEY_WKApplication: true
       INFOPLIST_KEY_WKCompanionAppBundleIdentifier: org.dotpostcard.collector
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       # The watch app has its own App ID + iCloud entitlement, so it needs its own App Store
       # profile at release (see the IOS_PROFILE_SPECIFIER note above and docs/RELEASING.md).
       PROVISIONING_PROFILE_SPECIFIER: $(WATCH_PROFILE_SPECIFIER)

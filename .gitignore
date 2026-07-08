@@ -7,6 +7,7 @@ Frameworks/
 # Xcode user state / build products.
 xcuserdata/
 DerivedData/
+build/
 *.xcuserstate
 .DS_Store
 Postcards/Support/
