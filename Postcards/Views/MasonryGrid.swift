@@ -36,24 +36,41 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
                 }
                 .padding(spacing)
             }
-            .stableScrollEdgeEffect()
+            .quietGridInteractions()
         }
     }
 }
 
 private extension View {
-    /// iOS 26's Liquid Glass "scroll edge effect" (on by default once built against the
-    /// iOS 26 SDK) crashes while laying out this masonry ScrollView — a vertical ScrollView
-    /// whose content is an HStack of LazyVStacks: `-[UIScrollView _updatePockets]`
-    /// over-releases a `ScrollEdgeEffectView` during `removeFromSuperview`, aborting on
-    /// `objc_unsafeClaimAutoreleasedReturnValue`. The `.hard` style renders the edge without
-    /// that soft-effect view lifecycle, sidestepping the crash.
+    /// This masonry ScrollView — a vertical ScrollView whose content is an HStack of
+    /// LazyVStacks of asynchronously-loading Button cells — trips two iOS 26 UIKit bugs while
+    /// its cells materialise and recycle during layout. Both are quieted by turning OFF the
+    /// two Liquid Glass effects the grid doesn't need anyway (the rest of the app keeps its
+    /// Liquid Glass look):
+    ///
+    /// 1. Scroll edge effect → `.hard`: the default soft effect churns a `ScrollEdgeEffectView`
+    ///    in `-[UIScrollView _updatePockets]` and over-releases it. A grid of die-cut
+    ///    thumbnails doesn't want a soft glass fade at its edges regardless.
+    /// 2. Hover effect → disabled: iOS gives each cell Button a pointer/hover effect, and
+    ///    `-[_UIPointerInteractionAssistant _assistantForView:]` reads a recycled cell's freed
+    ///    layer while monitoring them. There's no pointer on iPhone and the grid has its own
+    ///    selection highlight, so the per-cell hover effect is unnecessary.
     @ViewBuilder
-    func stableScrollEdgeEffect() -> some View {
-        if #available(iOS 26.0, macOS 26.0, *) {
+    func quietGridInteractions() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .all).hoverEffectDisabled()
+        } else {
+            hoverEffectDisabled()
+        }
+        #elseif os(macOS)
+        if #available(macOS 26.0, *) {
             scrollEdgeEffectStyle(.hard, for: .all)
         } else {
             self
         }
+        #else
+        self
+        #endif
     }
 }
