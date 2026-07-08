@@ -50,12 +50,32 @@ struct WatchCollectionListView: View {
         }
         .overlay {
             if collections.isEmpty {
-                ContentUnavailableView(
-                    "No Collections",
-                    systemImage: "square.stack",
-                    description: Text("Collections added to iCloud Drive will appear here.")
-                )
+                emptyOverlay
             }
+        }
+    }
+
+    /// Distinguishes the reasons the list can be empty so a blank watch screen is
+    /// diagnosable: still resolving the container, iCloud genuinely unavailable
+    /// (not signed in / entitlement not granted on this device), or connected but no
+    /// collections found (which points at discovery rather than connectivity).
+    @ViewBuilder
+    private var emptyOverlay: some View {
+        switch cloudLibrary.containerState {
+        case .resolving:
+            ProgressView("Connecting to iCloud…")
+        case .unavailable:
+            ContentUnavailableView(
+                "iCloud Unavailable",
+                systemImage: "icloud.slash",
+                description: Text("Sign in to iCloud and turn on iCloud Drive on your iPhone.")
+            )
+        case .available:
+            ContentUnavailableView(
+                "No Collections",
+                systemImage: "square.stack",
+                description: Text("Collections in iCloud Drive → Postcards will appear here.")
+            )
         }
     }
 

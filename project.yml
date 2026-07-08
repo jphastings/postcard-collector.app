@@ -104,6 +104,10 @@ targets:
       INFOPLIST_KEY_UILaunchScreen_Generation: true
       INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
       TARGETED_DEVICE_FAMILY: "1,2"
+      # The app declares document types but imports by copying files into its own container
+      # (it doesn't edit them in place), so it opens documents out-of-place. Declaring this
+      # explicitly clears App Store validation warning ITMS-90737.
+      INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: NO
       # Per-target provisioning profile, set only for release signing (see release.yaml /
       # docs/RELEASING.md). Release passes the profile *name* per target via a user-defined
       # var (e.g. IOS_PROFILE_SPECIFIER=…) instead of a single global
