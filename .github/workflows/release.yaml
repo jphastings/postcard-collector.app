@@ -10,7 +10,7 @@ permissions:
 
 env:
   # Keep in sync with ci.yaml — see the comment there for the bump procedure.
-  DOTPOSTCARD_REF: v0.20.0
+  DOTPOSTCARD_REF: v0.21.0
   DEVELOPMENT_TEAM: 7L3537S658
 
 jobs:
@@ -19,21 +19,21 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout dotpostcard
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: jphastings/dotpostcard
           ref: ${{ env.DOTPOSTCARD_REF }}
           path: dotpostcard
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: dotpostcard/go.mod
           cache-dependency-path: dotpostcard/go.sum
 
       - name: Cache built XCFramework
         id: cache-xcframework
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dotpostcard/build/Postcards.xcframework
           key: xcframework-${{ env.DOTPOSTCARD_REF }}
@@ -55,7 +55,7 @@ jobs:
         run: tar -czf Postcards.xcframework.tar.gz -C dotpostcard/build Postcards.xcframework
 
       - name: Upload XCFramework
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Postcards.xcframework
           path: Postcards.xcframework.tar.gz
@@ -77,10 +77,10 @@ jobs:
       NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY_BASE64 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Download XCFramework
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Postcards.xcframework
 
@@ -177,7 +177,7 @@ jobs:
           ditto -c -k --keepParent build/export-macos/Postcards-macOS.app dist/Postcards-macOS.zip
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Postcards-macOS
           path: dist/Postcards-macOS.zip
@@ -204,10 +204,10 @@ jobs:
       ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Download XCFramework
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Postcards.xcframework
 
@@ -316,7 +316,7 @@ jobs:
           ditto -c -k --keepParent "build/export-ios/$(basename "$APP_PATH")" dist/Postcards-iOS-simulator.zip
 
       - name: Upload iOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Postcards-iOS
           # Only the unsigned fallback produces a file; the signed path uploads to
@@ -335,14 +335,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           pattern: "Postcards-*" # excludes the intermediate Postcards.xcframework artifact
           merge-multiple: true
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
