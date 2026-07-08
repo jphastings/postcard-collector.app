@@ -10,3 +10,10 @@ DerivedData/
 *.xcuserstate
 .DS_Store
 Postcards/Support/
+
+# XcodeGen-generated Info.plists and entitlements (declared inline in project.yml,
+# same as Postcards/Support above — not source of truth). The .swift files alongside
+# them in these directories ARE source and stay tracked.
+Extensions/**/Info.plist
+Extensions/**/*.entitlements
+WatchApp/*.entitlements

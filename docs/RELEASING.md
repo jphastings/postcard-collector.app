@@ -14,10 +14,22 @@ instead of a TestFlight upload).
 The app uses iCloud, a *capability* that must be enabled on each App ID in the developer
 portal before any provisioning profile can carry the entitlement. Under
 [Certificates, Identifiers & Profiles → Identifiers](https://developer.apple.com/account/resources/identifiers/list),
-edit both App IDs — `org.dotpostcard.collector` (iOS) and `org.dotpostcard.collector.mac`
-(macOS) — and enable **iCloud** (CloudKit/CloudDocuments) with the
+edit all three App IDs — `org.dotpostcard.collector` (iOS), `org.dotpostcard.collector.mac`
+(macOS), and `org.dotpostcard.collector.watchkitapp` (the watchOS companion, which reads the
+shared container directly) — and enable **iCloud** (CloudKit/CloudDocuments) with the
 `iCloud.org.dotpostcard.collector` container. Any profile generated *before* this was enabled
 is invalid for this app: regenerate and re-download profiles after changing a capability.
+
+> The watch App ID (`…watchkitapp`) is new — create it under Identifiers if it doesn't exist,
+> enable iCloud on it, and only *then* mint its App Store profile (below). This is the same
+> "capability-before-profile" ordering as the other two App IDs.
+
+The bundled macOS **QuickLook extensions** (`…mac.preview`, `…mac.thumbnail`) are sandboxed
+but carry no restricted capability, so they need **no** provisioning profile — they sign with
+the Developer ID identity alone. The release workflow scopes each profile to a specific target
+(via per-target `PROVISIONING_PROFILE_SPECIFIER=$(…_PROFILE_SPECIFIER)` build settings in
+`project.yml`) rather than one global specifier, precisely so the app's profile isn't forced
+onto the profile-less appexes or onto the watch app (which needs its own).
 
 ## Repo secrets
 
@@ -76,16 +88,23 @@ base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 | `IOS_DIST_CERTIFICATE_BASE64` | Your **Apple Distribution** certificate + private key, exported as a `.p12`, base64-encoded (same export process as the macOS cert above, different certificate type). |
 | `IOS_P12_PASSWORD` | The password for that `.p12`. |
 | `IOS_PROVISIONING_PROFILE_BASE64` | An **App Store** provisioning profile for `org.dotpostcard.collector`, base64-encoded. |
+| `WATCH_PROVISIONING_PROFILE_BASE64` | An **App Store** provisioning profile for the watch App ID `org.dotpostcard.collector.watchkitapp`, base64-encoded. Required — the signed iOS archive embeds (and must sign) the watch app, so it can't be built without this. |
 
-**Provisioning profile:** [developer.apple.com → Profiles](https://developer.apple.com/account/resources/profiles/list) →
-create an "App Store" distribution profile for the `org.dotpostcard.collector` App ID.
-As with the macOS profile, it must be (re)generated *after* enabling iCloud on the App ID —
-a profile created before that won't match the app's iCloud entitlements and the archive will
-fail. Download the `.mobileprovision`, then:
+**Provisioning profiles:** [developer.apple.com → Profiles](https://developer.apple.com/account/resources/profiles/list) →
+create an "App Store" distribution profile for **both** the `org.dotpostcard.collector` App ID
+*and* the `org.dotpostcard.collector.watchkitapp` App ID (the same Apple Distribution
+certificate signs both). As with the macOS profile, each must be (re)generated *after*
+enabling iCloud on its App ID — a profile created before that won't match the iCloud
+entitlements and the archive will fail. Download each `.mobileprovision`, then:
 
 ```sh
-base64 -i Postcards_App_Store.mobileprovision | pbcopy
+base64 -i Postcards_App_Store.mobileprovision | pbcopy          # → IOS_PROVISIONING_PROFILE_BASE64
+base64 -i Postcards_Watch_App_Store.mobileprovision | pbcopy    # → WATCH_PROVISIONING_PROFILE_BASE64
 ```
+
+If `WATCH_PROVISIONING_PROFILE_BASE64` is absent, the release falls back to the unsigned iOS
+Simulator build (same as when any other iOS signing secret is missing), so a partial secret
+set never fails the release — it just skips the TestFlight upload.
 
 ### TestFlight upload (App Store Connect API key)
 

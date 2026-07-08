@@ -46,6 +46,11 @@ targetTemplates:
             LSHandlerRank: Owner
             LSItemContentTypes:
               - org.dotpostcard.postcards
+          - CFBundleTypeName: Postcard
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.dotpostcard.postcard
           - CFBundleTypeName: Postcard Image
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -62,6 +67,17 @@ targetTemplates:
             UTTypeTagSpecification:
               public.filename-extension:
                 - postcards
+          # Deliberately conforms to public.data only (NOT public.image) so the system
+          # doesn't claim QuickLook previews/thumbnails for bare .postcard files — our own
+          # QuickLook extension (a later phase) is meant to own that, not a generic image
+          # viewer.
+          - UTTypeIdentifier: org.dotpostcard.postcard
+            UTTypeDescription: Postcard
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - postcard
         NSUbiquitousContainers:
           iCloud.org.dotpostcard.collector:
             NSUbiquitousContainerName: Postcards
@@ -85,10 +101,23 @@ targets:
       INFOPLIST_KEY_UILaunchScreen_Generation: true
       INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
       TARGETED_DEVICE_FAMILY: "1,2"
+      # Per-target provisioning profile, set only for release signing (see release.yaml /
+      # docs/RELEASING.md). Release passes the profile *name* per target via a user-defined
+      # var (e.g. IOS_PROFILE_SPECIFIER=…) instead of a single global
+      # PROVISIONING_PROFILE_SPECIFIER on the xcodebuild CLI — a global one would be forced
+      # onto the embedded watch app (org.dotpostcard.collector.watchkitapp), whose bundle id
+      # it doesn't match. Expands to empty (harmless) for CODE_SIGNING_ALLOWED=NO / automatic
+      # dev builds.
+      PROVISIONING_PROFILE_SPECIFIER: $(IOS_PROFILE_SPECIFIER)
     dependencies:
       - framework: Frameworks/Postcards.xcframework
         embed: true
         codeSign: true
+      # Linked explicitly for CollectionReader.swift's `import SQLite3` — the SDK module
+      # doesn't get its symbols linked automatically.
+      - sdk: libsqlite3.tbd
+      - target: Postcards-watchOS
+        embed: true
 
   Postcards-macOS:
     templates: [PostcardApp]
@@ -105,10 +134,127 @@ targets:
       INFOPLIST_KEY_NSHumanReadableCopyright: ""
       COMBINE_HIDPI_IMAGES: true
       ENABLE_HARDENED_RUNTIME: true
+      # Scoped to this target only (see the IOS_PROFILE_SPECIFIER note above). The bundled
+      # QuickLook appexes are sandboxed but carry no restricted entitlement, so they sign
+      # with the Developer ID identity and NO profile — a global specifier would wrongly try
+      # to apply this app's profile to them.
+      PROVISIONING_PROFILE_SPECIFIER: $(MACOS_PROFILE_SPECIFIER)
     dependencies:
       - framework: Frameworks/Postcards.xcframework
         embed: true
         codeSign: true
+      - sdk: libsqlite3.tbd
+      - target: PostcardsQuickLookPreview
+        embed: true
+      - target: PostcardsQuickLookThumbnail
+        embed: true
+
+  Postcards-watchOS:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: WatchApp
+      - path: Postcards/Core/Models.swift
+      - path: Postcards/Core/FlipGeometry.swift
+      - path: Postcards/Core/ImageSplitter.swift
+      - path: Postcards/Core/CollectionReader.swift
+      - path: Postcards/Core/CardFileXMP.swift
+      - path: Postcards/Core/CloudLibrary.swift
+      - path: Postcards/Core/LibrarySource.swift
+      - path: Postcards/Core/PinStore.swift
+      - path: Postcards/Motion/ParallaxGeometry.swift
+      - path: Postcards/Motion/ParallaxModel.swift
+      - path: Postcards/Views/FlipEffect.swift
+    entitlements:
+      path: WatchApp/Postcards-watchOS.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.org.dotpostcard.collector
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.org.dotpostcard.collector
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.watchkitapp
+      INFOPLIST_KEY_WKApplication: true
+      INFOPLIST_KEY_WKCompanionAppBundleIdentifier: org.dotpostcard.collector
+      # The watch app has its own App ID + iCloud entitlement, so it needs its own App Store
+      # profile at release (see the IOS_PROFILE_SPECIFIER note above and docs/RELEASING.md).
+      PROVISIONING_PROFILE_SPECIFIER: $(WATCH_PROFILE_SPECIFIER)
+    dependencies:
+      - sdk: libsqlite3.tbd
+
+  PostcardsQuickLookPreview:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Extensions/QuickLookPreview
+      - path: Postcards/Core/Models.swift
+      - path: Postcards/Core/FlipGeometry.swift
+      - path: Postcards/Core/ImageSplitter.swift
+      - path: Postcards/Core/CollectionReader.swift
+      - path: Postcards/Core/CardFileXMP.swift
+      - path: Postcards/Core/MasonryLayout.swift
+      - path: Postcards/Motion/ParallaxGeometry.swift
+      - path: Postcards/Motion/ParallaxModel.swift
+      - path: Postcards/Views/FlipEffect.swift
+      - path: Postcards/Views/MasonryGrid.swift
+    entitlements:
+      path: Extensions/QuickLookPreview/QuickLookPreview.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-only: true
+    info:
+      path: Extensions/QuickLookPreview/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.quicklook.preview
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PreviewViewController
+          NSExtensionAttributes:
+            QLSupportedContentTypes:
+              - org.dotpostcard.postcard
+              - org.dotpostcard.postcards
+            QLIsDataBasedPreview: false
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.mac.preview
+      ENABLE_HARDENED_RUNTIME: true
+    dependencies:
+      - sdk: libsqlite3.tbd
+
+  PostcardsQuickLookThumbnail:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Extensions/QuickLookThumbnail
+      - path: Postcards/Core/Models.swift
+      - path: Postcards/Core/FlipGeometry.swift
+      - path: Postcards/Core/ImageSplitter.swift
+      - path: Postcards/Core/CollectionReader.swift
+      - path: Postcards/Core/CardFileXMP.swift
+    entitlements:
+      path: Extensions/QuickLookThumbnail/QuickLookThumbnail.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-only: true
+    info:
+      path: Extensions/QuickLookThumbnail/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.quicklook.thumbnail
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ThumbnailProvider
+          NSExtensionAttributes:
+            QLSupportedContentTypes:
+              - org.dotpostcard.postcard
+              - org.dotpostcard.postcards
+            QLThumbnailMinimumDimension: 0
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.mac.thumbnail
+      ENABLE_HARDENED_RUNTIME: true
+    dependencies:
+      - sdk: libsqlite3.tbd
 
   PostcardsTests:
     type: bundle.unit-test
@@ -129,6 +275,7 @@ targets:
       - framework: Frameworks/Postcards.xcframework
         embed: true
         codeSign: true
+      - sdk: libsqlite3.tbd
 
   PostcardsUITests:
     type: bundle.ui-testing

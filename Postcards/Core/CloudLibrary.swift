@@ -2,9 +2,10 @@ import Foundation
 import Observation
 
 /// One thing found in the app's iCloud ubiquity container: a `.postcards` collection or a
-/// bare `.postcard.*` card file. Classified from `NSMetadataItem` attributes rather than
-/// the on-disk filename, because iCloud renames undownloaded files to `.<name>.icloud` —
-/// the metadata item's `NSMetadataItemFSNameKey` still reports the real name.
+/// card file — bare `.postcard` or compound `.postcard.*`. Classified from `NSMetadataItem`
+/// attributes rather than the on-disk filename, because iCloud renames undownloaded files
+/// to `.<name>.icloud` — the metadata item's `NSMetadataItemFSNameKey` still reports the
+/// real name.
 struct CloudItem: Identifiable, Hashable, Sendable {
     enum DownloadState: Hashable, Sendable {
         case current
@@ -36,7 +37,7 @@ enum CloudItemAttributes {
         case other
     }
 
-    private static let cardSuffixPattern = #"\.postcard\.[a-z0-9]+$"#
+    private static let cardSuffixPattern = #"\.postcard(\.[a-z0-9]+)?$"#
 
     static func kind(forFilename filename: String) -> Kind {
         let lower = filename.lowercased()
@@ -78,9 +79,9 @@ enum CloudItemAttributes {
     }
 }
 
-/// Watches the app's iCloud ubiquity container for `.postcards` collections and bare
-/// `.postcard.*` card files, downloading them on demand and feeding cloud-backed
-/// `LibrarySource`s to the rest of the app.
+/// Watches the app's iCloud ubiquity container for `.postcards` collections and card files
+/// (bare `.postcard` or compound `.postcard.*`), downloading them on demand and feeding
+/// cloud-backed `LibrarySource`s to the rest of the app.
 ///
 /// Container resolution happens off the main thread and degrades quietly: a `nil`
 /// container (not signed into iCloud, or the entitlement isn't provisioned on this build)
@@ -110,6 +111,18 @@ final class CloudLibrary {
     /// same (already-current) path can be recognised as "this collection was replaced by
     /// sync" rather than a redundant re-affirmation of the same content.
     private var lastKnownContentChangeDates: [String: Date] = [:]
+
+    /// Called when a previously-current path picks up newer content on disk, so any cached
+    /// handle on it can be dropped. Defaults to a no-op — the Go core can't be linked on
+    /// watchOS, so `PostcardsApp` wires this to `GoCore.shared.invalidateSource(at:)` on
+    /// iOS/macOS instead of `CloudLibrary` reaching for `GoCore` itself.
+    var invalidateSource: @Sendable (String) async -> Void = { _ in }
+
+    /// Whether a not-yet-current item should be downloaded automatically as soon as it's
+    /// seen. Defaults to true (today's iOS/macOS behavior: download everything). The watch
+    /// app overrides this to only auto-download pinned collections, since it can't assume
+    /// the same storage/bandwidth budget as a phone or Mac.
+    var shouldAutoDownload: (CloudItem) -> Bool = { _ in true }
 
     init(containerIdentifier: String = "iCloud.org.dotpostcard.collector") {
         self.containerIdentifier = containerIdentifier
@@ -165,7 +178,7 @@ final class CloudLibrary {
             guard let item = Self.makeCloudItem(from: metadataItem) else { continue }
             updated.append(item)
 
-            downloadIfNeeded(item)
+            if shouldAutoDownload(item) { downloadIfNeeded(item) }
             reopenIfContentChanged(item, contentChangeDate: metadataItem.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date)
         }
         items = updated.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
@@ -208,7 +221,7 @@ final class CloudLibrary {
             currentChangeDate: contentChangeDate
         ) else { return }
 
-        Task { await GoCore.shared.invalidateSource(at: item.path) }
+        Task { await invalidateSource(item.path) }
     }
 
     // MARK: - Coordinated reads
@@ -287,13 +300,15 @@ final class CloudLibrary {
 
     // MARK: - Predicate
 
-    /// Matches `*.postcards` collections and bare `*.postcard.*` card files by their real
-    /// filesystem name (`NSMetadataItemFSNameKey`), which — unlike the on-disk file at an
-    /// undownloaded item's URL — is never obscured by iCloud's `.<name>.icloud` renaming.
+    /// Matches `*.postcards` collections, bare `*.postcard` card files, and compound
+    /// `*.postcard.*` card files by their real filesystem name (`NSMetadataItemFSNameKey`),
+    /// which — unlike the on-disk file at an undownloaded item's URL — is never obscured by
+    /// iCloud's `.<name>.icloud` renaming.
     nonisolated static func metadataQueryPredicate() -> NSPredicate {
         NSCompoundPredicate(orPredicateWithSubpredicates: [
             NSPredicate(format: "%K LIKE[cd] %@", NSMetadataItemFSNameKey, "*.postcards"),
             NSPredicate(format: "%K LIKE[cd] %@", NSMetadataItemFSNameKey, "*.postcard.*"),
+            NSPredicate(format: "%K LIKE[cd] %@", NSMetadataItemFSNameKey, "*.postcard"),
         ])
     }
 }

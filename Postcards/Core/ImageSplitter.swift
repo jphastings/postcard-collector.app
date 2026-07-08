@@ -32,6 +32,27 @@ enum ImageSplitter {
         return try split(combined, flip: flip)
     }
 
+    /// As `split(data:flip:)`, but decodes at a bounded size via ImageIO's thumbnail path
+    /// instead of the image's full resolution — for callers (grids, previews) that don't
+    /// need every pixel and want to bound decode time/memory. Downsampling only affects
+    /// sharpness; it never touches the soft alpha edge matting postcards rely on for their
+    /// physical shape, so no masking/edge processing is added here.
+    static func split(data: Data, flip: Flip, maxPixelSize: Int) throws -> SplitPostcardImage {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard
+            let source = CGImageSourceCreateWithData(data as CFData, nil),
+            let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else {
+            throw ImageSplitterError.couldNotDecode
+        }
+        return try split(thumbnail, flip: flip)
+    }
+
     /// As `split(data:flip:)`, for an already-decoded combined image (used directly by tests).
     static func split(_ combined: CGImage, flip: Flip) throws -> SplitPostcardImage {
         guard flip != .none else {

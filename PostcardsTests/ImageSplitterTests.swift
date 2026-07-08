@@ -87,4 +87,25 @@ final class ImageSplitterTests: XCTestCase {
             return (x < 2 && backY < 2) ? (0, 255, 0) : (0, 0, 0)
         }
     }
+
+    // MARK: - Bounded-size decoding
+
+    /// Real card bytes (from the bundled fixture, via `CollectionReader`) split at a bounded
+    /// size: the front's largest dimension must respect `maxPixelSize`, and a two-sided card
+    /// still produces a back.
+    func testBoundedSizeSplitRespectsMaxPixelSizeAndStillProducesABack() throws {
+        let path = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(forResource: "fixture", withExtension: "postcards"),
+            "fixture.postcards must be a test bundle resource"
+        ).path
+        let reader = try CollectionReader(path: path)
+        let summary = try XCTUnwrap(reader.cardSummaries().first { $0.hasBack })
+        let data = try reader.imageData(name: summary.name)
+
+        let maxPixelSize = 200
+        let result = try ImageSplitter.split(data: data, flip: summary.flip, maxPixelSize: maxPixelSize)
+
+        XCTAssertLessThanOrEqual(max(result.front.width, result.front.height), maxPixelSize)
+        XCTAssertNotNil(result.back)
+    }
 }

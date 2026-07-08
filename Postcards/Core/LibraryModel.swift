@@ -60,7 +60,11 @@ final class LibraryModel {
     // MARK: - Import pipeline
 
     private static let collectionSuffix = ".postcards"
-    private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png"]
+    // ".postcard" (bare) is listed last: it's a suffix of every other entry here
+    // (".postcard.webp".hasSuffix(".postcard")` is false, but checking order still matters
+    // for any future compound suffix that literally ends in ".postcard"), so keeping it
+    // last means the more specific compound suffixes always get first refusal.
+    private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png", ".postcard"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes
 
     private struct ImportError: LocalizedError {

@@ -4,6 +4,9 @@ import Observation
 #if os(iOS)
 import CoreMotion
 import UIKit
+#elseif os(watchOS)
+import CoreMotion
+import WatchKit
 #elseif os(macOS)
 import AppKit
 #endif
@@ -20,26 +23,34 @@ final class ParallaxModel {
     private var reduceMotion: Bool {
         #if os(iOS)
         UIAccessibility.isReduceMotionEnabled
+        #elseif os(watchOS)
+        WKAccessibilityIsReduceMotionEnabled()
         #elseif os(macOS)
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(watchOS)
     private let motionManager = CMMotionManager()
     private var referencePitch: Double?
     private var referenceRoll: Double?
 
-    /// Fraction the reference attitude eases toward the current one on every ~33ms update,
-    /// so a phone held at a steady angle slowly re-centres instead of pinning the tilt at
-    /// one extreme forever (see `ParallaxGeometry.decay`).
+    /// Fraction the reference attitude eases toward the current one on every update, so a
+    /// phone held at a steady angle slowly re-centres instead of pinning the tilt at one
+    /// extreme forever (see `ParallaxGeometry.decay`).
     private static let referenceDecayPerUpdate = 0.02
 
     func start() {
         guard !reduceMotion, motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive else { return }
         referencePitch = nil
         referenceRoll = nil
+        #if os(watchOS)
+        // A gentler update rate than iOS's ~33ms — the watch's smaller screen and slower
+        // GPU don't need the extra samples, and this is friendlier to battery.
+        motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
+        #else
         motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+        #endif
         motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             self.handle(motion)

@@ -12,7 +12,10 @@ struct PostcardsApp: App {
     var body: some Scene {
         WindowGroup {
             LibraryView(library: library, cloudLibrary: cloudLibrary)
-                .task { await cloudLibrary.start() }
+                .task {
+                    cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
+                    await cloudLibrary.start()
+                }
         }
         #if os(macOS)
         .commands {
@@ -35,8 +38,10 @@ struct PostcardsApp: App {
         // .postcard.webp etc (the card format) are still compound extensions LaunchServices
         // can't express, so allow the base types and let LibraryModel validate the full
         // suffix. Collections use the single-segment .postcards extension (exported UTI
-        // org.dotpostcard.postcards, which conforms to public.database).
-        panel.allowedContentTypes = [.database, .data, .image]
+        // org.dotpostcard.postcards, which conforms to public.database). Bare .postcard
+        // files use their own exported UTI (org.dotpostcard.postcard) so they're selectable
+        // too, despite conforming to public.data rather than public.image.
+        panel.allowedContentTypes = [.database, .data, .image, UTType(exportedAs: "org.dotpostcard.postcard")]
 
         let library = library
         panel.begin { response in

@@ -22,6 +22,15 @@ final class CloudLibraryTests: XCTestCase {
         XCTAssertEqual(CloudItemAttributes.kind(forFilename: "postcards"), .other, "no extension, just the bare word")
     }
 
+    func testSingleExtensionFileIsClassifiedByKind() {
+        XCTAssertEqual(CloudItemAttributes.kind(forFilename: "foo.postcard"), .card)
+        XCTAssertEqual(CloudItemAttributes.kind(forFilename: "foo.postcards"), .collection)
+    }
+
+    func testBareCardSuffixStillClassifiesCompoundCardFilesAsCards() {
+        XCTAssertEqual(CloudItemAttributes.kind(forFilename: "foo.postcard.webp"), .card)
+    }
+
     // MARK: - Display names
 
     func testDisplayNameStripsTheCollectionSuffix() {
@@ -30,6 +39,14 @@ final class CloudLibraryTests: XCTestCase {
 
     func testDisplayNameStripsTheFullCompoundCardSuffix() {
         XCTAssertEqual(CloudItemAttributes.displayName(forFilename: "righthand-card.postcard.jpeg"), "righthand-card")
+    }
+
+    func testDisplayNameStripsTheBareCardSuffix() {
+        XCTAssertEqual(CloudItemAttributes.displayName(forFilename: "foo.postcard"), "foo")
+    }
+
+    func testDisplayNameStripsTheCompoundCardSuffixToo() {
+        XCTAssertEqual(CloudItemAttributes.displayName(forFilename: "foo.postcard.webp"), "foo")
     }
 
     // MARK: - Download state
@@ -89,6 +106,7 @@ final class CloudLibraryTests: XCTestCase {
 
         XCTAssertTrue(predicate.evaluate(with: [NSMetadataItemFSNameKey: "Trip to Kyoto.postcards"]))
         XCTAssertTrue(predicate.evaluate(with: [NSMetadataItemFSNameKey: "righthand-card.postcard.webp"]))
+        XCTAssertTrue(predicate.evaluate(with: [NSMetadataItemFSNameKey: "righthand-card.postcard"]), "bare .postcard files must match too")
         XCTAssertFalse(predicate.evaluate(with: [NSMetadataItemFSNameKey: "notes.txt"]))
         XCTAssertFalse(predicate.evaluate(with: [NSMetadataItemFSNameKey: "vacation.jpeg"]))
     }
@@ -126,5 +144,17 @@ final class CloudLibraryTests: XCTestCase {
         }
         XCTAssertEqual(barePath, "/cloud/loose.postcard.webp")
         XCTAssertEqual(bareSummary.name, "b")
+    }
+
+    // MARK: - shouldAutoDownload default
+
+    /// iOS/macOS rely on `shouldAutoDownload`'s default (download everything) being
+    /// unchanged by the watch app's pin-aware override — see `PostcardsApp`, which never
+    /// sets this closure itself.
+    @MainActor
+    func testShouldAutoDownloadDefaultsToTrueForAnyItem() {
+        let cloudLibrary = CloudLibrary()
+        let item = CloudItem(path: "/cloud/trip.postcards", displayName: "trip", isCollection: true, downloadState: .remote)
+        XCTAssertTrue(cloudLibrary.shouldAutoDownload(item))
     }
 }
