@@ -36,6 +36,24 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
                 }
                 .padding(spacing)
             }
+            .stableScrollEdgeEffect()
+        }
+    }
+}
+
+private extension View {
+    /// iOS 26's Liquid Glass "scroll edge effect" (on by default once built against the
+    /// iOS 26 SDK) crashes while laying out this masonry ScrollView — a vertical ScrollView
+    /// whose content is an HStack of LazyVStacks: `-[UIScrollView _updatePockets]`
+    /// over-releases a `ScrollEdgeEffectView` during `removeFromSuperview`, aborting on
+    /// `objc_unsafeClaimAutoreleasedReturnValue`. The `.hard` style renders the edge without
+    /// that soft-effect view lifecycle, sidestepping the crash.
+    @ViewBuilder
+    func stableScrollEdgeEffect() -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .all)
+        } else {
+            self
         }
     }
 }
