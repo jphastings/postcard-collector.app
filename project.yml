@@ -10,9 +10,16 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.4.4"
+    MARKETING_VERSION: "0.4.5"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: true
+    # Do NOT strip symbols. The Go core (Postcards.xcframework, gomobile) is a static library
+    # linked into the app, and Go's runtime relies on its symbols (runtime.morestack and the
+    # rest) at runtime for GC stack scanning and stack growth. `xcodebuild archive` strips with
+    # STRIP_STYLE=all by default, which removed those symbols in Release/TestFlight builds and
+    # corrupted the Go heap — a crash that only ever appeared in CI/archived builds, never in
+    # local Debug runs. Keeping symbols also means archived crash reports stay symbolicated.
+    STRIP_INSTALLED_PRODUCT: NO
     # Declares the app uses no non-exempt encryption (only Apple's standard HTTPS), so
     # App Store Connect stops asking the export-compliance question on every TestFlight build.
     INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO

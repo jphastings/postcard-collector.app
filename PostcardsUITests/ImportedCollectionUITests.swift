@@ -22,7 +22,7 @@ final class ImportedCollectionUITests: XCTestCase {
         )
 
         app = XCUIApplication()
-        app.launchArguments += ["-uitest-import", db.path]
+        app.launchArguments += ["-uitest-import", db.path, "-uitest-open", "1"]
         app.launch()
     }
 
