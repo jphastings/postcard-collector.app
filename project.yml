@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.4.6"
+    MARKETING_VERSION: "0.4.7"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: true
     # Do NOT strip symbols. The Go core (Postcards.xcframework, gomobile) is a static library
@@ -124,9 +124,12 @@ targets:
       # dev builds.
       PROVISIONING_PROFILE_SPECIFIER: $(IOS_PROFILE_SPECIFIER)
     dependencies:
+      # gomobile emits a STATIC library packaged as a .framework, so it must be linked, not
+      # embedded/code-signed as if it were a dynamic framework. Embedding it made the archive
+      # produce a broken 84KB dynamic-stub in Frameworks/ and mis-handle the statically-linked
+      # Go code under optimization. `embed: false` links the static lib cleanly into the app.
       - framework: Frameworks/Postcards.xcframework
-        embed: true
-        codeSign: true
+        embed: false
       # Linked explicitly for CollectionReader.swift's `import SQLite3` — the SDK module
       # doesn't get its symbols linked automatically.
       - sdk: libsqlite3.tbd
@@ -154,9 +157,12 @@ targets:
       # to apply this app's profile to them.
       PROVISIONING_PROFILE_SPECIFIER: $(MACOS_PROFILE_SPECIFIER)
     dependencies:
+      # gomobile emits a STATIC library packaged as a .framework, so it must be linked, not
+      # embedded/code-signed as if it were a dynamic framework. Embedding it made the archive
+      # produce a broken 84KB dynamic-stub in Frameworks/ and mis-handle the statically-linked
+      # Go code under optimization. `embed: false` links the static lib cleanly into the app.
       - framework: Frameworks/Postcards.xcframework
-        embed: true
-        codeSign: true
+        embed: false
       - sdk: libsqlite3.tbd
       - target: PostcardsQuickLookPreview
         embed: true
@@ -287,9 +293,12 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.tests
       GENERATE_INFOPLIST_FILE: true
     dependencies:
+      # gomobile emits a STATIC library packaged as a .framework, so it must be linked, not
+      # embedded/code-signed as if it were a dynamic framework. Embedding it made the archive
+      # produce a broken 84KB dynamic-stub in Frameworks/ and mis-handle the statically-linked
+      # Go code under optimization. `embed: false` links the static lib cleanly into the app.
       - framework: Frameworks/Postcards.xcframework
-        embed: true
-        codeSign: true
+        embed: false
       - sdk: libsqlite3.tbd
 
   PostcardsUITests:
