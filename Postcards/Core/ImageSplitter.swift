@@ -157,7 +157,13 @@ enum ImageSplitter {
         // with a corner-marker image) — no manual Cartesian flip is needed here.
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        return Array(UnsafeRawBufferPointer(start: data, count: width * height * 4))
+        // `data` points into `context`'s backing store, so `context` must outlive this read.
+        // Without withExtendedLifetime, an optimized (Release) build is free to release
+        // `context` right after `context.draw` above — freeing the store and making the copy
+        // a use-after-free that only ever misbehaves in Release/archived builds.
+        return withExtendedLifetime(context) {
+            Array(UnsafeRawBufferPointer(start: data, count: width * height * 4))
+        }
     }
 
     private static func makeImage(fromTopDownRGBA8 buffer: [UInt8], width: Int, height: Int) throws -> CGImage {
