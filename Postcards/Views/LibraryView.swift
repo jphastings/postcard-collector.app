@@ -454,12 +454,6 @@ struct LibraryView: View {
         #if DEBUG
         guard let path = UserDefaults.standard.string(forKey: "uitest-import") else { return }
         await library.importSources(from: [URL(fileURLWithPath: path)])
-        // `-uitest-open 1` also selects the imported collection, so the grid renders without
-        // a tap — used to drive the collection-open path under Address Sanitizer headlessly.
-        if UserDefaults.standard.bool(forKey: "uitest-open"),
-           let collection = library.sources.first(where: { $0.isCollection }) {
-            selectedSource = collection
-        }
         #endif
     }
 
