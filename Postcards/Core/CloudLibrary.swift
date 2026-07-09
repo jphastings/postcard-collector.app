@@ -111,6 +111,9 @@ final class CloudLibrary {
     /// same (already-current) path can be recognised as "this collection was replaced by
     /// sync" rather than a redundant re-affirmation of the same content.
     private var lastKnownContentChangeDates: [String: Date] = [:]
+    /// Set while a coalesced `items` rebuild is already scheduled, so a burst of iCloud query
+    /// notifications collapses into a single update (see `handleQueryUpdate`).
+    private var itemsRebuildScheduled = false
 
     /// Called when a previously-current path picks up newer content on disk, so any cached
     /// handle on it can be dropped. Defaults to a no-op — the Go core can't be linked on
@@ -168,7 +171,23 @@ final class CloudLibrary {
         query.start()
     }
 
+    /// Coalesces a burst of iCloud query notifications into at most one `items` rebuild per
+    /// ~300ms. A downloading collection fires `NSMetadataQueryDidUpdate` many times a second
+    /// (once per progress tick), and `items` is `@Observable` — reassigning it on every tick
+    /// floods SwiftUI's Observation tracking with invalidations while the grid/sidebar is
+    /// laying out, which is where an intermittent iOS 26 layout-time crash surfaces. Rate-
+    /// limiting the reassignment keeps the download's progress churn from driving that storm.
     private func handleQueryUpdate() {
+        guard !itemsRebuildScheduled else { return }
+        itemsRebuildScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            itemsRebuildScheduled = false
+            rebuildItems()
+        }
+    }
+
+    private func rebuildItems() {
         guard let query else { return }
         query.disableUpdates()
         defer { query.enableUpdates() }
@@ -181,7 +200,10 @@ final class CloudLibrary {
             if shouldAutoDownload(item) { downloadIfNeeded(item) }
             reopenIfContentChanged(item, contentChangeDate: metadataItem.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date)
         }
-        items = updated.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        let sorted = updated.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        // Skip the reassignment (and its @Observable invalidation) when nothing actually
+        // changed — e.g. a query update that only touched an item we don't surface.
+        if sorted != items { items = sorted }
     }
 
     private static func makeCloudItem(from item: NSMetadataItem) -> CloudItem? {
