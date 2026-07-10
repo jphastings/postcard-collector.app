@@ -8,7 +8,7 @@ on:
 env:
   # Pinned release tag of jphastings/dotpostcard that provides Postcards.xcframework.
   # Bump to a newer tag when picking up framework changes (see docs/RELEASING.md).
-  DOTPOSTCARD_REF: v0.21.0
+  DOTPOSTCARD_REF: v0.21.1
 
 jobs:
   core:
