@@ -23,11 +23,11 @@ enum CollectionViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// A compact segmented control toggling `CollectionGridView`/`SinglePostcardsGridView`
-/// between grid and map mode — placed in the toolbar immediately left of the detail
-/// column's "Info" button (SwiftUI merges a `NavigationSplitView`'s per-column
-/// `.primaryAction` toolbar items in column order, so putting this at `.primaryAction` in
-/// the content column lands it right before the detail column's own `.primaryAction` item).
+/// Toggles `CollectionGridView`/`SinglePostcardsGridView` between grid and map mode —
+/// placed in the toolbar immediately left of the detail column's "Info" button (SwiftUI
+/// merges a `NavigationSplitView`'s per-column `.primaryAction` toolbar items in column
+/// order, so putting this at `.primaryAction` in the content column lands it right before
+/// the detail column's own `.primaryAction` item).
 ///
 /// That merge is sensitive to what the DETAIL column's toolbar contributes: with nothing
 /// selected, `LibraryView`'s "Select a Postcard" placeholder used to contribute no toolbar
@@ -39,22 +39,27 @@ enum CollectionViewMode: String, CaseIterable, Identifiable {
 /// window. The fix that keeps a real toolbar item is instead on the DETAIL side: the
 /// placeholder now carries a disabled stand-in for the Info button (see `LibraryView`), so
 /// the content column's own toolbar items never have to shift regardless of selection.
+///
+/// Deliberately plain `Button`s rather than a `Picker(.segmented)`: on iOS 26 a segmented
+/// control has its own Liquid Glass material, and stacking that inside the toolbar item's
+/// own glass background rendered as two visible glass layers. Plain buttons carry no
+/// Material of their own, so — sharing this single toolbar slot — they pick up exactly one
+/// glass background between them, with the selected mode shown via a filled glyph.
 struct CollectionModeSwitcher: View {
     @Binding var mode: CollectionViewMode
     var isEnabled: Bool
 
     var body: some View {
-        Picker("View Mode", selection: $mode) {
+        HStack(spacing: 0) {
             ForEach(CollectionViewMode.allCases) { candidate in
-                Image(systemName: candidate.systemImage)
-                    .accessibilityLabel(candidate.label)
-                    .tag(candidate)
+                Button(candidate.label, systemImage: candidate.systemImage) {
+                    mode = candidate
+                }
+                .symbolVariant(mode == candidate ? .fill : .none)
+                .foregroundStyle(mode == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
         }
-        .pickerStyle(.segmented)
-        .fixedSize()
         .disabled(!isEnabled)
-        .accessibilityLabel("View Mode")
         .accessibilityHint(isEnabled ? "" : "No postcards in this collection have a location")
     }
 }

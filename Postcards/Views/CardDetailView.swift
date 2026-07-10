@@ -87,13 +87,15 @@ struct CardDetailView: View {
         DragGesture()
             .onChanged { value in
                 guard zoomScale > minZoomScale else { return }
-                // translation arrives in the gesture's pre-transform space (this view is
-                // captured before .scaleEffect), so it must be scaled up to match how far the
-                // finger has actually travelled on screen — otherwise pan lags behind at
-                // any zoom > 1x.
+                // The gesture is attached to the stable, untransformed container (see
+                // `content`), so translation already arrives in screen points — applying it
+                // directly to `.offset` is a true 1:1 drag. Scaling it (as a naive
+                // pre-transform-space correction would) double-counts the transform on every
+                // frame the offset itself changes, since that offset moves the gesture's own
+                // local space: a feedback loop that made the card jitter while panning.
                 zoomOffset = CGSize(
-                    width: lastZoomOffset.width + value.translation.width * zoomScale,
-                    height: lastZoomOffset.height + value.translation.height * zoomScale
+                    width: lastZoomOffset.width + value.translation.width,
+                    height: lastZoomOffset.height + value.translation.height
                 )
             }
             .onEnded { _ in
@@ -166,6 +168,35 @@ struct CardDetailView: View {
     @ViewBuilder
     private var content: some View {
         if let splitImage {
+            // Outer reader sits WITHIN the safe area (it does not ignore it), so its
+            // `safeAreaInsets` report the surrounding toolbar/Dynamic Island/home-indicator
+            // chrome — that's threaded into `zoomableCard` to inset the at-rest card, while
+            // `zoomableCard` itself ignores the safe area so zoomed/panned content can bleed
+            // all the way to the physical screen edges.
+            GeometryReader { safeAreaProxy in
+                zoomableCard(splitImage, insets: safeAreaProxy.safeAreaInsets)
+            }
+        } else if let loadError {
+            ContentUnavailableView(
+                "Couldn't load postcard",
+                systemImage: "exclamationmark.triangle",
+                description: Text(loadError)
+            )
+        } else {
+            ProgressView()
+        }
+    }
+
+    // The gestures, `.contentShape`, and `.clipped()` attach to this GeometryReader itself —
+    // a STABLE container with no `.scaleEffect`/`.offset` of its own — while the transforms
+    // live on the FlippableCardView inside it. Attaching gestures to a view that is itself
+    // being transformed created a feedback loop: panning updated `.offset`, which shifted the
+    // gesture's own local coordinate space, which changed the next `translation` reading,
+    // producing rapid jitter. Reading gesture locations from this untransformed outer space
+    // keeps them stable regardless of the current zoom/pan (see also `ZoomGeometry`'s doc
+    // comment, which requires anchor and `contentSize` to share one unscaled space).
+    private func zoomableCard(_ splitImage: SplitPostcardImage, insets: EdgeInsets) -> some View {
+        GeometryReader { proxy in
             FlippableCardView(
                 front: splitImage.front,
                 back: splitImage.back,
@@ -177,37 +208,35 @@ struct CardDetailView: View {
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
-            .padding(16)
+            // At-rest (scale 1) inset: safe-area chrome plus the existing 16pt margin. Once
+            // zoomed, `.scaleEffect` grows the card past this inset out toward the physical
+            // edges — clipped only by the container below, which now spans the full screen.
+            .padding(
+                EdgeInsets(
+                    top: insets.top + 16,
+                    leading: insets.leading + 16,
+                    bottom: insets.bottom + 16,
+                    trailing: insets.trailing + 16
+                )
+            )
             // Fills the whole detail area (rather than just the card's aspect-fitted band) so
             // zoomed content has the full screen to pan across instead of being clipped back
             // to a small centered band.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            // Captured before scale/offset so gesture locations stay in one stable coordinate
-            // space regardless of current zoom/pan — see ZoomGeometry's doc comment.
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { contentSize = proxy.size }
-                        .onChange(of: proxy.size) { _, newValue in contentSize = newValue }
-                }
-            }
-            .gesture(magnifyGesture)
-            .simultaneousGesture(panGesture)
-            .simultaneousGesture(tapGesture)
             .scaleEffect(zoomScale)
             .offset(zoomOffset)
-            // Zoomed/panned content would otherwise spill past the detail pane's bounds.
-            .clipped()
-        } else if let loadError {
-            ContentUnavailableView(
-                "Couldn't load postcard",
-                systemImage: "exclamationmark.triangle",
-                description: Text(loadError)
-            )
-        } else {
-            ProgressView()
+            .onAppear { contentSize = proxy.size }
+            .onChange(of: proxy.size) { _, newValue in contentSize = newValue }
         }
+        .contentShape(Rectangle())
+        .gesture(magnifyGesture)
+        .simultaneousGesture(panGesture)
+        .simultaneousGesture(tapGesture)
+        // Zoomed/panned content would otherwise spill past the detail pane's bounds.
+        .clipped()
+        // Lets zoomed content reach the physical screen edges, under the translucent toolbar
+        // and Dynamic Island; the at-rest inset above keeps the unzoomed card clear of both.
+        .ignoresSafeArea()
     }
 
     private func load() async {
