@@ -57,7 +57,11 @@ jobs:
   app:
     name: Build & test app
     needs: core
-    runs-on: macos-15
+    # macos-26 (Xcode 26) is required: the app uses Liquid Glass APIs like
+    # scrollEdgeEffectStyle (guarded at runtime with `if #available(…26)`, but the
+    # symbol only exists in the macOS/iOS 26 SDK). Must match the release workflow's
+    # app job, which already runs on macos-26.
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
