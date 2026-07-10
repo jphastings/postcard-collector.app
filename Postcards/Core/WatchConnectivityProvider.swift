@@ -9,7 +9,10 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 /// The iPhone side of the watch relay (see `WatchRelay` for the wire contract). Publishes a
 /// lightweight catalog of `CloudLibrary`'s collections as the `WCSession` application
 /// context, keeps it in sync as the library changes, and answers the watch's pin/request ops
-/// by transferring a collection's whole `.postcards` file.
+/// by streaming a collection progressively: a manifest of every card's identity/layout, then
+/// each card's downsampled image as its own file transfer, in display order — so the watch
+/// can show the first postcard within a second or two instead of waiting for a whole
+/// `.postcards` file.
 ///
 /// Compiled into the iOS target only — `WatchConnectivity` doesn't exist on macOS, and this
 /// file is swept into `PostcardsTests` (a macOS bundle) along with the rest of `Postcards/Core`,
@@ -18,6 +21,9 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private let cloudLibrary: CloudLibrary
     private var lastPublishedCatalogData: Data?
+    /// Collection ids currently being streamed, so a pin followed quickly by a request (or a
+    /// retried watch request) doesn't race two overlapping streams for the same collection.
+    private var inFlightStreamIDs: Set<String> = []
 
     init(cloudLibrary: CloudLibrary) {
         self.cloudLibrary = cloudLibrary
@@ -92,24 +98,91 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
         switch op {
         case WatchRelay.opPin, WatchRelay.opRequest:
-            Task { await self.transferFile(forCollectionID: id) }
+            streamCollectionIfNeeded(id: id)
         case WatchRelay.opUnpin:
-            // Phase 1 has no way to cancel an already-started transferFile; the watch simply
-            // discards a file that arrives for a collection it has since unpinned.
+            // There's nothing in flight to cancel: the watch simply discards a manifest/card
+            // that lands for a collection it has since unpinned.
             break
         default:
             break
         }
     }
 
-    private func transferFile(forCollectionID id: String) async {
+    /// Starts streaming `id`'s manifest and cards to the watch, unless a stream for the same
+    /// id is already running.
+    private func streamCollectionIfNeeded(id: String) {
+        guard !inFlightStreamIDs.contains(id) else { return }
         guard let item = cloudLibrary.items.first(where: { $0.isCollection && $0.displayName == id }) else { return }
+
+        inFlightStreamIDs.insert(id)
+        Task.detached(priority: .utility) { [weak self] in
+            await Self.stream(item: item, id: id)
+            await self?.markStreamFinished(id: id)
+        }
+    }
+
+    private func markStreamFinished(id: String) {
+        inFlightStreamIDs.remove(id)
+    }
+
+    /// The manifest + per-card streaming work, off the main actor: blocking SQLite reads and
+    /// ImageIO downsampling both belong on a background thread, and `WCSession`'s transfer
+    /// methods are documented as safe to call from any thread. A failure partway through
+    /// (unreadable file, unsupported schema, ...) is logged and simply stops the stream —
+    /// `markStreamFinished` still runs afterwards, so a later opRequest can retry.
+    private nonisolated static func stream(item: CloudItem, id: String) async {
         do {
             try await CloudLibrary.primeForGoCore(path: item.path)
+            let reader = try CollectionReader(path: item.path)
+            let summaries = try reader.cardSummaries()
+
+            sendManifest(summaries, id: id)
+            for (index, summary) in summaries.enumerated() {
+                sendCard(summary, index: index, count: summaries.count, id: id, reader: reader)
+            }
         } catch {
-            return
+            logger.error("Failed to stream watch collection \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
-        _ = WCSession.default.transferFile(URL(fileURLWithPath: item.path), metadata: [WatchRelay.fileIdKey: id])
+    }
+
+    private nonisolated static func sendManifest(_ summaries: [CardSummary], id: String) {
+        let manifest = summaries.map {
+            WatchCardMeta(name: $0.name, flip: $0.flip, frontPxW: $0.frontPxW, frontPxH: $0.frontPxH)
+        }
+        guard let data = try? JSONEncoder().encode(manifest) else { return }
+        _ = WCSession.default.transferUserInfo([
+            WatchRelay.opKey: WatchRelay.opManifest,
+            WatchRelay.idKey: id,
+            WatchRelay.manifestKey: data,
+        ])
+    }
+
+    /// Downsamples and streams one card's image. Best-effort: a single unreadable/undecodable
+    /// card is logged and skipped rather than aborting the rest of the collection's stream.
+    private nonisolated static func sendCard(_ summary: CardSummary, index: Int, count: Int, id: String, reader: CollectionReader) {
+        do {
+            let imageData = try reader.imageData(name: summary.name)
+            guard let blob = WatchCardImage.downsampled(imageData) else {
+                logger.error("Couldn't downsample card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public)")
+                return
+            }
+            let tempURL = try writeTempBlob(blob)
+            _ = WCSession.default.transferFile(tempURL, metadata: [
+                WatchRelay.opKey: WatchRelay.opCard,
+                WatchRelay.idKey: id,
+                WatchRelay.cardNameKey: summary.name,
+                WatchRelay.cardIndexKey: index,
+                WatchRelay.cardCountKey: count,
+            ])
+        } catch {
+            logger.error("Failed to send card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private nonisolated static func writeTempBlob(_ data: Data) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try data.write(to: url, options: .atomic)
+        return url
     }
 
     // MARK: - WCSessionDelegate
@@ -132,6 +205,16 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         Task { @MainActor in self.handleIncomingOp(message) }
+    }
+
+    /// Removes the temp file backing a card transfer once `WCSession` has finished copying
+    /// it into its own queue (successfully or not) — deleting any earlier risks racing the
+    /// system's read of it. No `@MainActor` state involved, so this stays nonisolated.
+    nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        if let error {
+            logger.error("Watch card transfer failed: \(String(describing: error), privacy: .public)")
+        }
+        try? FileManager.default.removeItem(at: fileTransfer.file.fileURL)
     }
 }
 #endif

@@ -3,18 +3,63 @@ import XCTest
 final class WatchCacheLayoutTests: XCTestCase {
     private let supportDirectory = URL(fileURLWithPath: "/tmp/watch-support")
 
-    func testCacheFileNameAppendsThePostcardsExtension() {
-        XCTAssertEqual(WatchCacheLayout.cacheFileName(for: "Trip to Kyoto"), "Trip to Kyoto.postcards")
+    // MARK: - Layout
+
+    func testCollectionDirectoryNestsUnderCollectionsByID() {
+        let url = WatchCacheLayout.collectionDirectory(id: "Trip to Kyoto", in: supportDirectory)
+        XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto", isDirectory: true))
     }
 
-    func testCacheURLNestsUnderPinnedCollections() {
-        let url = WatchCacheLayout.cacheURL(for: "Trip to Kyoto", in: supportDirectory)
-        XCTAssertEqual(url, supportDirectory.appendingPathComponent("PinnedCollections/Trip to Kyoto.postcards"))
+    func testManifestURLIsInsideTheCollectionDirectory() {
+        let url = WatchCacheLayout.manifestURL(id: "Trip to Kyoto", in: supportDirectory)
+        XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/manifest.json"))
+    }
+
+    func testCardsDirectoryIsInsideTheCollectionDirectory() {
+        let url = WatchCacheLayout.cardsDirectory(id: "Trip to Kyoto", in: supportDirectory)
+        XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/cards", isDirectory: true))
+    }
+
+    func testCardBlobURLNestsUnderTheCardsDirectoryUsingTheSafeFileName() {
+        let url = WatchCacheLayout.cardBlobURL(id: "Trip to Kyoto", cardName: "Front & Back", in: supportDirectory)
+        let expected = WatchCacheLayout.cardsDirectory(id: "Trip to Kyoto", in: supportDirectory)
+            .appendingPathComponent(WatchCacheLayout.safeCardFileName(for: "Front & Back"))
+        XCTAssertEqual(url, expected)
     }
 
     func testCatalogFileURLIsDirectlyUnderSupportDirectory() {
         XCTAssertEqual(WatchCacheLayout.catalogFileURL(in: supportDirectory), supportDirectory.appendingPathComponent("watch-catalog.json"))
     }
+
+    // MARK: - safeCardFileName
+
+    func testSafeCardFileNameIsStableForTheSameName() {
+        XCTAssertEqual(WatchCacheLayout.safeCardFileName(for: "Postcard #1"), WatchCacheLayout.safeCardFileName(for: "Postcard #1"))
+    }
+
+    func testSafeCardFileNameContainsNoPathSeparatorsOrPunctuationThatWouldConfuseTheFilesystem() {
+        let name = "Trip/to Kyoto: Front & Back?"
+        let safe = WatchCacheLayout.safeCardFileName(for: name)
+        XCTAssertFalse(safe.contains("/"))
+        XCTAssertFalse(safe.isEmpty)
+    }
+
+    func testSafeCardFileNameDiffersForDifferentNames() {
+        XCTAssertNotEqual(WatchCacheLayout.safeCardFileName(for: "Card A"), WatchCacheLayout.safeCardFileName(for: "Card B"))
+    }
+
+    func testSafeCardFileNameRoundTripsBackToTheOriginalNameThroughCardName() {
+        for name in ["Trip/to Kyoto: Front & Back? 京都", "Postcard #1", "a", ""] {
+            let safe = WatchCacheLayout.safeCardFileName(for: name)
+            XCTAssertEqual(WatchCacheLayout.cardName(fromSafeFileName: safe), name)
+        }
+    }
+
+    func testCardNameReturnsNilForFileNamesThatArentValidSafeNames() {
+        XCTAssertNil(WatchCacheLayout.cardName(fromSafeFileName: "not valid base64url!!"))
+    }
+
+    // MARK: - Catalog
 
     func testCatalogRoundTripsThroughEncodeAndDecode() throws {
         let catalog = [
@@ -30,6 +75,24 @@ final class WatchCacheLayoutTests: XCTestCase {
 
     func testDecodeCatalogReturnsNilForGarbageData() {
         XCTAssertNil(WatchCacheLayout.decodeCatalog(Data([0xFF, 0x00, 0x10])))
+    }
+
+    // MARK: - Manifest
+
+    func testManifestRoundTripsThroughEncodeAndDecode() throws {
+        let manifest = [
+            WatchCardMeta(name: "Front & Back", flip: .leftHand, frontPxW: 900, frontPxH: 600),
+            WatchCardMeta(name: "Second Card", flip: .none, frontPxW: 800, frontPxH: 500),
+        ]
+
+        let data = try XCTUnwrap(WatchCacheLayout.encodeManifest(manifest))
+        let decoded = try XCTUnwrap(WatchCacheLayout.decodeManifest(data))
+
+        XCTAssertEqual(decoded, manifest)
+    }
+
+    func testDecodeManifestReturnsNilForGarbageData() {
+        XCTAssertNil(WatchCacheLayout.decodeManifest(Data([0xFF, 0x00, 0x10])))
     }
 
     // MARK: - idsToEvict

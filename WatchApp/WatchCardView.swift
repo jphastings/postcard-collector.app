@@ -7,9 +7,14 @@ import SwiftUI
 /// which is exactly the ambiguity `tapToFlip`/`isFlipped` were added to `FlippableCardView`
 /// to avoid: SwiftUI cleanly disambiguates single- vs double-tap only when both gestures are
 /// attached to the same view.
+///
+/// The card's own image blob may not have arrived yet — `meta` (from the collection's
+/// manifest) is enough to lay out an aspect-correct placeholder slot immediately, and this
+/// view reacts the moment `library.receivedCards[collectionID]` gains `meta.name`.
 struct WatchCardView: View {
-    let store: WatchCollectionStore
-    let summary: CardSummary
+    let library: WatchLibrary
+    let collectionID: String
+    let meta: WatchCardMeta
     /// Reported up to the scroll view so it can disable paging while this card is zoomed —
     /// set to this card's name while zoomed, `nil` once the zoom resets.
     @Binding var zoomedCardID: String?
@@ -17,12 +22,12 @@ struct WatchCardView: View {
     private static let zoomScale: CGFloat = 2.5
 
     private enum LoadState {
-        case loading
+        case waiting
         case failed(String)
         case loaded(front: CGImage, back: CGImage?)
     }
 
-    @State private var loadState: LoadState = .loading
+    @State private var loadState: LoadState = .waiting
     @State private var isFlipped = false
     @State private var isZoomed = false
     @State private var scale: CGFloat = 1
@@ -30,16 +35,30 @@ struct WatchCardView: View {
     @State private var lastOffset: CGSize = .zero
     @State private var containerSize: CGSize = .zero
 
+    private var aspectRatio: CGFloat {
+        guard meta.frontPxH > 0 else { return 1 }
+        return CGFloat(meta.frontPxW) / CGFloat(meta.frontPxH)
+    }
+
+    /// Reading `library.receivedCards` here (rather than only inside `load()`) is what makes
+    /// this `@Observable`-tracked: SwiftUI only re-renders `body` for state actually read
+    /// during a previous render, so gating `.task(id:)` on this — not on `cardBlobURL`, which
+    /// touches disk rather than observable state — is what notices a blob landing.
+    private var isReceived: Bool {
+        library.receivedCards[collectionID]?.contains(meta.name) ?? false
+    }
+
     var body: some View {
         content
-            .task { await load() }
+            .task(id: isReceived) { load() }
     }
 
     @ViewBuilder
     private var content: some View {
         switch loadState {
-        case .loading:
+        case .waiting:
             ProgressView()
+                .aspectRatio(aspectRatio, contentMode: .fit)
         case .failed(let message):
             ContentUnavailableView(
                 "Can't Load Card",
@@ -50,8 +69,8 @@ struct WatchCardView: View {
             FlippableCardView(
                 front: front,
                 back: back,
-                flip: summary.flip,
-                frontPixelSize: CGSize(width: summary.frontPxW, height: summary.frontPxH),
+                flip: meta.flip,
+                frontPixelSize: CGSize(width: meta.frontPxW, height: meta.frontPxH),
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
@@ -100,13 +119,17 @@ struct WatchCardView: View {
                 lastOffset = .zero
             }
         }
-        zoomedCardID = zooming ? summary.name : nil
+        zoomedCardID = zooming ? meta.name : nil
     }
 
-    private func load() async {
+    private func load() {
+        guard let url = library.cardBlobURL(collectionID, cardName: meta.name) else {
+            loadState = .waiting
+            return
+        }
         do {
-            let data = try await store.imageData(name: summary.name)
-            let split = try ImageSplitter.split(data: data, flip: summary.flip, maxPixelSize: 480)
+            let data = try Data(contentsOf: url)
+            let split = try ImageSplitter.split(data: data, flip: meta.flip)
             loadState = .loaded(front: split.front, back: split.back)
         } catch {
             loadState = .failed(error.localizedDescription)

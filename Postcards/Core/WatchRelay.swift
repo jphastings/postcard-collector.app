@@ -28,6 +28,38 @@ enum WatchRelay {
     /// `transferFile` metadata key carrying the `WatchCollectionInfo.id` of the file being sent,
     /// so the watch knows which catalog entry a received file belongs to.
     static let fileIdKey = "id"
+
+    // MARK: - Progressive streaming (a collection's cards, one at a time)
+    //
+    // Instead of transferring a whole `.postcards` file, the phone streams a collection so the
+    // first postcard shows on the watch within a second or two and the rest fill in behind it.
+    // It first sends a MANIFEST (the ordered card list) so the watch can lay out every card
+    // slot immediately, then sends each card's downsampled image as its own `transferFile`, in
+    // scroll order. The watch buffers cards that arrive before the manifest and renders each
+    // slot as its image lands.
+
+    /// `transferUserInfo` op: the value under `manifestKey` is JSON-encoded `[WatchCardMeta]`
+    /// (the collection's cards, in display order). Sent on the reliable user-info queue.
+    static let opManifest = "manifest"
+    static let manifestKey = "manifest"
+
+    /// `transferFile` metadata op for one card's downsampled image. The file's metadata also
+    /// carries `idKey` (collection id), `cardNameKey`, `cardIndexKey`, and `cardCountKey`.
+    static let opCard = "card"
+    static let cardNameKey = "cardName"
+    static let cardIndexKey = "cardIndex"
+    static let cardCountKey = "cardCount"
+}
+
+/// One card's identity + layout info, as streamed to the watch in a collection's manifest.
+/// Enough to lay out the card's slot (aspect ratio, flip axis) before its image arrives.
+/// `flip` reuses the shared `Flip` (see `Models.swift`).
+struct WatchCardMeta: Identifiable, Hashable, Codable, Sendable {
+    var id: String { name }
+    var name: String
+    var flip: Flip
+    var frontPxW: Int
+    var frontPxH: Int
 }
 
 /// One collection as advertised to the watch — enough to draw the list row without the file

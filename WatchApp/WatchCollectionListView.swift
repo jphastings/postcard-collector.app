@@ -1,11 +1,11 @@
 import SwiftUI
 
 /// Lists every collection the iPhone has advertised (`library.catalog`), pinned ones first.
-/// Pinning (via the swipe action) asks the phone to send the collection's file so it's
-/// cached on the watch and opens with no phone present; unpinning lets that cache lapse.
-/// Every row navigates, downloaded or not — `WatchPostcardScrollView` itself handles
-/// requesting an undownloaded collection from a reachable iPhone (Phase 2's live browsing)
-/// or showing an unavailable state.
+/// Pinning (via the swipe action) asks the phone to stream the collection so it's cached on
+/// the watch and opens with no phone present; unpinning lets that cache lapse. Every row
+/// navigates, streamed or not — `WatchPostcardScrollView` itself handles requesting an
+/// unstreamed collection from a reachable iPhone (live browsing) or showing an unavailable
+/// state.
 struct WatchCollectionListView: View {
     let library: WatchLibrary
 
@@ -67,26 +67,35 @@ struct WatchCollectionListView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if library.isPinned(info.id) {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             stateBadge(for: info)
         }
     }
 
     private func subtitle(for info: WatchCollectionInfo) -> String {
-        if library.isDownloaded(info.id) {
-            return "\(info.cardCount) cards"
+        guard let expected = library.expectedCount(for: info.id) else {
+            return library.isPhoneReachable ? "Tap to open" : "Needs iPhone nearby"
         }
-        if library.downloadProgress[info.id] != nil {
-            return "Downloading…"
+        let received = library.receivedCount(for: info.id)
+        if received >= expected {
+            return "\(expected) cards"
         }
-        return library.isPhoneReachable ? "Tap to open" : "Needs iPhone nearby"
+        return "\(received) of \(expected) cards"
     }
 
     @ViewBuilder
     private func stateBadge(for info: WatchCollectionInfo) -> some View {
-        if library.isDownloaded(info.id) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        } else if let progress = library.downloadProgress[info.id] {
-            ProgressView(value: progress).frame(width: 24)
+        if let expected = library.expectedCount(for: info.id) {
+            let received = library.receivedCount(for: info.id)
+            if received >= expected {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            } else {
+                ProgressView(value: Double(received), total: Double(max(expected, 1))).frame(width: 24)
+            }
         } else {
             Image(systemName: "icloud").foregroundStyle(.secondary)
         }
