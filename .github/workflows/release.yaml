@@ -195,8 +195,9 @@ jobs:
       IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
       IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
       IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-      # The embedded watch app has its own App ID + iCloud entitlement, so it needs its own
-      # App Store profile; the signed iOS archive can't be built without it.
+      # The embedded watch app has its own App ID (distinct bundle id), so it needs its own
+      # App Store profile; the signed iOS archive can't be built without it. (It no longer
+      # carries an iCloud entitlement — the watch talks to the phone over WatchConnectivity.)
       WATCH_PROVISIONING_PROFILE_BASE64: ${{ secrets.WATCH_PROVISIONING_PROFILE_BASE64 }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
