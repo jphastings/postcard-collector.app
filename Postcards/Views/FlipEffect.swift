@@ -51,12 +51,30 @@ struct FlippableCardView: View {
     /// The front's pixel dimensions (from `CardSummary.frontPxW/H`), used for layout so
     /// no image decode is needed to size the card.
     let frontPixelSize: CGSize
+    /// Whether this view attaches its own single-tap-to-flip gesture. `WatchCardView` sets
+    /// this to `false` so it can put its own single-tap(flip)/double-tap(zoom) recognizers
+    /// on one container without a second, competing tap gesture nested inside. Defaults to
+    /// `true`, preserving every existing iOS/macOS caller's behavior unchanged.
+    var tapToFlip: Bool = true
+    /// When provided, the flip angle mirrors this binding instead of only reacting to the
+    /// internal tap gesture — set by an external owner (`WatchCardView`) that flips the
+    /// card from its own gesture handler. `nil` (the default) preserves today's fully
+    /// self-contained behavior.
+    var isFlipped: Binding<Bool>? = nil
 
     @State private var angleDegrees: Double
     @State private var parallax = ParallaxModel()
     @Environment(\.scenePhase) private var scenePhase
 
-    init(front: CGImage, back: CGImage?, flip: Flip, frontPixelSize: CGSize, initialAngleDegrees: Double = 0) {
+    init(
+        front: CGImage,
+        back: CGImage?,
+        flip: Flip,
+        frontPixelSize: CGSize,
+        initialAngleDegrees: Double = 0,
+        tapToFlip: Bool = true,
+        isFlipped: Binding<Bool>? = nil
+    ) {
         self.front = front
         self.back = back
         self.flip = flip
@@ -64,7 +82,9 @@ struct FlippableCardView: View {
             width: max(frontPixelSize.width, 1),
             height: max(frontPixelSize.height, 1)
         )
-        _angleDegrees = State(initialValue: initialAngleDegrees)
+        self.tapToFlip = tapToFlip
+        self.isFlipped = isFlipped
+        _angleDegrees = State(initialValue: isFlipped?.wrappedValue == true ? 180 : initialAngleDegrees)
     }
 
     private var axis: FlipAxis? { back != nil ? FlipGeometry.axis(for: flip) : nil }
@@ -104,6 +124,12 @@ struct FlippableCardView: View {
                 parallax.stop()
             }
         }
+        .onChange(of: isFlipped?.wrappedValue) { _, newValue in
+            guard let newValue else { return }
+            withAnimation(.easeInOut(duration: 1)) {
+                angleDegrees = newValue ? 180 : 0
+            }
+        }
     }
 
     @ViewBuilder
@@ -116,7 +142,7 @@ struct FlippableCardView: View {
         let backSize = FlipGeometry.backSize(forFrontSize: frontSize, flip: flip)
         let axis = axis ?? FlipAxis(x: 0, y: 1, z: 0)
 
-        ZStack {
+        let stack = ZStack {
             face(front, size: frontSize, angleDegrees: angleDegrees, axis: axis)
             if let back, self.axis != nil {
                 face(back, size: backSize, angleDegrees: angleDegrees + 180, axis: axis)
@@ -136,11 +162,20 @@ struct FlippableCardView: View {
             y: 12 + CGFloat(parallax.tilt.y) * Self.shadowPointsPerDegree
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            guard self.axis != nil else { return }
-            withAnimation(.easeInOut(duration: 1)) {
-                angleDegrees += 180
+
+        // Only attach the internal recognizer when this view owns tap-to-flip: leaving it
+        // attached-but-a-no-op (rather than omitted) when `tapToFlip` is false would still
+        // let it capture the touch, fighting whatever single/double-tap gestures an external
+        // owner (e.g. `WatchCardView`) attaches to the same container.
+        if tapToFlip {
+            stack.onTapGesture {
+                guard self.axis != nil else { return }
+                withAnimation(.easeInOut(duration: 1)) {
+                    angleDegrees += 180
+                }
             }
+        } else {
+            stack
         }
     }
 

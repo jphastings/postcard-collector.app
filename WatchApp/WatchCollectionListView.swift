@@ -1,36 +1,26 @@
+import CoreGraphics
+import ImageIO
 import SwiftUI
 
-/// Lists every `.postcards` collection visible in the iCloud container, pinned ones first.
-/// Pinning (via the swipe action) keeps a collection downloaded — `shouldAutoDownload`
-/// consults `pinStore` for exactly this — and can be undone to evict it again; everything
-/// else stays remote until opened.
+/// Lists every collection the iPhone has advertised (`library.catalog`), pinned ones first.
+/// Pinning (via the swipe action) asks the phone to send the collection's file so it's
+/// cached on the watch and opens with no phone present; unpinning drops the cache again.
+/// Phase 1 only opens collections that are already downloaded — tapping an unpinned row
+/// shows an inline hint instead of navigating, so there's never an attempt to open a file
+/// that hasn't arrived yet.
 struct WatchCollectionListView: View {
-    let cloudLibrary: CloudLibrary
-    let pinStore: PinStore
+    let library: WatchLibrary
 
-    /// Mirrors `pinStore.pinnedKeys` in local `@State` so toggling a pin updates the list's
-    /// sectioning/icon immediately — `PinStore` itself is a plain, testable persistence
-    /// wrapper, not an `@Observable` model.
-    @State private var pinnedKeys: Set<String>
-
-    init(cloudLibrary: CloudLibrary, pinStore: PinStore) {
-        self.cloudLibrary = cloudLibrary
-        self.pinStore = pinStore
-        _pinnedKeys = State(initialValue: pinStore.pinnedKeys)
+    private var pinned: [WatchCollectionInfo] {
+        library.catalog
+            .filter { library.isPinned($0.id) }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
-    private var collections: [CloudItem] {
-        cloudLibrary.items.filter(\.isCollection)
-    }
-
-    private var pinned: [CloudItem] {
-        collections
-            .filter { pinnedKeys.contains($0.displayName) }
-            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
-    }
-
-    private var unpinned: [CloudItem] {
-        collections.filter { !pinnedKeys.contains($0.displayName) }
+    private var unpinned: [WatchCollectionInfo] {
+        library.catalog
+            .filter { !library.isPinned($0.id) }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
     var body: some View {
@@ -45,83 +35,98 @@ struct WatchCollectionListView: View {
             }
         }
         .navigationTitle("Postcards")
-        .navigationDestination(for: CloudItem.self) { item in
-            WatchCollectionView(item: item)
-        }
+        .navigationDestination(for: String.self) { id in destination(for: id) }
         .overlay {
-            if collections.isEmpty {
+            if library.catalog.isEmpty {
                 emptyOverlay
             }
         }
     }
 
-    /// Distinguishes the reasons the list can be empty so a blank watch screen is
-    /// diagnosable: still resolving the container, iCloud genuinely unavailable
-    /// (not signed in / entitlement not granted on this device), or connected but no
-    /// collections found (which points at discovery rather than connectivity).
     @ViewBuilder
-    private var emptyOverlay: some View {
-        switch cloudLibrary.containerState {
-        case .resolving:
-            ProgressView("Connecting to iCloud…")
-        case .unavailable:
+    private func destination(for id: String) -> some View {
+        if let url = library.localFileURL(for: id) {
+            WatchPostcardScrollView(id: id, fileURL: url)
+        } else {
             ContentUnavailableView(
-                "iCloud Unavailable",
+                "Not Downloaded",
                 systemImage: "icloud.slash",
-                description: Text("Sign in to iCloud and turn on iCloud Drive on your iPhone.")
-            )
-        case .available:
-            ContentUnavailableView(
-                "No Collections",
-                systemImage: "square.stack",
-                description: Text("Collections in iCloud Drive → Postcards will appear here.")
+                description: Text("Pin this collection to open it on your watch.")
             )
         }
     }
 
-    private func row(for item: CloudItem) -> some View {
-        NavigationLink(value: item) {
-            HStack {
-                Text(item.displayName)
-                Spacer()
-                downloadIcon(for: item.downloadState)
+    private var emptyOverlay: some View {
+        ContentUnavailableView(
+            "No Collections",
+            systemImage: "square.stack",
+            description: Text("Open the Postcards app on your iPhone.")
+        )
+    }
+
+    @ViewBuilder
+    private func row(for info: WatchCollectionInfo) -> some View {
+        let downloaded = library.isDownloaded(info.id)
+        Group {
+            if downloaded {
+                NavigationLink(value: info.id) { rowLabel(info, downloaded: true) }
+            } else {
+                rowLabel(info, downloaded: false)
             }
         }
         .swipeActions {
-            pinButton(for: item)
+            pinButton(for: info)
+        }
+    }
+
+    private func rowLabel(_ info: WatchCollectionInfo, downloaded: Bool) -> some View {
+        HStack(spacing: 8) {
+            thumbnail(for: info)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(info.title).lineLimit(1)
+                Text(downloaded ? "\(info.cardCount) cards" : "Pin to open on Watch")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            stateBadge(for: info)
         }
     }
 
     @ViewBuilder
-    private func downloadIcon(for state: CloudItem.DownloadState) -> some View {
-        switch state {
-        case .current:
+    private func thumbnail(for info: WatchCollectionInfo) -> some View {
+        if let data = info.coverThumbnail, let image = Self.decodeThumbnail(data) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
+    @ViewBuilder
+    private func stateBadge(for info: WatchCollectionInfo) -> some View {
+        if library.isDownloaded(info.id) {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .downloading:
-            Image(systemName: "arrow.down.circle").foregroundStyle(.blue)
-        case .remote:
+        } else if let progress = library.downloadProgress[info.id] {
+            ProgressView(value: progress).frame(width: 24)
+        } else {
             Image(systemName: "icloud").foregroundStyle(.secondary)
         }
     }
 
-    private func pinButton(for item: CloudItem) -> some View {
-        let isPinned = pinnedKeys.contains(item.displayName)
+    private func pinButton(for info: WatchCollectionInfo) -> some View {
+        let isPinned = library.isPinned(info.id)
         return Button {
-            togglePin(for: item, pinned: !isPinned)
+            library.setPinned(!isPinned, id: info.id)
         } label: {
             Label(isPinned ? "Remove" : "Keep Downloaded", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
         }
         .tint(isPinned ? .red : .accentColor)
     }
 
-    private func togglePin(for item: CloudItem, pinned: Bool) {
-        pinStore.setPinned(pinned, for: item.displayName)
-        if pinned {
-            pinnedKeys.insert(item.displayName)
-            try? FileManager.default.startDownloadingUbiquitousItem(at: URL(fileURLWithPath: item.path))
-        } else {
-            pinnedKeys.remove(item.displayName)
-            try? FileManager.default.evictUbiquitousItem(at: URL(fileURLWithPath: item.path))
-        }
+    private static func decodeThumbnail(_ data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }

@@ -28,4 +28,21 @@ enum ZoomGeometry {
             height: previousOffset.height - (newScale - previousScale) * anchorFromCenter.dy
         )
     }
+
+    /// Clamps a pan offset so content scaled by `scale` about its own center inside a
+    /// `containerSize`-sized viewport can never be dragged far enough to open a gap at any
+    /// edge — the bound on each axis is half the scaled overhang, `(scale - 1) * size / 2`.
+    /// Unlike `CardDetailView`'s free-panning pinch zoom, the watch's double-tap zoom
+    /// (`WatchCardView`) needs its pan clamped, since it sits inside a snap-scrolling list
+    /// that only disables paging while zoomed — an unclamped drag could otherwise shove the
+    /// whole card out of view with no way back short of the zoom-reset gesture.
+    static func clampedOffset(_ offset: CGSize, scale: CGFloat, containerSize: CGSize) -> CGSize {
+        guard scale > 1 else { return .zero }
+        let maxX = containerSize.width * (scale - 1) / 2
+        let maxY = containerSize.height * (scale - 1) / 2
+        return CGSize(
+            width: min(max(offset.width, -maxX), maxX),
+            height: min(max(offset.height, -maxY), maxY)
+        )
+    }
 }

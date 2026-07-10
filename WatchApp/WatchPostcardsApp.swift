@@ -1,25 +1,18 @@
 import SwiftUI
 
-/// The watch companion app: Go-free, reading `.postcards` collections directly with
-/// `CollectionReader` over files synced through the same iCloud ubiquity container the
-/// iOS/macOS app uses. Unlike the phone/Mac, the watch doesn't auto-download everything it
-/// sees — only collections the user has explicitly pinned (see `PinStore`) — so
-/// `shouldAutoDownload` is wired to the pin set instead of left at its always-download
-/// default.
+/// The watch companion app: Go-free, receiving `.postcards` collections from the iPhone
+/// over WatchConnectivity (see `WatchLibrary`) rather than reading iCloud directly —
+/// watchOS can't open iCloud Drive documents, so the phone is the only data source.
 @main
 struct WatchPostcardsApp: App {
-    @State private var cloudLibrary = CloudLibrary()
-    @State private var pinStore = PinStore()
+    @State private var library = WatchLibrary()
 
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                WatchCollectionListView(cloudLibrary: cloudLibrary, pinStore: pinStore)
+                WatchCollectionListView(library: library)
             }
-            .task {
-                cloudLibrary.shouldAutoDownload = { [pinStore] item in pinStore.isPinned(item.displayName) }
-                await cloudLibrary.start()
-            }
+            .task { library.start() }
         }
     }
 }

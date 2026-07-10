@@ -10,16 +10,18 @@ actor WatchCollectionStore {
         reader = try CollectionReader(path: path)
     }
 
+    func title() throws -> String? { try reader.title() }
     func cardSummaries() throws -> [CardSummary] { try reader.cardSummaries() }
     func thumbnail(name: String) throws -> Data { try reader.thumbnail(name: name) }
     func imageData(name: String) throws -> Data { try reader.imageData(name: name) }
 }
 
-/// One long vertical list of every card in a collection, thumbnail-first (see
-/// `WatchCardRow`). Opened with a short coordinated read first (`primeForGoCore` — the name
-/// is historical, it's Go-agnostic) so a concurrent iCloud sync can't be read mid-update.
-struct WatchCollectionView: View {
-    let item: CloudItem
+/// The watch's "one view" for an open collection: every card, one to a screen, snapping
+/// vertically as you scroll — the Digital Crown drives this natively, since a Crown turn is
+/// just another vertical scroll input to a paging `ScrollView`.
+struct WatchPostcardScrollView: View {
+    let id: String
+    let fileURL: URL
 
     private enum Phase {
         case loading
@@ -28,11 +30,16 @@ struct WatchCollectionView: View {
     }
 
     @State private var phase: Phase = .loading
+    @State private var title: String?
+    /// Which card (by `CardSummary.name`), if any, currently has itself zoomed in
+    /// (`WatchCardView` reports this back). Disables paging while set, so panning a zoomed
+    /// card doesn't also flick the scroll view to the next one.
+    @State private var zoomedCardID: String?
 
     var body: some View {
         content
-            .navigationTitle(item.displayName)
-            .task { await load() }
+            .navigationTitle(title ?? "")
+            .task(id: fileURL) { await load() }
     }
 
     @ViewBuilder
@@ -47,23 +54,28 @@ struct WatchCollectionView: View {
                 description: Text(message)
             )
         case .loaded(let store, let summaries):
-            ScrollView {
-                LazyVStack(spacing: 12) {
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
                     ForEach(summaries) { summary in
-                        WatchCardRow(store: store, summary: summary)
+                        WatchCardView(store: store, summary: summary, zoomedCardID: $zoomedCardID)
+                            .containerRelativeFrame(.vertical)
                     }
                 }
-                .padding(.horizontal, 4)
             }
+            .scrollTargetBehavior(.paging)
+            .scrollDisabled(zoomedCardID != nil)
         }
     }
 
     private func load() async {
+        phase = .loading
         do {
-            try await CloudLibrary.primeForGoCore(path: item.path)
-            let store = try WatchCollectionStore(path: item.path)
-            let summaries = try await store.cardSummaries()
-            phase = .loaded(store, summaries)
+            let store = try WatchCollectionStore(path: fileURL.path)
+            async let loadedTitle = store.title()
+            async let summaries = store.cardSummaries()
+            let (resolvedTitle, resolvedSummaries) = try await (loadedTitle, summaries)
+            title = resolvedTitle
+            phase = .loaded(store, resolvedSummaries)
         } catch {
             phase = .failed(error.localizedDescription)
         }

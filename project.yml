@@ -180,28 +180,27 @@ targets:
       - path: Postcards/Core/ImageSplitter.swift
       - path: Postcards/Core/CollectionReader.swift
       - path: Postcards/Core/CardFileXMP.swift
-      - path: Postcards/Core/CloudLibrary.swift
       - path: Postcards/Core/LibrarySource.swift
       - path: Postcards/Core/PinStore.swift
+      - path: Postcards/Core/WatchRelay.swift
+      - path: Postcards/Core/WatchCacheLayout.swift
+      - path: Postcards/Core/ZoomGeometry.swift
       - path: Postcards/Motion/ParallaxGeometry.swift
       - path: Postcards/Motion/ParallaxModel.swift
       - path: Postcards/Views/FlipEffect.swift
+    # No iCloud/ubiquity entitlements: the watch never touches iCloud directly (watchOS can't
+    # open iCloud Drive documents). It receives collections from the iPhone over
+    # WatchConnectivity, which needs no entitlement — see WatchLibrary / WatchConnectivityProvider.
     entitlements:
       path: WatchApp/Postcards-watchOS.entitlements
-      properties:
-        com.apple.developer.icloud-container-identifiers:
-          - iCloud.org.dotpostcard.collector
-        com.apple.developer.icloud-services:
-          - CloudDocuments
-        com.apple.developer.ubiquity-container-identifiers:
-          - iCloud.org.dotpostcard.collector
+      properties: {}
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.watchkitapp
       INFOPLIST_KEY_WKApplication: true
       INFOPLIST_KEY_WKCompanionAppBundleIdentifier: org.dotpostcard.collector
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      # The watch app has its own App ID + iCloud entitlement, so it needs its own App Store
-      # profile at release (see the IOS_PROFILE_SPECIFIER note above and docs/RELEASING.md).
+      # Still needs its own App Store profile at release for the embedded watch app, but with
+      # no restricted capabilities now (no iCloud) — see docs/RELEASING.md.
       PROVISIONING_PROFILE_SPECIFIER: $(WATCH_PROFILE_SPECIFIER)
     dependencies:
       - sdk: libsqlite3.tbd

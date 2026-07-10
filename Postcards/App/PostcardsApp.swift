@@ -8,12 +8,20 @@ import UniformTypeIdentifiers
 struct PostcardsApp: App {
     @State private var library = LibraryModel()
     @State private var cloudLibrary = CloudLibrary()
+    #if os(iOS)
+    @State private var watchConnectivityProvider: WatchConnectivityProvider?
+    #endif
 
     var body: some Scene {
         WindowGroup {
             LibraryView(library: library, cloudLibrary: cloudLibrary)
                 .task {
                     cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
+                    #if os(iOS)
+                    let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary)
+                    watchConnectivityProvider = provider
+                    provider.start()
+                    #endif
                     await cloudLibrary.start()
                 }
         }

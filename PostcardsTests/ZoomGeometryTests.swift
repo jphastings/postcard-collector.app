@@ -67,4 +67,25 @@ final class ZoomGeometryTests: XCTestCase {
         XCTAssertEqual(backToOriginal.width, 0, accuracy: 0.001)
         XCTAssertEqual(backToOriginal.height, 0, accuracy: 0.001)
     }
+
+    // MARK: - clampedOffset (watch double-tap zoom pan)
+
+    func testClampedOffsetPassesThroughWithinBounds() {
+        let containerSize = CGSize(width: 200, height: 300)
+        let offset = CGSize(width: 10, height: 10)
+        XCTAssertEqual(ZoomGeometry.clampedOffset(offset, scale: 2, containerSize: containerSize), offset)
+    }
+
+    func testClampedOffsetClampsToHalfTheScaledOverhang() {
+        let containerSize = CGSize(width: 200, height: 300)
+        // At scale 2, the content overhangs by (scale - 1) * size on each axis; half of
+        // that is as far as it can pan before a gap would open at the opposite edge.
+        let clamped = ZoomGeometry.clampedOffset(CGSize(width: 1000, height: -1000), scale: 2, containerSize: containerSize)
+        XCTAssertEqual(clamped, CGSize(width: 100, height: -150))
+    }
+
+    func testClampedOffsetIsZeroWhenNotZoomedIn() {
+        let clamped = ZoomGeometry.clampedOffset(CGSize(width: 50, height: 50), scale: 1, containerSize: CGSize(width: 200, height: 200))
+        XCTAssertEqual(clamped, .zero)
+    }
 }
