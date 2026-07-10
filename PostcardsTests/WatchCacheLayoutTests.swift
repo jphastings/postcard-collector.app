@@ -18,8 +18,8 @@ final class WatchCacheLayoutTests: XCTestCase {
 
     func testCatalogRoundTripsThroughEncodeAndDecode() throws {
         let catalog = [
-            WatchCollectionInfo(id: "Trip to Kyoto", title: "Trip to Kyoto", cardCount: 12, coverThumbnail: Data([0x01, 0x02])),
-            WatchCollectionInfo(id: "Postcards from Rome", title: "Postcards from Rome", cardCount: 4, coverThumbnail: nil),
+            WatchCollectionInfo(id: "Trip to Kyoto", title: "Trip to Kyoto", cardCount: 12),
+            WatchCollectionInfo(id: "Postcards from Rome", title: "Postcards from Rome", cardCount: 4),
         ]
 
         let data = try XCTUnwrap(WatchCacheLayout.encodeCatalog(catalog))

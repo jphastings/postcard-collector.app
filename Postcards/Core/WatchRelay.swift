@@ -37,7 +37,4 @@ struct WatchCollectionInfo: Identifiable, Hashable, Codable, Sendable {
     var id: String
     var title: String
     var cardCount: Int
-    /// A small pre-rendered cover thumbnail (JPEG/PNG bytes) for the list row, or `nil` if the
-    /// phone hasn't been able to read the collection's file yet.
-    var coverThumbnail: Data?
 }

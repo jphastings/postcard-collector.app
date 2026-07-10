@@ -1,5 +1,3 @@
-import CoreGraphics
-import ImageIO
 import SwiftUI
 
 /// Lists every collection the iPhone has advertised (`library.catalog`), pinned ones first.
@@ -62,7 +60,6 @@ struct WatchCollectionListView: View {
 
     private func rowLabel(_ info: WatchCollectionInfo) -> some View {
         HStack(spacing: 8) {
-            thumbnail(for: info)
             VStack(alignment: .leading, spacing: 2) {
                 Text(info.title).lineLimit(1)
                 Text(subtitle(for: info))
@@ -85,17 +82,6 @@ struct WatchCollectionListView: View {
     }
 
     @ViewBuilder
-    private func thumbnail(for info: WatchCollectionInfo) -> some View {
-        if let data = info.coverThumbnail, let image = Self.decodeThumbnail(data) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 28, height: 28)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-        }
-    }
-
-    @ViewBuilder
     private func stateBadge(for info: WatchCollectionInfo) -> some View {
         if library.isDownloaded(info.id) {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -114,10 +100,5 @@ struct WatchCollectionListView: View {
             Label(isPinned ? "Remove" : "Keep Downloaded", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
         }
         .tint(isPinned ? .red : .accentColor)
-    }
-
-    private static func decodeThumbnail(_ data: Data) -> CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }

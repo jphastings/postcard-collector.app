@@ -1,7 +1,10 @@
 #if os(iOS)
 import Foundation
 import Observation
+import os
 import WatchConnectivity
+
+private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "WatchConnectivityProvider")
 
 /// The iPhone side of the watch relay (see `WatchRelay` for the wire contract). Publishes a
 /// lightweight catalog of `CloudLibrary`'s collections as the `WCSession` application
@@ -44,9 +47,9 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     }
 
     /// Builds and pushes the catalog. Collection files already known to be `.current` are
-    /// read for their real title/count/thumbnail; anything else gets a minimal entry rather
-    /// than triggering a download just to advertise it. The (blocking, SQLite) reads happen
-    /// off the main actor — `CloudItem` is `Sendable`, so the snapshot can safely cross.
+    /// read for their real title/count; anything else gets a minimal entry rather than
+    /// triggering a download just to advertise it. The (blocking, SQLite) reads happen off
+    /// the main actor — `CloudItem` is `Sendable`, so the snapshot can safely cross.
     private func publishCatalog() {
         let collections = cloudLibrary.items.filter { $0.isCollection }
         Task.detached(priority: .utility) { [weak self] in
@@ -63,13 +66,20 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         return WatchCatalogBuilder.entry(for: item, reader: reader)
     }
 
-    /// Latest-wins push, deduped against the last context we set so an unchanged catalog
-    /// (e.g. a query update for content we don't surface) doesn't churn `WCSession`.
+    /// Latest-wins push, deduped against the last context we successfully set so an
+    /// unchanged catalog (e.g. a query update for content we don't surface) doesn't churn
+    /// `WCSession`. Only recorded as "last published" once the push actually succeeds — a
+    /// failed push (logged, not swallowed) must not poison the dedupe so a later retry of the
+    /// same catalog is skipped.
     private func pushCatalogIfNeeded(_ data: Data) {
         guard data != lastPublishedCatalogData else { return }
         guard WCSession.default.activationState == .activated else { return }
-        lastPublishedCatalogData = data
-        try? WCSession.default.updateApplicationContext([WatchRelay.catalogKey: data])
+        do {
+            try WCSession.default.updateApplicationContext([WatchRelay.catalogKey: data])
+            lastPublishedCatalogData = data
+        } catch {
+            logger.error("Failed to push watch catalog (\(data.count) bytes): \(String(describing: error), privacy: .public)")
+        }
     }
 
     // MARK: - Watch requests
