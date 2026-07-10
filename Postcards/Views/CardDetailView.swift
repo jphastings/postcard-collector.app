@@ -16,13 +16,10 @@ struct CardDetailView: View {
     @State private var lastZoomOffset: CGSize = .zero
     @State private var contentSize: CGSize = .zero
 
-    // Single tap flips instantly (no delay waiting to see if a second tap arrives); a second
-    // tap within `doubleTapWindow` reverses that flip and zooms instead. Driving the flip via
-    // this binding (rather than FlippableCardView's own `tapToFlip`) lets both gestures share
-    // one recognizer instead of fighting over the same touch.
+    // The flip is driven through this binding (with FlippableCardView's own `tapToFlip`
+    // disabled) so a single container can own both the flip tap and the zoom double-tap and
+    // let SwiftUI disambiguate them — see `tapGesture`.
     @State private var isFlipped = false
-    @State private var lastTapTime: Date?
-    private let doubleTapWindow: TimeInterval = 0.3
     private let doubleTapZoomScale: CGFloat = 2.5
 
     private let minZoomScale: CGFloat = 1
@@ -106,32 +103,21 @@ struct CardDetailView: View {
 
     // Local space: the tap location must be in the same pre-transform coordinate space as
     // `contentSize` for ZoomGeometry's anchor math (see its doc comment).
+    // Standard tap disambiguation: a double tap zooms (anchored at the tap point); a single
+    // tap flips, but only once the double-tap window has elapsed without a second tap.
+    // `ExclusiveGesture` gives the double-tap precedence, so the single-tap flip can't fire
+    // until a double-tap has been ruled out — no half-started flip for a second tap to undo.
     private var tapGesture: some Gesture {
-        SpatialTapGesture(count: 1, coordinateSpace: .local)
-            .onEnded { value in
-                handleTap(at: value.location)
-            }
+        SpatialTapGesture(count: 2, coordinateSpace: .local)
+            .onEnded { value in toggleZoom(at: value.location) }
+            .exclusively(
+                before: SpatialTapGesture(count: 1, coordinateSpace: .local)
+                    .onEnded { _ in if canFlip { isFlipped.toggle() } }
+            )
     }
 
     private var canFlip: Bool {
         splitImage?.back != nil && reference.summary.flip != .none
-    }
-
-    private func handleTap(at location: CGPoint) {
-        if let lastTapTime, Date().timeIntervalSince(lastTapTime) < doubleTapWindow {
-            // Second tap: reverse the flip the first tap started, and zoom instead.
-            if canFlip {
-                isFlipped.toggle()
-            }
-            toggleZoom(at: location)
-            self.lastTapTime = nil
-        } else {
-            // First tap: flip starts immediately, with no wait to see if a second tap follows.
-            if canFlip {
-                isFlipped.toggle()
-            }
-            lastTapTime = Date()
-        }
     }
 
     private func toggleZoom(at location: CGPoint) {
@@ -208,17 +194,12 @@ struct CardDetailView: View {
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
-            // At-rest (scale 1) inset: safe-area chrome plus the existing 16pt margin. Once
-            // zoomed, `.scaleEffect` grows the card past this inset out toward the physical
-            // edges — clipped only by the container below, which now spans the full screen.
-            .padding(
-                EdgeInsets(
-                    top: insets.top + 16,
-                    leading: insets.leading + 16,
-                    bottom: insets.bottom + 16,
-                    trailing: insets.trailing + 16
-                )
-            )
+            // At-rest (scale 1) inset: normally the safe-area chrome plus a 16pt margin, but
+            // for a card narrow enough to fill the height while clearing the corner buttons,
+            // zero — so it reaches top/bottom (see `atRestPadding`). Once zoomed, `.scaleEffect`
+            // grows the card past this inset toward the physical edges — clipped only by the
+            // container below, which spans the full screen.
+            .padding(atRestPadding(screen: proxy.size, insets: insets))
             // Fills the whole detail area (rather than just the card's aspect-fitted band) so
             // zoomed content has the full screen to pan across instead of being clipped back
             // to a small centered band.
@@ -239,6 +220,36 @@ struct CardDetailView: View {
         .ignoresSafeArea()
     }
 
+    /// The at-rest inset for the card. Normally the safe-area chrome plus 16pt, so the unzoomed
+    /// card stays clear of the toolbar/Dynamic Island/home-indicator. But when the postcard is
+    /// proportionally narrower than the screen — so scaling it to the full screen height leaves
+    /// its width narrow enough to sit *between* the top-corner toolbar buttons — return zero, so
+    /// it fills the height edge-to-edge (aspect-fit centres it horizontally, clear of the
+    /// buttons). This is what makes a landscape card use the whole height instead of floating
+    /// small in the middle.
+    private func atRestPadding(screen: CGSize, insets: EdgeInsets) -> EdgeInsets {
+        let standard = EdgeInsets(
+            top: insets.top + 16, leading: insets.leading + 16,
+            bottom: insets.bottom + 16, trailing: insets.trailing + 16
+        )
+        let bounding = FlipGeometry.boundingSize(
+            forFrontSize: CGSize(width: CGFloat(reference.summary.frontPxW), height: CGFloat(reference.summary.frontPxH)),
+            flip: reference.summary.flip
+        )
+        guard bounding.width > 0, bounding.height > 0, screen.width > 0, screen.height > 0 else { return standard }
+        let cardAspect = bounding.width / bounding.height
+        // Only when the card is narrower than the screen (fitting to full height keeps its width
+        // on-screen); a card wider than the screen is width-bound anyway and would run under the
+        // corner buttons.
+        guard cardAspect < screen.width / screen.height else { return standard }
+        let fullHeightWidth = screen.height * cardAspect
+        // Horizontal room that still clears a top-corner toolbar button (safe inset + the button).
+        let buttonClearance: CGFloat = 52
+        let clearWidth = screen.width - (insets.leading + buttonClearance) - (insets.trailing + buttonClearance)
+        guard fullHeightWidth <= clearWidth else { return standard }
+        return EdgeInsets()
+    }
+
     private func load() async {
         splitImage = nil
         loadError = nil
@@ -252,7 +263,6 @@ struct CardDetailView: View {
         zoomOffset = .zero
         lastZoomOffset = .zero
         isFlipped = false
-        lastTapTime = nil
         let flip = reference.summary.flip
         do {
             async let imageData = GoCore.shared.image(for: reference)
