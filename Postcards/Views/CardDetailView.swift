@@ -16,14 +16,27 @@ struct CardDetailView: View {
     @State private var lastZoomOffset: CGSize = .zero
     @State private var contentSize: CGSize = .zero
 
+    // Single tap flips instantly (no delay waiting to see if a second tap arrives); a second
+    // tap within `doubleTapWindow` reverses that flip and zooms instead. Driving the flip via
+    // this binding (rather than FlippableCardView's own `tapToFlip`) lets both gestures share
+    // one recognizer instead of fighting over the same touch.
+    @State private var isFlipped = false
+    @State private var lastTapTime: Date?
+    private let doubleTapWindow: TimeInterval = 0.3
+    private let doubleTapZoomScale: CGFloat = 2.5
+
     private let minZoomScale: CGFloat = 1
     private let maxZoomScale: CGFloat = 5
 
     var body: some View {
         content
-            .navigationTitle(reference.summary.name)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if zoomScale > minZoomScale {
+                        Button("Reset Zoom", systemImage: "arrow.down.right.and.arrow.up.left") {
+                            resetZoom()
+                        }
+                    }
                     Button("Info", systemImage: "info.circle") {
                         showingInfo.toggle()
                     }
@@ -45,8 +58,9 @@ struct CardDetailView: View {
         }
     }
 
-    // Pinch handles magnification directly; drag only pans once zoomed in, so it must run
-    // alongside (not replace) FlippableCardView's own internal tap-to-flip gesture.
+    // Pinch handles magnification directly; drag only pans once zoomed in. Both run alongside
+    // `tapGesture` (below), which drives the flip/zoom taps that would otherwise compete with
+    // FlippableCardView's own internal tap-to-flip gesture — disabled here via `tapToFlip: false`.
     private var magnifyGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
@@ -73,15 +87,71 @@ struct CardDetailView: View {
         DragGesture()
             .onChanged { value in
                 guard zoomScale > minZoomScale else { return }
+                // translation arrives in the gesture's pre-transform space (this view is
+                // captured before .scaleEffect), so it must be scaled up to match how far the
+                // finger has actually travelled on screen — otherwise pan lags behind at
+                // any zoom > 1x.
                 zoomOffset = CGSize(
-                    width: lastZoomOffset.width + value.translation.width,
-                    height: lastZoomOffset.height + value.translation.height
+                    width: lastZoomOffset.width + value.translation.width * zoomScale,
+                    height: lastZoomOffset.height + value.translation.height * zoomScale
                 )
             }
             .onEnded { _ in
                 guard zoomScale > minZoomScale else { return }
                 lastZoomOffset = zoomOffset
             }
+    }
+
+    // Local space: the tap location must be in the same pre-transform coordinate space as
+    // `contentSize` for ZoomGeometry's anchor math (see its doc comment).
+    private var tapGesture: some Gesture {
+        SpatialTapGesture(count: 1, coordinateSpace: .local)
+            .onEnded { value in
+                handleTap(at: value.location)
+            }
+    }
+
+    private var canFlip: Bool {
+        splitImage?.back != nil && reference.summary.flip != .none
+    }
+
+    private func handleTap(at location: CGPoint) {
+        if let lastTapTime, Date().timeIntervalSince(lastTapTime) < doubleTapWindow {
+            // Second tap: reverse the flip the first tap started, and zoom instead.
+            if canFlip {
+                isFlipped.toggle()
+            }
+            toggleZoom(at: location)
+            self.lastTapTime = nil
+        } else {
+            // First tap: flip starts immediately, with no wait to see if a second tap follows.
+            if canFlip {
+                isFlipped.toggle()
+            }
+            lastTapTime = Date()
+        }
+    }
+
+    private func toggleZoom(at location: CGPoint) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            if zoomScale > minZoomScale {
+                zoomScale = 1
+                lastZoomScale = 1
+                zoomOffset = .zero
+                lastZoomOffset = .zero
+            } else {
+                zoomScale = doubleTapZoomScale
+                lastZoomScale = doubleTapZoomScale
+                zoomOffset = ZoomGeometry.offset(
+                    keepingAnchor: location,
+                    inContentOfSize: contentSize,
+                    previousScale: 1,
+                    previousOffset: .zero,
+                    newScale: doubleTapZoomScale
+                )
+                lastZoomOffset = zoomOffset
+            }
+        }
     }
 
     private func resetZoom() {
@@ -103,9 +173,16 @@ struct CardDetailView: View {
                 frontPixelSize: CGSize(
                     width: CGFloat(reference.summary.frontPxW),
                     height: CGFloat(reference.summary.frontPxH)
-                )
+                ),
+                tapToFlip: false,
+                isFlipped: $isFlipped
             )
-            .padding(40)
+            .padding(16)
+            // Fills the whole detail area (rather than just the card's aspect-fitted band) so
+            // zoomed content has the full screen to pan across instead of being clipped back
+            // to a small centered band.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
             // Captured before scale/offset so gesture locations stay in one stable coordinate
             // space regardless of current zoom/pan — see ZoomGeometry's doc comment.
             .background {
@@ -117,25 +194,11 @@ struct CardDetailView: View {
             }
             .gesture(magnifyGesture)
             .simultaneousGesture(panGesture)
+            .simultaneousGesture(tapGesture)
             .scaleEffect(zoomScale)
             .offset(zoomOffset)
             // Zoomed/panned content would otherwise spill past the detail pane's bounds.
             .clipped()
-            .overlay(alignment: .topTrailing) {
-                if zoomScale > minZoomScale {
-                    Button {
-                        resetZoom()
-                    } label: {
-                        Label("Reset Zoom", systemImage: "arrow.down.right.and.arrow.up.left")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .padding(12)
-                    .transition(.opacity)
-                }
-            }
-            .animation(.easeOut(duration: 0.15), value: zoomScale > minZoomScale)
         } else if let loadError {
             ContentUnavailableView(
                 "Couldn't load postcard",
@@ -159,6 +222,8 @@ struct CardDetailView: View {
         lastZoomScale = 1
         zoomOffset = .zero
         lastZoomOffset = .zero
+        isFlipped = false
+        lastTapTime = nil
         let flip = reference.summary.flip
         do {
             async let imageData = GoCore.shared.image(for: reference)

@@ -298,7 +298,7 @@ private struct GridCell: View {
         .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
-        .gridSelectionHighlight(isSelected)
+        .gridSelectionHighlight(isSelected, image: thumbnail)
         .accessibilityLabel(frontDescription ?? card.name)
         // Stable machine-facing handle for UI tests; the label above stays human-readable.
         .accessibilityIdentifier(card.name)

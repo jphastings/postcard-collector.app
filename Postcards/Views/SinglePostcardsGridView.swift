@@ -244,7 +244,7 @@ private struct BareGridCell: View {
         .aspectRatio(CGFloat(card.frontPxW) / CGFloat(max(card.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
-        .gridSelectionHighlight(isSelected)
+        .gridSelectionHighlight(isSelected, image: thumbnail)
         .accessibilityLabel(card.name)
         .accessibilityIdentifier(card.name)
         .task(id: path) { await loadThumbnail() }

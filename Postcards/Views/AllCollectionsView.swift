@@ -152,7 +152,7 @@ private struct UnionGridCell: View {
         .aspectRatio(CGFloat(entry.summary.frontPxW) / CGFloat(max(entry.summary.frontPxH, 1)), contentMode: .fit)
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
-        .gridSelectionHighlight(isSelected)
+        .gridSelectionHighlight(isSelected, image: thumbnail)
         .accessibilityLabel(entry.summary.name)
         .accessibilityIdentifier(entry.summary.name)
         .task(id: entry.id) { await loadThumbnail() }

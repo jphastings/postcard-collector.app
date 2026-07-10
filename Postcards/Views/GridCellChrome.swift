@@ -1,21 +1,42 @@
 import SwiftUI
 
 /// The standard "this card is open in the detail pane" treatment for a masonry grid cell
-/// (`CollectionGridView`/`SinglePostcardsGridView`/`AllCollectionsView`): an accent ring plus
-/// a soft glow around the thumbnail's own bounds. Deliberately NOT a background plate —
-/// postcards can have real transparency (die-cut/torn scans), so a filled plate behind a
-/// transparent silhouette would show through as a fake rectangular border (see `GridCell`'s
-/// doc comment). Identical on iOS and macOS.
+/// (`CollectionGridView`/`SinglePostcardsGridView`/`AllCollectionsView`): a soft accent glow
+/// that follows the thumbnail's own alpha, rather than a crisp rectangular outline.
+/// Deliberately NOT a background plate — postcards can have real transparency (die-cut/torn
+/// scans), so a filled plate behind a transparent silhouette would show through as a fake
+/// rectangular border (see `GridCell`'s doc comment); masking the glow to the image's alpha
+/// keeps it hugging the postcard's actual shape instead. Identical on iOS and macOS.
 private struct GridSelectionHighlight: ViewModifier {
     let isSelected: Bool
+    let image: PlatformImage?
 
     func body(content: Content) -> some View {
         content
-            .overlay {
+            .background {
                 if isSelected {
-                    Rectangle()
-                        .strokeBorder(Color.accentColor, lineWidth: 3)
-                        .shadow(color: .accentColor.opacity(0.7), radius: 5)
+                    Group {
+                        if let image {
+                            // .mask only ever READS this image's existing alpha channel — it
+                            // must never threshold or reshape it, since postcards' soft
+                            // fibrous/die-cut edges are load-bearing detail, not noise.
+                            // Opaque thumbnails (no alpha) mask to the full rectangle, so
+                            // collection cards still get today's rectangular glow.
+                            Color.accentColor
+                                .mask {
+                                    Image(platformImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                }
+                        } else {
+                            // Thumbnail still loading: fall back to a plain rounded-rect glow
+                            // until the real alpha shape is available to mask against.
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.accentColor)
+                        }
+                    }
+                    .blur(radius: 8)
+                    .opacity(0.8)
                 }
             }
             .animation(.easeInOut(duration: 0.15), value: isSelected)
@@ -63,9 +84,10 @@ private struct ThumbnailHoverParallax: ViewModifier {
 #endif
 
 extension View {
-    /// See `GridSelectionHighlight`.
-    func gridSelectionHighlight(_ isSelected: Bool) -> some View {
-        modifier(GridSelectionHighlight(isSelected: isSelected))
+    /// See `GridSelectionHighlight`. `image` should be the same thumbnail the cell displays,
+    /// so the glow's mask lines up with what's on screen; pass `nil` while it's still loading.
+    func gridSelectionHighlight(_ isSelected: Bool, image: PlatformImage?) -> some View {
+        modifier(GridSelectionHighlight(isSelected: isSelected, image: image))
     }
 
     /// Applies `ThumbnailHoverParallax` on macOS; a no-op elsewhere (see that type's doc).
