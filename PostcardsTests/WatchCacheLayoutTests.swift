@@ -31,4 +31,47 @@ final class WatchCacheLayoutTests: XCTestCase {
     func testDecodeCatalogReturnsNilForGarbageData() {
         XCTAssertNil(WatchCacheLayout.decodeCatalog(Data([0xFF, 0x00, 0x10])))
     }
+
+    // MARK: - idsToEvict
+
+    func testIdsToEvictReturnsNothingWhenUnderTheLimit() {
+        let dates: [String: Date] = ["a": .now, "b": .now.addingTimeInterval(-10)]
+        XCTAssertEqual(WatchCacheLayout.idsToEvict(cachedModificationDates: dates, pinned: [], limit: 8), [])
+    }
+
+    func testIdsToEvictDropsTheOldestTemporaryFilesBeyondTheLimit() {
+        let now = Date()
+        let dates: [String: Date] = [
+            "oldest": now.addingTimeInterval(-300),
+            "older": now.addingTimeInterval(-200),
+            "newer": now.addingTimeInterval(-100),
+            "newest": now,
+        ]
+        XCTAssertEqual(
+            WatchCacheLayout.idsToEvict(cachedModificationDates: dates, pinned: [], limit: 2),
+            ["oldest", "older"]
+        )
+    }
+
+    func testIdsToEvictNeverIncludesPinnedFilesRegardlessOfAge() {
+        let now = Date()
+        let dates: [String: Date] = [
+            "pinned-old": now.addingTimeInterval(-300),
+            "temp-old": now.addingTimeInterval(-200),
+            "temp-new": now,
+        ]
+        XCTAssertEqual(
+            WatchCacheLayout.idsToEvict(cachedModificationDates: dates, pinned: ["pinned-old"], limit: 1),
+            ["temp-old"]
+        )
+    }
+
+    func testIdsToEvictUsesTheDefaultTemporaryCacheLimit() {
+        var dates: [String: Date] = [:]
+        for index in 0..<(WatchCacheLayout.temporaryCacheLimit + 3) {
+            dates["item-\(index)"] = Date(timeIntervalSince1970: TimeInterval(index))
+        }
+        let evicted = WatchCacheLayout.idsToEvict(cachedModificationDates: dates, pinned: [])
+        XCTAssertEqual(evicted, ["item-0", "item-1", "item-2"])
+    }
 }

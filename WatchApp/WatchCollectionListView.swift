@@ -4,10 +4,10 @@ import SwiftUI
 
 /// Lists every collection the iPhone has advertised (`library.catalog`), pinned ones first.
 /// Pinning (via the swipe action) asks the phone to send the collection's file so it's
-/// cached on the watch and opens with no phone present; unpinning drops the cache again.
-/// Phase 1 only opens collections that are already downloaded — tapping an unpinned row
-/// shows an inline hint instead of navigating, so there's never an attempt to open a file
-/// that hasn't arrived yet.
+/// cached on the watch and opens with no phone present; unpinning lets that cache lapse.
+/// Every row navigates, downloaded or not — `WatchPostcardScrollView` itself handles
+/// requesting an undownloaded collection from a reachable iPhone (Phase 2's live browsing)
+/// or showing an unavailable state.
 struct WatchCollectionListView: View {
     let library: WatchLibrary
 
@@ -35,24 +35,13 @@ struct WatchCollectionListView: View {
             }
         }
         .navigationTitle("Postcards")
-        .navigationDestination(for: String.self) { id in destination(for: id) }
+        .navigationDestination(for: String.self) { id in
+            WatchPostcardScrollView(library: library, id: id)
+        }
         .overlay {
             if library.catalog.isEmpty {
                 emptyOverlay
             }
-        }
-    }
-
-    @ViewBuilder
-    private func destination(for id: String) -> some View {
-        if let url = library.localFileURL(for: id) {
-            WatchPostcardScrollView(id: id, fileURL: url)
-        } else {
-            ContentUnavailableView(
-                "Not Downloaded",
-                systemImage: "icloud.slash",
-                description: Text("Pin this collection to open it on your watch.")
-            )
         }
     }
 
@@ -64,33 +53,35 @@ struct WatchCollectionListView: View {
         )
     }
 
-    @ViewBuilder
     private func row(for info: WatchCollectionInfo) -> some View {
-        let downloaded = library.isDownloaded(info.id)
-        Group {
-            if downloaded {
-                NavigationLink(value: info.id) { rowLabel(info, downloaded: true) }
-            } else {
-                rowLabel(info, downloaded: false)
+        NavigationLink(value: info.id) { rowLabel(info) }
+            .swipeActions {
+                pinButton(for: info)
             }
-        }
-        .swipeActions {
-            pinButton(for: info)
-        }
     }
 
-    private func rowLabel(_ info: WatchCollectionInfo, downloaded: Bool) -> some View {
+    private func rowLabel(_ info: WatchCollectionInfo) -> some View {
         HStack(spacing: 8) {
             thumbnail(for: info)
             VStack(alignment: .leading, spacing: 2) {
                 Text(info.title).lineLimit(1)
-                Text(downloaded ? "\(info.cardCount) cards" : "Pin to open on Watch")
+                Text(subtitle(for: info))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             stateBadge(for: info)
         }
+    }
+
+    private func subtitle(for info: WatchCollectionInfo) -> String {
+        if library.isDownloaded(info.id) {
+            return "\(info.cardCount) cards"
+        }
+        if library.downloadProgress[info.id] != nil {
+            return "Downloading…"
+        }
+        return library.isPhoneReachable ? "Tap to open" : "Needs iPhone nearby"
     }
 
     @ViewBuilder

@@ -27,4 +27,28 @@ enum WatchCacheLayout {
     static func decodeCatalog(_ data: Data) -> [WatchCollectionInfo]? {
         try? JSONDecoder().decode([WatchCollectionInfo].self, from: data)
     }
+
+    // MARK: - Temporary cache eviction
+
+    /// How many *temporary* (unpinned) cached collections to keep. Live-browsing an unpinned
+    /// collection (Phase 2) caches its file just like pinning does, so without a cap the
+    /// cache would grow unboundedly as someone browses their library. Pinned collections
+    /// aren't subject to this cap.
+    static let temporaryCacheLimit = 8
+
+    /// Which cached collections should be evicted to bring the temporary cache back within
+    /// `limit`, given each cached id's file modification date and the currently pinned set.
+    /// Pinned ids are never returned; among the rest, the least-recently-modified ones beyond
+    /// `limit` are (LRU). Pure decision logic — actually deleting the files is `WatchLibrary`'s job.
+    static func idsToEvict(
+        cachedModificationDates: [String: Date],
+        pinned: Set<String>,
+        limit: Int = temporaryCacheLimit
+    ) -> Set<String> {
+        let temporary = cachedModificationDates
+            .filter { !pinned.contains($0.key) }
+            .sorted { $0.value < $1.value }
+        guard temporary.count > limit else { return [] }
+        return Set(temporary.prefix(temporary.count - limit).map(\.key))
+    }
 }

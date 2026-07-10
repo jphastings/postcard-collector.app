@@ -19,10 +19,15 @@ import WatchConnectivity
 final class WatchLibrary: NSObject {
     private(set) var catalog: [WatchCollectionInfo] = []
     private(set) var isPhoneReachable = false
-    /// `id` -> 0...1 while a pinned collection's file is in flight. `transferUserInfo`
-    /// gives no incremental progress on the receiving side, so in Phase 1 this is really a
-    /// "requested, not yet arrived" marker (`0`) cleared the moment the file lands.
+    /// `id` -> 0...1 while a collection's file is in flight (pinning or a Phase 2 live-view
+    /// request). `transferUserInfo`/`transferFile` give no incremental progress on the
+    /// receiving side, so this is really a "requested, not yet arrived" marker (`0`) cleared
+    /// the moment the file lands.
     private(set) var downloadProgress: [String: Double] = [:]
+    /// Ids with a file currently cached on disk (pinned or temporary alike). Populated by
+    /// scanning the cache directory on init and kept in sync on every cache/evict — this is
+    /// what lets a waiting `WatchPostcardScrollView` react the moment a requested file lands.
+    private(set) var downloadedIDs: Set<String> = []
 
     private let pinStore: PinStore
     /// Injected for the main-actor disk methods (test seam). The one `nonisolated` path,
@@ -44,6 +49,10 @@ final class WatchLibrary: NSObject {
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         super.init()
         restoreCatalog()
+        downloadedIDs = scanDownloadedIDs()
+        // Self-heal if the temporary cache limit was ever exceeded across a relaunch (e.g. a
+        // crash mid-eviction, or a lowered cap in a future build).
+        evictTemporaryFilesIfNeeded()
     }
 
     func start() {
@@ -58,7 +67,7 @@ final class WatchLibrary: NSObject {
     }
 
     func isDownloaded(_ id: String) -> Bool {
-        fileManager.fileExists(atPath: cacheURL(for: id).path)
+        downloadedIDs.contains(id)
     }
 
     func localFileURL(for id: String) -> URL? {
@@ -66,24 +75,33 @@ final class WatchLibrary: NSObject {
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Pinning keeps a collection's file downloaded (and exempt from eviction) permanently;
+    /// unpinning lets it fall back to being a *temporary* file, subject to eviction, rather
+    /// than deleting it outright — so unpinning something you're currently viewing doesn't
+    /// yank the file out from under you.
     func setPinned(_ pinned: Bool, id: String) {
         pinStore.setPinned(pinned, for: id)
         if pinned {
+            // Already cached (e.g. requested for live viewing earlier) — just protect it from
+            // eviction, no need to re-request the transfer.
+            guard !isDownloaded(id) else { return }
             downloadProgress[id] = 0
             WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opPin, WatchRelay.idKey: id])
         } else {
             downloadProgress[id] = nil
-            try? fileManager.removeItem(at: cacheURL(for: id))
             if WCSession.default.activationState == .activated {
                 WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opUnpin, WatchRelay.idKey: id])
             }
+            evictTemporaryFilesIfNeeded()
         }
     }
 
-    /// Phase 2 stub: the phone doesn't yet act on `opRequest`, but the watch can already
-    /// ask for a live (unpinned) view whenever it's reachable.
+    /// Asks the phone for a live (unpinned) view of this collection while reachable. The file
+    /// arrives just like a pinned one, but is cached as *temporary* — eligible for eviction
+    /// once the temporary cache cap is exceeded — since it was never asked to be kept.
     func requestDownloadIfNeeded(id: String) {
         guard !isDownloaded(id), isPhoneReachable else { return }
+        downloadProgress[id] = 0
         WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opRequest, WatchRelay.idKey: id])
     }
 
@@ -112,8 +130,9 @@ final class WatchLibrary: NSObject {
     /// thread WCSession calls the delegate on: `file.fileURL` points at a temporary location
     /// WCSession may reclaim as soon as `session(_:didReceive:)` returns, so — unlike the
     /// `@Observable` state updates, which can wait for the main actor — this can't be
-    /// deferred into a `Task`.
-    private nonisolated func cacheReceivedFile(_ file: WCSessionFile, id: String) {
+    /// deferred into a `Task`. Returns whether the move succeeded, so the caller knows whether
+    /// to record the id as downloaded.
+    private nonisolated func cacheReceivedFile(_ file: WCSessionFile, id: String) -> Bool {
         let fileManager = FileManager.default
         let directory = WatchCacheLayout.pinnedCollectionsDirectory(in: supportDirectory)
         let destination = WatchCacheLayout.cacheURL(for: id, in: supportDirectory)
@@ -123,9 +142,52 @@ final class WatchLibrary: NSObject {
                 try fileManager.removeItem(at: destination)
             }
             try fileManager.moveItem(at: file.fileURL, to: destination)
+            return true
         } catch {
-            // Leave downloadProgress[id] as-is: the row keeps showing "in progress" rather
-            // than silently claiming success. A future re-pin or relaunch can retry.
+            // The row keeps showing "in progress" rather than silently claiming success. A
+            // future re-pin, re-request, or relaunch can retry.
+            return false
+        }
+    }
+
+    private func scanDownloadedIDs() -> Set<String> {
+        Set(cachedFileURLs().map { $0.deletingPathExtension().lastPathComponent })
+    }
+
+    /// Each currently-cached collection's id and file modification date, for feeding into
+    /// `WatchCacheLayout.idsToEvict`.
+    private func cachedModificationDates() -> [String: Date] {
+        var dates: [String: Date] = [:]
+        for url in cachedFileURLs() {
+            let id = url.deletingPathExtension().lastPathComponent
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            dates[id] = modified ?? .distantPast
+        }
+        return dates
+    }
+
+    private func cachedFileURLs() -> [URL] {
+        let directory = WatchCacheLayout.pinnedCollectionsDirectory(in: supportDirectory)
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? []
+        return contents.filter { $0.pathExtension == "postcards" }
+    }
+
+    /// Evicts the least-recently-modified temporary (unpinned) cached files down to
+    /// `WatchCacheLayout.temporaryCacheLimit`. Pinned files are never touched. Call after
+    /// anything that could grow the temporary cache (a requested or pinned file arriving) or
+    /// shrink the pinned set (an unpin).
+    private func evictTemporaryFilesIfNeeded() {
+        let evictable = WatchCacheLayout.idsToEvict(
+            cachedModificationDates: cachedModificationDates(),
+            pinned: pinStore.pinnedKeys
+        )
+        guard !evictable.isEmpty else { return }
+        for id in evictable {
+            try? fileManager.removeItem(at: cacheURL(for: id))
+            downloadedIDs.remove(id)
         }
     }
 }
@@ -164,9 +226,12 @@ extension WatchLibrary: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
         guard let id = file.metadata?[WatchRelay.fileIdKey] as? String else { return }
-        cacheReceivedFile(file, id: id)
+        let succeeded = cacheReceivedFile(file, id: id)
         Task { @MainActor in
             self.downloadProgress[id] = nil
+            guard succeeded else { return }
+            self.downloadedIDs.insert(id)
+            self.evictTemporaryFilesIfNeeded()
         }
     }
 }
