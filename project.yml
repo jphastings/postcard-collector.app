@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.5.4"
+    MARKETING_VERSION: "0.5.5"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: true
     # Do NOT strip symbols. The Go core (Postcards.xcframework, gomobile) is a static library
