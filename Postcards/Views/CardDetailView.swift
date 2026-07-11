@@ -44,18 +44,10 @@ struct CardDetailView: View {
                             resetZoom()
                         }
                     }
-                    #if os(macOS)
-                    // While the inspector is open, `infoPanel`'s own `.toolbar` carries this
-                    // button instead, so it reads as belonging to the inspector column it
-                    // toggles rather than floating in the detail toolbar above a closed one.
-                    if !showingInfo {
-                        infoButton
-                    }
-                    #else
                     infoButton
-                    #endif
                 }
             }
+            .transparentWindowToolbarBackground()
             #if os(iOS)
             .sheet(isPresented: $showingInfo) { infoPanel }
             #else
@@ -90,13 +82,6 @@ struct CardDetailView: View {
                 // in @State, and would otherwise survive across cards at this same tree
                 // position) resets instead of carrying over from whatever card was shown before.
                 .id(reference.id)
-                #if os(macOS)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        infoButton
-                    }
-                }
-                #endif
         }
     }
 
@@ -355,5 +340,36 @@ struct CardDetailView: View {
         } catch {
             loadError = error.localizedDescription
         }
+    }
+}
+
+#if os(macOS)
+/// Hides the window toolbar's background over this view. macOS only turns the toolbar into
+/// liquid glass automatically when it sits above a scroll view; `CardDetailView` isn't one,
+/// so without this the toolbar paints its default opaque strip, clipping the top of a
+/// portrait card that fills the full detail height (see `atRestPadding`'s narrow-card
+/// branch). Trade-off: `NSToolbar` is one shared bar for the whole window, not scoped per
+/// `NavigationSplitView` column, so this clears the toolbar's background everywhere —
+/// sidebar and content-column items included — for as long as a card is selected, not just
+/// the region above the detail pane; it reverts once back on the "Select a Postcard"
+/// placeholder, which doesn't carry this modifier.
+private struct TransparentWindowToolbarBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            content
+        }
+    }
+}
+#endif
+
+private extension View {
+    func transparentWindowToolbarBackground() -> some View {
+        #if os(macOS)
+        modifier(TransparentWindowToolbarBackground())
+        #else
+        self
+        #endif
     }
 }

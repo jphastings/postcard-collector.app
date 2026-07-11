@@ -50,7 +50,7 @@ struct SearchSuggestionsList: View {
                 .buttonStyle(.plain)
             }
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .floatingGlassBackground(in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary, lineWidth: 1))
         .frame(maxWidth: 360)
         .shadow(radius: 4, y: 2)

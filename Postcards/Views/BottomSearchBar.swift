@@ -41,7 +41,7 @@ struct BottomSearchBar: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(fieldShape.fill(.regularMaterial))
+        .floatingGlassBackground(in: fieldShape)
         .overlay(fieldShape.strokeBorder(.quaternary, lineWidth: 1))
         .frame(maxWidth: 360)
         // The bar itself is docked to the screen bottom, so suggestions float UPWARD off
@@ -55,9 +55,12 @@ struct BottomSearchBar: View {
                     .alignmentGuide(.top) { $0[.bottom] }
             }
         }
-        .padding(10)
+        // Floats the field as its own glass capsule above the grid rather than a full-width
+        // bar: no `.background` on this outer container, so the safeAreaInset it sits in
+        // stays transparent and grid content scrolls visibly beneath/around it.
+        .padding(.horizontal)
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .background(.bar)
         // Hidden ⌘F shortcut focuses the field from anywhere in the pane, standing in for
         // the "Find" affordance `.searchable` gets for free from the toolbar on other platforms.
         .background(
@@ -97,13 +100,26 @@ struct BottomSearchBar: View {
         }
     }
 
-    private var fieldShape: RoundedRectangle { RoundedRectangle(cornerRadius: 8) }
+    private var fieldShape: Capsule { Capsule() }
 }
 
 extension View {
-    /// Applies `BottomSearchBar` as a bottom `safeAreaInset` bound to `text`/`tokens`.
-    /// Grid/map content scrolls up to (and, thanks to the material background, visually
-    /// under) the bar rather than being obscured by it.
+    /// Real Liquid Glass on macOS 26+ (and iOS 26+, matching platforms); `.regularMaterial`
+    /// beneath that OS floor, since `.glassEffect` doesn't exist there.
+    @ViewBuilder
+    func floatingGlassBackground(in shape: some Shape) -> some View {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.regularMaterial, in: shape)
+        }
+    }
+}
+
+extension View {
+    /// Applies `BottomSearchBar` as a bottom `safeAreaInset` bound to `text`/`tokens`. The
+    /// inset itself carries no background, so grid/map content scrolls visibly beneath and
+    /// around the floating glass field rather than under an opaque bar.
     func bottomSearchBar(
         text: Binding<String>,
         tokens: Binding<[SearchToken]>,
