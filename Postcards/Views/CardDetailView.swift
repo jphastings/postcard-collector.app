@@ -35,6 +35,18 @@ struct CardDetailView: View {
     private let minZoomScale: CGFloat = 1
     private let maxZoomScale: CGFloat = 5
 
+    // NSToolbar/UINavigationBar button frames aren't measurable from SwiftUI, so the toolbar's
+    // button clusters are estimated per platform instead — see `toolbarGeometry(insets:)`.
+    #if os(macOS)
+    // The (i) button's width over the detail pane, including its trailing margin.
+    private let macOSInfoButtonClusterWidth: CGFloat = 52
+    #else
+    // The back button's width in this view's compact push-navigation context.
+    private let iOSBackButtonClusterWidth: CGFloat = 60
+    // The (i) button's width, including its trailing margin.
+    private let iOSInfoButtonClusterWidth: CGFloat = 52
+    #endif
+
     var body: some View {
         content
             .toolbar {
@@ -224,11 +236,11 @@ struct CardDetailView: View {
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
-            // At-rest (scale 1) inset: normally the safe-area chrome plus a 16pt margin, but
-            // for a card narrow enough to fill the height while clearing the corner buttons,
-            // zero — so it reaches top/bottom (see `atRestPadding`). Once zoomed, `.scaleEffect`
-            // grows the card past this inset toward the physical edges — clipped only by the
-            // container below, which spans the full screen.
+            // At-rest (scale 1) inset: whichever of `CardFitGeometry`'s regimes fits the card
+            // (and its flipped back) biggest while clearing the toolbar's buttons — see
+            // `atRestPadding`. Once zoomed, `.scaleEffect` grows the card past this inset toward
+            // the physical edges — clipped only by the container below, which spans the full
+            // screen.
             .padding(atRestPadding(screen: proxy.size, insets: insets))
             // Fills the whole detail area (rather than just the card's aspect-fitted band) so
             // zoomed content has the full screen to pan across instead of being clipped back
@@ -284,34 +296,55 @@ struct CardDetailView: View {
     }
     #endif
 
-    /// The at-rest inset for the card. Normally the safe-area chrome plus 16pt, so the unzoomed
-    /// card stays clear of the toolbar/Dynamic Island/home-indicator. But when the postcard is
-    /// proportionally narrower than the screen — so scaling it to the full screen height leaves
-    /// its width narrow enough to sit *between* the top-corner toolbar buttons — return zero, so
-    /// it fills the height edge-to-edge (aspect-fit centres it horizontally, clear of the
-    /// buttons). This is what makes a landscape card use the whole height instead of floating
-    /// small in the middle.
+    /// The at-rest inset for the card: whatever padding lands the aspect-fit, centred bounding
+    /// box (front AND back — see `FlipGeometry.boundingSize`) in whichever of
+    /// `CardFitGeometry`'s regimes fits it biggest, clear of the toolbar's button clusters. See
+    /// `toolbarGeometry(insets:)` for how those clusters are estimated.
     private func atRestPadding(screen: CGSize, insets: EdgeInsets) -> EdgeInsets {
-        let standard = EdgeInsets(
-            top: insets.top + 16, leading: insets.leading + 16,
-            bottom: insets.bottom + 16, trailing: insets.trailing + 16
-        )
         let bounding = FlipGeometry.boundingSize(
             forFrontSize: CGSize(width: CGFloat(reference.summary.frontPxW), height: CGFloat(reference.summary.frontPxH)),
             flip: reference.summary.flip
         )
-        guard bounding.width > 0, bounding.height > 0, screen.width > 0, screen.height > 0 else { return standard }
-        let cardAspect = bounding.width / bounding.height
-        // Only when the card is narrower than the screen (fitting to full height keeps its width
-        // on-screen); a card wider than the screen is width-bound anyway and would run under the
-        // corner buttons.
-        guard cardAspect < screen.width / screen.height else { return standard }
-        let fullHeightWidth = screen.height * cardAspect
-        // Horizontal room that still clears a top-corner toolbar button (safe inset + the button).
-        let buttonClearance: CGFloat = 52
-        let clearWidth = screen.width - (insets.leading + buttonClearance) - (insets.trailing + buttonClearance)
-        guard fullHeightWidth <= clearWidth else { return standard }
-        return EdgeInsets()
+        return CardFitGeometry.atRestPadding(
+            paneSize: screen,
+            boundingSize: bounding,
+            toolbar: toolbarGeometry(insets: insets),
+            bottomInset: insets.bottom
+        )
+    }
+
+    /// Estimates the toolbar's button-band geometry for `CardFitGeometry`. `NSToolbar` is one
+    /// shared bar for the whole window (not scoped per pane) and `UINavigationBar`'s buttons
+    /// aren't exposed to SwiftUI either, so real button frames can't be measured — these are
+    /// estimates from platform and `@State`, not measurements.
+    private func toolbarGeometry(insets: EdgeInsets) -> ToolbarGeometry {
+        #if os(macOS)
+        // Nothing on the leading edge of the detail pane — the sidebar/content columns own
+        // that side, not the detail pane's own toolbar items.
+        let leadingWidth: CGFloat = 0
+        // The (i) button, unless the inspector is open — then it sits above the inspector,
+        // outside the detail pane, so the pane's own trailing cluster is empty. (Reset Zoom
+        // only ever appears while zoomed, i.e. never at rest, so it's ignored here.)
+        let trailingWidth: CGFloat = showingInfo ? 0 : macOSInfoButtonClusterWidth
+        let isTransparent: Bool
+        if #available(macOS 15, *) {
+            // transparentWindowToolbarBackground() hides the bar's background from here on.
+            isTransparent = true
+        } else {
+            isTransparent = false
+        }
+        #else
+        // The back button (this view is always pushed in a compact navigation context) and the
+        // (i) button — both present at rest regardless of whether the info sheet is showing,
+        // since the sheet floats on top rather than claiming toolbar space.
+        let leadingWidth: CGFloat = iOSBackButtonClusterWidth
+        let trailingWidth: CGFloat = iOSInfoButtonClusterWidth
+        // iOS bars are translucent on every OS version this app targets.
+        let isTransparent = true
+        #endif
+        return ToolbarGeometry(
+            bandHeight: insets.top, leadingWidth: leadingWidth, trailingWidth: trailingWidth, isTransparent: isTransparent
+        )
     }
 
     private func load() async {
