@@ -12,10 +12,12 @@ import SwiftUI
 /// carries is a count badge, and only once it represents more than one card (see
 /// `pinGlyph`). Tapping a single-card pin opens that card in the detail pane — the same
 /// `selection` binding the grid cells drive. Tapping a multi-card pin is decided fresh on
-/// every tap by `MapClusterZoom.decision(for:)`:
+/// every tap by `MapClusterZoom.decision(for:centeredOn:)`:
 /// - If the members are spread out enough that a camera framed around their OWN
-///   coordinates would actually pull them apart on screen, it animates there — the next
-///   settle's `recluster` then splits the merged pin into its members for real.
+///   coordinates would actually pull them apart on screen, it animates there — recentred
+///   on the pin's own displayed coordinate rather than the members' bounding-box centre, so
+///   the camera doesn't jump away from the spot just tapped — and the next settle's
+///   `recluster` then splits the merged pin into its members for real.
 /// - If they're packed too tightly for that to be worth doing (below
 ///   `MapClusterZoom.minimumUsefulSpanMeters` apart; identical coordinates are the limit
 ///   case and never qualify), the tap instead opens the next member in rotation — the same
@@ -355,7 +357,7 @@ struct CollectionMapView: View {
             selection = group.elements.first?.reference
             return
         }
-        switch MapClusterZoom.decision(for: group.elements.compactMap(\.summary.coordinate)) {
+        switch MapClusterZoom.decision(for: group.elements.compactMap(\.summary.coordinate), centeredOn: group.coordinate) {
         case .zoom(let region):
             withAnimation(.easeInOut(duration: Self.clusterZoomDuration)) {
                 cameraPosition = .region(region)
@@ -462,19 +464,30 @@ private struct MapPinAnnotation: View {
 
     private var badgeVisible: Bool { !isSingle }
 
+    /// NOT a `Button`: a real `Button` on macOS tracks clicks through AppKit's own
+    /// mouseDown/mouseUp cell-tracking loop, which loses out to MapKit's own hit-test
+    /// disambiguation when several annotation views sit exactly stacked at one coordinate
+    /// (every member of an aggregated pin owns one, per the file's doc comment — only the
+    /// representative's is visible, but all of them exist at the same point). The first
+    /// click there was being spent settling which stacked view is "hit" at all, so a
+    /// `Button`'s action only fired on the second click; a single, non-overlapping pin
+    /// never has that competition, which is why it always worked in one click. A plain
+    /// `.onTapGesture` is recognized independently of that AppKit tracking loop, so it
+    /// fires on the very first click whether or not the pin is part of a stack.
     private var pinButton: some View {
-        Button(action: onPinClick) {
-            pinGlyph
-        }
-        .buttonStyle(.plain)
-        // Stable machine-facing handle for UI tests, same convention as the grid cells:
-        // a single-card pin is addressable by its card's name.
-        .accessibilityIdentifier(isSingle ? group.elements[0].summary.name : group.elements.map(\.summary.name).joined(separator: "+"))
-        .accessibilityLabel(
-            isSingle
-                ? group.elements[0].summary.name
-                : "\(group.elements.count) postcards: \(group.elements.map(\.summary.name).joined(separator: ", "))"
-        )
+        pinGlyph
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onPinClick)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, onPinClick)
+            // Stable machine-facing handle for UI tests, same convention as the grid cells:
+            // a single-card pin is addressable by its card's name.
+            .accessibilityIdentifier(isSingle ? group.elements[0].summary.name : group.elements.map(\.summary.name).joined(separator: "+"))
+            .accessibilityLabel(
+                isSingle
+                    ? group.elements[0].summary.name
+                    : "\(group.elements.count) postcards: \(group.elements.map(\.summary.name).joined(separator: ", "))"
+            )
     }
 }
 

@@ -59,6 +59,62 @@ final class CardFitGeometryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(fittedHeight(widePadding, wide), fittedHeight(wideBelowBand, wide))
     }
 
+    // MARK: - Leading/trailing insets (e.g. macOS's `.inspector`, reported as a trailing
+    // safe-area inset on the pane rather than shrinking its frame — see `CardFitGeometry`'s
+    // doc comment): every regime adds them on top of its own margin/clearance, never in place
+    // of it, and the card's centre must land in the pane MINUS the inset, not the whole pane.
+
+    func testTrailingInsetAddsToBelowBandPadding() {
+        let bounding = CGSize(width: 500, height: 300) // wins below-band, per testWideLandscapeCardWinsBelowTheBand
+        let padding = CardFitGeometry.atRestPadding(
+            paneSize: pane, boundingSize: bounding, toolbar: toolbar, bottomInset: 0, trailingInset: 320
+        )
+
+        XCTAssertEqual(padding.leading, 16, "no leading inset supplied, so leading padding is unaffected")
+        XCTAssertEqual(padding.trailing, 16 + 320, "trailing inset layers on top of the regime's own margin")
+        XCTAssertEqual(padding.top, toolbar.bandHeight + 16, "vertical padding is untouched by a horizontal inset")
+    }
+
+    func testTrailingInsetAddsToBetweenButtonsPadding() {
+        let bounding = CGSize(width: 300, height: 500) // wins between-buttons, per testNarrowPortraitCardWinsBetweenButtons
+        let padding = CardFitGeometry.atRestPadding(
+            paneSize: pane, boundingSize: bounding, toolbar: toolbar, bottomInset: 0, trailingInset: 320
+        )
+
+        XCTAssertEqual(padding.leading, toolbar.trailingWidth + 16)
+        XCTAssertEqual(padding.trailing, toolbar.trailingWidth + 16 + 320)
+    }
+
+    func testTrailingInsetAddsToOpaqueBelowBandPadding() {
+        var opaqueToolbar = toolbar
+        opaqueToolbar.isTransparent = false
+        let padding = CardFitGeometry.atRestPadding(
+            paneSize: pane, boundingSize: CGSize(width: 500, height: 300), toolbar: opaqueToolbar,
+            bottomInset: 20, trailingInset: 320
+        )
+
+        XCTAssertEqual(padding.leading, 16)
+        XCTAssertEqual(padding.trailing, 16 + 320)
+    }
+
+    func testCardCentresInThePaneMinusTheTrailingInsetNotTheWholePane() {
+        // A wide pane with a wide inspector-shaped trailing inset, and a card small enough
+        // that its at-rest size is fixed by the margin alone (not by clamping against the
+        // available space) — isolates the centring math from the fit-scale comparison.
+        let widePane = CGSize(width: 1_200, height: 600)
+        let bounding = CGSize(width: 100, height: 60)
+        let trailingInset: CGFloat = 300
+
+        let padding = CardFitGeometry.atRestPadding(
+            paneSize: widePane, boundingSize: bounding, toolbar: toolbar, bottomInset: 0, trailingInset: trailingInset
+        )
+
+        let visibleRegionCenter = (widePane.width - trailingInset) / 2
+        let paddedBoxCenter = padding.leading + (widePane.width - padding.leading - padding.trailing) / 2
+        XCTAssertEqual(paddedBoxCenter, visibleRegionCenter, accuracy: 0.001)
+        XCTAssertNotEqual(paddedBoxCenter, widePane.width / 2, "must not centre in the full pane, under the inspector")
+    }
+
     // MARK: - Opaque toolbar: only ever below the band, regardless of card shape
 
     func testOpaqueToolbarNeverLetsTheCardIntersectTheBand() {

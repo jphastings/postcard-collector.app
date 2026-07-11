@@ -1,27 +1,28 @@
 import SwiftUI
 
 /// macOS-only stand-in for `.searchable(text:tokens:suggestedTokens:...)`: docks a search
-/// field — with Mail-style token pills and an above-the-bar suggestions list — to the
-/// bottom of a content pane instead of the toolbar (see call sites in `CollectionGridView`,
-/// `SinglePostcardsGridView`, `AllCollectionsView`), so the toolbar has room to breathe at
-/// narrower content-column widths. iOS keeps the native `.searchable` treatment untouched.
+/// field — with Mail-style token pills — to the bottom of a content pane instead of the
+/// toolbar (see call sites in `CollectionGridView`, `SinglePostcardsGridView`,
+/// `AllCollectionsView`), so the toolbar has room to breathe at narrower content-column
+/// widths. iOS keeps the native `.searchable` treatment untouched.
 ///
 /// Bind `text`/`tokens` to the pane's existing `searchText`/`searchTokens` — this view only
-/// presents the field; the `.task(id:)` search plumbing in each pane is unaffected. The pill
-/// chip and suggestions-list rendering live in `SearchTokenPill.swift`, so this file stays
-/// focused on the bar's layout, focus, and keyboard handling.
+/// presents the field; the `.task(id:)` search plumbing in each pane is unaffected. The
+/// above-the-bar suggestions list is NOT rendered by this view — see
+/// `BottomSearchBarModifier`'s doc comment for why it has to live outside this view's own
+/// tree. The pill chip and suggestions-list rendering live in `SearchTokenPill.swift`, so
+/// this file stays focused on the bar's layout, focus, and keyboard handling.
 struct BottomSearchBar: View {
     @Binding var text: String
     @Binding var tokens: [SearchToken]
-    var suggestions: [SearchToken] = []
-    var onPickSuggestion: (SearchToken) -> Void = { _ in }
     var prompt: String
+    /// Owned by `BottomSearchBarModifier`, which also drives the suggestions overlay from
+    /// the same focus state — sharing it is what lets that overlay know when to show.
+    var isFocused: FocusState<Bool>.Binding
     /// Set to `true` (e.g. right after a search preset lands) to move keyboard focus into
     /// the field; this view flips it back to `false` once it has done so, so it can be
     /// triggered again later.
     @Binding var focusRequest: Bool
-
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -44,17 +45,6 @@ struct BottomSearchBar: View {
         .floatingGlassBackground(in: fieldShape)
         .overlay(fieldShape.strokeBorder(.quaternary, lineWidth: 1))
         .frame(maxWidth: 360)
-        // The bar itself is docked to the screen bottom, so suggestions float UPWARD off
-        // this field instead of downward: an `.overlay(alignment: .top)` whose content
-        // flips its own alignment guide to sit entirely above the anchor, rather than
-        // overlapping its top edge.
-        .overlay(alignment: .top) {
-            if isFocused, !suggestions.isEmpty {
-                SearchSuggestionsList(suggestions: suggestions, onPick: onPickSuggestion)
-                    .padding(.bottom, 8)
-                    .alignmentGuide(.top) { $0[.bottom] }
-            }
-        }
         // Floats the field as its own glass capsule above the grid rather than a full-width
         // bar: no `.background` on this outer container, so the safeAreaInset it sits in
         // stays transparent and grid content scrolls visibly beneath/around it.
@@ -64,7 +54,7 @@ struct BottomSearchBar: View {
         // Hidden ⌘F shortcut focuses the field from anywhere in the pane, standing in for
         // the "Find" affordance `.searchable` gets for free from the toolbar on other platforms.
         .background(
-            Button("Find") { isFocused = true }
+            Button("Find") { isFocused.wrappedValue = true }
                 .keyboardShortcut("f", modifiers: .command)
                 .buttonStyle(.plain)
                 .opacity(0)
@@ -72,7 +62,7 @@ struct BottomSearchBar: View {
         )
         .onChange(of: focusRequest) { _, requested in
             guard requested else { return }
-            isFocused = true
+            isFocused.wrappedValue = true
             focusRequest = false
         }
     }
@@ -87,7 +77,7 @@ struct BottomSearchBar: View {
                 }
                 TextField(prompt, text: $text)
                     .textFieldStyle(.plain)
-                    .focused($isFocused)
+                    .focused(isFocused)
                     .frame(minWidth: 80)
                     // Mail-style: backspace in an already-empty field deletes the last pill,
                     // rather than doing nothing.
@@ -117,9 +107,8 @@ extension View {
 }
 
 extension View {
-    /// Applies `BottomSearchBar` as a bottom `safeAreaInset` bound to `text`/`tokens`. The
-    /// inset itself carries no background, so grid/map content scrolls visibly beneath and
-    /// around the floating glass field rather than under an opaque bar.
+    /// Applies `BottomSearchBar` as a bottom `safeAreaInset`, plus its suggestions list as a
+    /// separate overlay on the pane's own content — see `BottomSearchBarModifier`.
     func bottomSearchBar(
         text: Binding<String>,
         tokens: Binding<[SearchToken]>,
@@ -128,15 +117,78 @@ extension View {
         prompt: String,
         focusRequest: Binding<Bool> = .constant(false)
     ) -> some View {
-        safeAreaInset(edge: .bottom) {
-            BottomSearchBar(
-                text: text,
-                tokens: tokens,
-                suggestions: suggestions,
-                onPickSuggestion: onPickSuggestion,
-                prompt: prompt,
-                focusRequest: focusRequest
-            )
-        }
+        modifier(BottomSearchBarModifier(
+            text: text,
+            tokens: tokens,
+            suggestions: suggestions,
+            onPickSuggestion: onPickSuggestion,
+            prompt: prompt,
+            focusRequest: focusRequest
+        ))
+    }
+}
+
+/// Hosts `BottomSearchBar` in a bottom `safeAreaInset`, and the suggestions list as a
+/// SEPARATE `.overlay` on the pane's own content, offset up by the field's own measured
+/// height so its bottom edge always sits just above the field's top edge, growing upward.
+///
+/// The suggestions list used to live inside `BottomSearchBar`'s own view tree, as an
+/// `.overlay(alignment: .top)` whose content flipped its own `.alignmentGuide` to grow
+/// upward instead of down. That guide math was right, but `safeAreaInset` content is
+/// bounded to its own laid-out frame — unlike a plain `.overlay`, it can't paint outside
+/// those bounds — so the list was clipped at the inset's edge instead of floating freely
+/// above it, which onscreen read as suggestions rendering below/at the field rather than
+/// above it. Moving the list here, to a `.overlay` on the PANE's own content (a sibling of
+/// the safeAreaInset, not nested inside it), removes that bound entirely: `safeAreaInset`
+/// always renders its inset content flush against the given edge, so this overlay's
+/// `alignment: .bottom` anchor is the one fixed point that's unambiguous regardless of how
+/// `safeAreaInset` sizes its base content — the field's own bottom edge — and offsetting by
+/// the field's measured height (reported via a `GeometryReader`/`PreferenceKey`, since the
+/// field's real height can vary slightly by platform/dynamic type) plus a little spacing
+/// lands the list's bottom exactly where it needs to be, with no risk of clipping.
+private struct BottomSearchBarModifier: ViewModifier {
+    @Binding var text: String
+    @Binding var tokens: [SearchToken]
+    var suggestions: [SearchToken]
+    var onPickSuggestion: (SearchToken) -> Void
+    var prompt: String
+    @Binding var focusRequest: Bool
+
+    @FocusState private var isFocused: Bool
+    @State private var fieldHeight: CGFloat = 44
+
+    private static let suggestionsSpacing: CGFloat = 8
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom) {
+                BottomSearchBar(
+                    text: $text,
+                    tokens: $tokens,
+                    prompt: prompt,
+                    isFocused: $isFocused,
+                    focusRequest: $focusRequest
+                )
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: FieldHeightPreferenceKey.self, value: proxy.size.height)
+                    }
+                )
+            }
+            .onPreferenceChange(FieldHeightPreferenceKey.self) { fieldHeight = $0 }
+            .overlay(alignment: .bottom) {
+                if isFocused, !suggestions.isEmpty {
+                    SearchSuggestionsList(suggestions: suggestions, onPick: onPickSuggestion)
+                        .offset(y: -(fieldHeight + Self.suggestionsSpacing))
+                        .transition(.opacity)
+                }
+            }
+    }
+}
+
+private struct FieldHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 44
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

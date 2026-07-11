@@ -28,11 +28,35 @@ struct SearchTokenChip: View {
 /// The macOS suggestions list `BottomSearchBar` floats above the field while it's focused
 /// and `SearchSuggestions.suggestions(...)` has candidates — tapping a row hands its token
 /// back to `onPick`, which appends it as a pill and trims the typed fragment it came from.
+/// Never grows past `maxVisibleRows` worth of height: beyond that it scrolls internally
+/// instead of pushing further up the screen (and potentially off it).
 struct SearchSuggestionsList: View {
     let suggestions: [SearchToken]
     let onPick: (SearchToken) -> Void
 
+    /// Rough single-row height (label + its vertical padding) — only used to decide the
+    /// scrollable cap below, not for exact pixel layout.
+    private static let estimatedRowHeight: CGFloat = 34
+    private static let maxVisibleRows = 6
+
     var body: some View {
+        Group {
+            if suggestions.count > Self.maxVisibleRows {
+                ScrollView {
+                    rows
+                }
+                .frame(height: CGFloat(Self.maxVisibleRows) * Self.estimatedRowHeight)
+            } else {
+                rows
+            }
+        }
+        .floatingGlassBackground(in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary, lineWidth: 1))
+        .frame(maxWidth: 360)
+        .shadow(radius: 4, y: 2)
+    }
+
+    private var rows: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(suggestions) { token in
                 if token.id != suggestions.first?.id {
@@ -50,10 +74,6 @@ struct SearchSuggestionsList: View {
                 .buttonStyle(.plain)
             }
         }
-        .floatingGlassBackground(in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary, lineWidth: 1))
-        .frame(maxWidth: 360)
-        .shadow(radius: 4, y: 2)
     }
 }
 

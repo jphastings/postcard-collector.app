@@ -56,7 +56,12 @@ struct CardDetailView: View {
                             resetZoom()
                         }
                     }
+                    // iOS only: macOS's (i) lives on `infoPanel`'s own toolbar instead, so it
+                    // stays pinned at the window's far right whether the inspector is open or
+                    // closed — see that property's doc comment.
+                    #if os(iOS)
                     infoButton
+                    #endif
                 }
             }
             .transparentWindowToolbarBackground()
@@ -86,15 +91,39 @@ struct CardDetailView: View {
         #endif
     }
 
+    // macOS only: the (i) button is attached HERE — to the `.inspector` modifier's content,
+    // rather than the detail pane's own `ToolbarItemGroup` above — so it always renders as an
+    // inspector-scoped toolbar item pinned at the window's far right: over the detail pane's
+    // top-right when the inspector is closed, and inside/above the inspector itself once open
+    // (clicking it there toggles `showingInfo` off same as ever). This content closure is
+    // evaluated by `.inspector` regardless of whether the inspector is presented — confirmed by
+    // an earlier attempt that kept an ALSO-unconditional (i) in the main `ToolbarItemGroup` and
+    // saw two (i) buttons rendered while the inspector was closed — so the toolbar item below
+    // exists, and the button is clickable, whether or not the inspector happens to be open.
+    //
+    // The `.toolbar` sits on the OUTER `Group` rather than inside the `if let metadata` branch,
+    // so it's attached (and the (i) button rendered, disabled) even before metadata has loaded —
+    // matching the previous main-toolbar (i)'s always-present-but-disabled behaviour instead of
+    // making the button disappear entirely during the load.
     @ViewBuilder
     private var infoPanel: some View {
-        if let metadata {
-            CardInfoPanel(summary: reference.summary, metadata: metadata, onSearchPreset: handleSearchPreset)
-                // Fresh identity per card, so its map camera and reset-button state (which live
-                // in @State, and would otherwise survive across cards at this same tree
-                // position) resets instead of carrying over from whatever card was shown before.
-                .id(reference.id)
+        Group {
+            if let metadata {
+                CardInfoPanel(summary: reference.summary, metadata: metadata, onSearchPreset: handleSearchPreset)
+                    // Fresh identity per card, so its map camera and reset-button state (which
+                    // live in @State, and would otherwise survive across cards at this same tree
+                    // position) resets instead of carrying over from whatever card was shown
+                    // before.
+                    .id(reference.id)
+            }
         }
+        #if os(macOS)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                infoButton
+            }
+        }
+        #endif
     }
 
     // Pinch handles magnification directly; drag only pans once zoomed in. Both run alongside
@@ -198,9 +227,12 @@ struct CardDetailView: View {
         if let splitImage {
             // Outer reader sits WITHIN the safe area (it does not ignore it), so its
             // `safeAreaInsets` report the surrounding toolbar/Dynamic Island/home-indicator
-            // chrome — that's threaded into `zoomableCard` to inset the at-rest card, while
+            // chrome — and, on macOS, an open `.inspector`'s width as a TRAILING inset (the
+            // inspector docks as real window chrome, not a NavigationSplitView column of this
+            // pane's own, so it shows up here as safe area rather than shrinking `proxy.size`
+            // itself) — that's threaded into `zoomableCard` to inset the at-rest card, while
             // `zoomableCard` itself ignores the safe area so zoomed/panned content can bleed
-            // all the way to the physical screen edges.
+            // all the way to the physical screen edges (behind the inspector included).
             GeometryReader { safeAreaProxy in
                 zoomableCard(splitImage, insets: safeAreaProxy.safeAreaInsets)
             }
@@ -309,7 +341,17 @@ struct CardDetailView: View {
             paneSize: screen,
             boundingSize: bounding,
             toolbar: toolbarGeometry(insets: insets),
-            bottomInset: insets.bottom
+            bottomInset: insets.bottom,
+            // On macOS, an open `.inspector` reports its width as a trailing safe-area inset on
+            // this pane (see `content`'s doc comment) rather than shrinking the pane's own
+            // frame — since the zoomable container ignores the safe area, its frame would
+            // otherwise span the full pane including the area behind the inspector, centring
+            // the at-rest card there instead of in the visible region. Feeding the inset back
+            // into `atRestPadding` keeps the card clear of it. `insets.leading` is threaded
+            // through too, even though nothing in this pane currently produces one, so the fix
+            // isn't macOS/inspector-specific.
+            leadingInset: insets.leading,
+            trailingInset: insets.trailing
         )
     }
 

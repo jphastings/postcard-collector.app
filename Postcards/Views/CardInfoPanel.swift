@@ -54,8 +54,8 @@ struct CardInfoPanel: View {
             }
 
             Section("From & to") {
-                personRow(metadata.sender, label: "Sender", presets: .fromToWith)
-                personRow(metadata.recipient, label: "Recipient", presets: .fromToWith)
+                personRow(metadata.sender, label: "Sender", presets: .sender)
+                personRow(metadata.recipient, label: "Recipient", presets: .recipient)
             }
 
             if let location = displayableLocation {
@@ -138,13 +138,30 @@ struct CardInfoPanel: View {
         !(metadata.context.description ?? "").isEmpty || !(metadata.context.author.name ?? "").isEmpty
     }
 
-    /// Which search-preset buttons a `personRow`'s menu offers: sender/recipient rows offer
-    /// all three of from/to/with (regardless of which of the two this row actually is — a
-    /// sender can just as easily be the subject of a "more WITH this person" search), while
-    /// the "Catalogued by" row only ever makes sense as a `collector:` search.
+    /// Which search-preset buttons a `personRow`'s menu offers, and how they're worded: every
+    /// row offers all three of from/to/with (a sender can just as easily be the subject of a
+    /// "more WITH this person" search), but "More" only prefixes a preset the CURRENT card
+    /// already matches — otherwise the button reads as a plain call to action, not a "more of
+    /// the same". `.sender`/`.recipient` say which filter(s) that is for this row: the sender
+    /// row already matches `from` and `with`, the recipient row already matches `to` and
+    /// `with`. The "Catalogued by" row only ever makes sense as a `collector:` search, which
+    /// always matches the current card, so it's always "More collected by …".
     private enum PersonRowPresets {
-        case fromToWith
+        case sender
+        case recipient
         case collectorOnly
+
+        /// Whether the current card already matches the given preset kind for a row of this
+        /// type — i.e. whether that preset's button should read "More …" rather than a bare
+        /// call to action.
+        func alreadyMatches(_ kind: SearchToken.Kind) -> Bool {
+            switch (self, kind) {
+            case (.sender, .from), (.sender, .with): true
+            case (.recipient, .to), (.recipient, .with): true
+            case (.collectorOnly, .collector): true
+            default: false
+            }
+        }
     }
 
     @ViewBuilder
@@ -153,12 +170,12 @@ struct CardInfoPanel: View {
             LabeledContent(label) {
                 Menu {
                     switch presets {
-                    case .fromToWith:
-                        presetButton(kind: .from, title: "More from \(name)", person: person)
-                        presetButton(kind: .to, title: "More to \(name)", person: person)
-                        presetButton(kind: .with, title: "More with \(name)", person: person)
+                    case .sender, .recipient:
+                        presetButton(kind: .from, verb: "from", presets: presets, name: name, person: person)
+                        presetButton(kind: .to, verb: "to", presets: presets, name: name, person: person)
+                        presetButton(kind: .with, verb: "with", presets: presets, name: name, person: person)
                     case .collectorOnly:
-                        presetButton(kind: .collector, title: "More collected by \(name)", person: person)
+                        presetButton(kind: .collector, verb: "collected by", presets: presets, name: name, person: person)
                     }
                     if let url = validURL(for: person) {
                         Divider()
@@ -176,8 +193,18 @@ struct CardInfoPanel: View {
         }
     }
 
-    private func presetButton(kind: SearchToken.Kind, title: String, person: Person) -> some View {
-        Button(title) {
+    /// A preset button's title and its submitted token are independent: the wording reflects
+    /// whether the CURRENT card already matches this preset for this row (see
+    /// `PersonRowPresets.alreadyMatches`), while the token itself (kind + display + value) is
+    /// always the same regardless of wording, so the grid picks up an identical search either
+    /// way.
+    private func presetButton(
+        kind: SearchToken.Kind, verb: String, presets: PersonRowPresets, name: String, person: Person
+    ) -> some View {
+        let title = presets.alreadyMatches(kind)
+            ? "More \(verb) \(name)"
+            : "\(verb.prefix(1).uppercased())\(verb.dropFirst()) \(name)"
+        return Button(title) {
             onSearchPreset(SearchToken(kind: kind, display: person.name ?? "", value: presetValue(for: person)))
         }
     }
@@ -200,27 +227,8 @@ struct CardInfoPanel: View {
         if url.scheme?.lowercased() == "mailto" {
             Link("Email \(name)", destination: url)
         } else {
-            Link(destination: url) {
-                Text(visitLabel(for: url)).underline()
-            }
+            Link(VisitLabel.text(for: url), destination: url)
         }
-    }
-
-    /// "Visit <host>" when the URL has one (the common case for `scheme://host/...` links);
-    /// otherwise the raw URI with its scheme prefix trimmed off, so at least something
-    /// readable shows instead of the scheme name alone.
-    private func visitLabel(for url: URL) -> String {
-        if let host = url.host, !host.isEmpty {
-            return "Visit \(host)"
-        }
-        var trimmed = url.absoluteString
-        if let scheme = url.scheme {
-            for prefix in ["\(scheme)://", "\(scheme):"] where trimmed.hasPrefix(prefix) {
-                trimmed.removeFirst(prefix.count)
-                break
-            }
-        }
-        return "Visit \(trimmed)"
     }
 
     @ViewBuilder

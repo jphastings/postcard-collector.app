@@ -8,19 +8,26 @@ import MapKit
 ///
 /// Pure and coordinate-only — no live `MapProxy` or screen geometry involved — so it's
 /// testable without hosting a map: it bounds the members' OWN coordinates (not the
-/// cluster's shared centroid, which is a single point and says nothing about their
-/// spread), pads the box by `paddingFraction` on each axis the same way
-/// `MapRegionFitting` frames the whole collection, and compares the padded box's
-/// corner-to-corner distance against `minimumUsefulSpanMeters`. Below that, even a tight,
-/// close-in camera wouldn't meaningfully separate the members — it would sit closer than
-/// makes sense for browsing a postcard collection, and the next settle's clustering would
-/// likely just re-merge them anyway — so cycling serves the user better than reframing to
-/// a view that's barely different from the current one. Identical coordinates are the
-/// limit case (zero span) and always fall into `.cycle`: no camera, however tight, ever
-/// splits a stack sitting on one exact point.
+/// cluster's shared centroid) to decide the region's SPAN and whether zooming is even
+/// worth doing, comparing the padded box's corner-to-corner distance against
+/// `minimumUsefulSpanMeters`. Below that, even a tight, close-in camera wouldn't
+/// meaningfully separate the members — it would sit closer than makes sense for browsing
+/// a postcard collection, and the next settle's clustering would likely just re-merge
+/// them anyway — so cycling serves the user better than reframing to a view that's barely
+/// different from the current one. Identical coordinates are the limit case (zero span)
+/// and always fall into `.cycle`: no camera, however tight, ever splits a stack sitting on
+/// one exact point.
+///
+/// The resulting camera, when it does zoom, is always CENTRED ON THE PIN'S OWN DISPLAYED
+/// COORDINATE (its cluster's centroid — see `MapPinGroup.coordinate`), not the members'
+/// bounding-box centre: the tap originates from that exact pin, so re-centring on the
+/// members' box instead would visibly jump the camera away from the spot the user just
+/// tapped. The span is still sized from the members' own spread, just measured as each
+/// axis's furthest deviation FROM that centre (doubled, since the centre isn't necessarily
+/// in the middle of the members), so the recentred region still contains every member.
 enum MapClusterZoom {
-    /// Extra headroom added on each side of the members' tight bounding box, as a
-    /// fraction of its span — mirrors `MapRegionFitting.paddingFraction`'s role, tuned a
+    /// Extra headroom added on each side of the members' span from the pin's centre, as a
+    /// fraction of that span — mirrors `MapRegionFitting.paddingFraction`'s role, tuned a
     /// touch larger since this box can be tiny and benefits from more relative breathing
     /// room.
     static let paddingFraction: Double = 0.3
@@ -36,12 +43,17 @@ enum MapClusterZoom {
         case cycle
     }
 
-    static func decision(for coordinates: [CLLocationCoordinate2D]) -> Decision {
+    /// - Parameters:
+    ///   - coordinates: The cluster members' own coordinates — used only to size the
+    ///     region's span (see the type's doc comment).
+    ///   - center: The pin's own displayed coordinate (its cluster's centroid) — the
+    ///     camera always recentres here, never on the members' bounding-box centre.
+    static func decision(for coordinates: [CLLocationCoordinate2D], centeredOn center: CLLocationCoordinate2D) -> Decision {
         guard let box = BoundingBox(of: coordinates) else { return .cycle }
         let span = CLLocation(latitude: box.minLatitude, longitude: box.minLongitude)
             .distance(from: CLLocation(latitude: box.maxLatitude, longitude: box.maxLongitude))
         guard span >= minimumUsefulSpanMeters else { return .cycle }
-        return .zoom(box.paddedRegion(paddingFraction: paddingFraction, minimumAxisSpanDegrees: minimumAxisSpanDegrees))
+        return .zoom(box.paddedRegion(centeredOn: center, paddingFraction: paddingFraction, minimumAxisSpanDegrees: minimumAxisSpanDegrees))
     }
 
     private struct BoundingBox {
@@ -60,13 +72,19 @@ enum MapClusterZoom {
             maxLongitude = longitudes.max()!
         }
 
-        func paddedRegion(paddingFraction: Double, minimumAxisSpanDegrees: Double) -> MKCoordinateRegion {
-            let center = CLLocationCoordinate2D(
-                latitude: (minLatitude + maxLatitude) / 2,
-                longitude: (minLongitude + maxLongitude) / 2
-            )
-            let latitudeDelta = max((maxLatitude - minLatitude) * (1 + paddingFraction), minimumAxisSpanDegrees)
-            let longitudeDelta = max((maxLongitude - minLongitude) * (1 + paddingFraction), minimumAxisSpanDegrees)
+        /// Sized from each axis's furthest member deviation FROM `center` (not from this
+        /// box's own midpoint), doubled to cover both sides symmetrically around `center` —
+        /// so every member stays inside the region despite it being recentred away from
+        /// the members' own bounding-box centre.
+        func paddedRegion(
+            centeredOn center: CLLocationCoordinate2D,
+            paddingFraction: Double,
+            minimumAxisSpanDegrees: Double
+        ) -> MKCoordinateRegion {
+            let latitudeDeviation = max(abs(maxLatitude - center.latitude), abs(minLatitude - center.latitude))
+            let longitudeDeviation = max(abs(maxLongitude - center.longitude), abs(minLongitude - center.longitude))
+            let latitudeDelta = max(latitudeDeviation * 2 * (1 + paddingFraction), minimumAxisSpanDegrees)
+            let longitudeDelta = max(longitudeDeviation * 2 * (1 + paddingFraction), minimumAxisSpanDegrees)
             return MKCoordinateRegion(
                 center: center,
                 span: MKCoordinateSpan(latitudeDelta: latitudeDelta, longitudeDelta: longitudeDelta)

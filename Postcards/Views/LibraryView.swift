@@ -50,9 +50,25 @@ struct LibraryView: View {
             }
             .navigationTitle("Postcards")
             .toolbar {
+                #if os(macOS)
+                // Leading (next to the sidebar toggle) rather than the default trailing/
+                // automatic section: at narrow sidebar widths, the trailing section is the
+                // first to collapse into the ">>" overflow menu, which would hide this
+                // button entirely. `.navigation` is the leading window-toolbar section on
+                // macOS and never competes with that overflow.
+                ToolbarItem(placement: .navigation) {
+                    Button("Add…", systemImage: "plus") { isImporting = true }
+                }
+                #else
+                // iOS's sidebar column is the split view's root — it never has a back
+                // button of its own to potentially collide with — but its current
+                // (automatic) placement already works fine there, and this button isn't
+                // reachable via a ">>" overflow the way the macOS window toolbar is, so
+                // there's nothing to fix on this platform; leave it as-is.
                 ToolbarItem {
                     Button("Add…", systemImage: "plus") { isImporting = true }
                 }
+                #endif
             }
             .fileImporter(
                 isPresented: $isImporting,
@@ -102,9 +118,10 @@ struct LibraryView: View {
                 Text("This deletes the file. This can't be undone.")
             }
             #if os(macOS)
-            // Wide enough that the "Add…" toolbar button never collapses into the ">>"
-            // overflow menu at the sidebar's minimum width.
-            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+            // Wide enough that the sidebar never gets uncomfortably cramped — belt and
+            // braces alongside the leading `.navigation` placement above, which is what
+            // actually keeps "Add…" out of the trailing overflow menu at any width.
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
             #endif
         } content: {
             Group {
@@ -159,20 +176,29 @@ struct LibraryView: View {
             if let selectedCard {
                 CardDetailView(reference: selectedCard, searchRequest: searchRequest)
             } else {
-                // Carries the SAME `.primaryAction` toolbar slot as `CardDetailView`'s Info
-                // button (disabled, since there's no card to show info for) so a
-                // `NavigationSplitView`'s per-column toolbar merge sees an identical detail
-                // column contribution whether or not a card is selected — otherwise the
-                // content column's own toolbar items (e.g. `CollectionModeSwitcher`) shift
-                // position depending on what the detail column happens to contain (see that
-                // type's doc comment).
+                // Mirrors `CardDetailView`'s at-rest (unzoomed) detail-column toolbar
+                // contribution for the CURRENT platform, so a `NavigationSplitView`'s
+                // per-column toolbar merge sees an identical shape whether or not a card is
+                // selected — otherwise the content column's own toolbar items (e.g.
+                // `CollectionModeSwitcher`) shift position depending on what the detail column
+                // happens to contain (see that type's doc comment).
+                //
+                // iOS: `CardDetailView` keeps an unconditional (i) in its own
+                // `ToolbarItemGroup`, so this stands in with a disabled one. macOS: the (i)
+                // moved to the `.inspector` content's own toolbar (see `CardDetailView.
+                // infoPanel`), which doesn't exist here at all with no card selected — so the
+                // detail column's own `ToolbarItemGroup` contribution is empty at rest there
+                // too (only "Reset Zoom" ever populates it, and only while zoomed, which
+                // requires a card), and this placeholder contributes nothing to match.
                 ContentUnavailableView("Select a Postcard", systemImage: "photo")
+                    #if os(iOS)
                     .toolbar {
                         ToolbarItem(placement: .primaryAction) {
                             Button("Info", systemImage: "info.circle") {}
                                 .disabled(true)
                         }
                     }
+                    #endif
             }
         }
         #if os(macOS)
