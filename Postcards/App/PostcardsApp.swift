@@ -7,21 +7,30 @@ import UniformTypeIdentifiers
 @main
 struct PostcardsApp: App {
     @State private var library = LibraryModel()
-    @State private var cloudLibrary = CloudLibrary()
+    @State private var cloudLibrary: CloudLibrary
     #if os(iOS)
     @State private var watchConnectivityProvider: WatchConnectivityProvider?
     #endif
+
+    init() {
+        let cloudLibrary = CloudLibrary()
+        _cloudLibrary = State(initialValue: cloudLibrary)
+        #if os(iOS)
+        // Started here, at process launch, rather than from a view's `.task` — iOS can
+        // launch this app in the background to deliver a queued WCSession userInfo (phone
+        // locked/in pocket), and a background launch never runs `LibraryView`'s task. The
+        // delegate must exist from the first instant so that delivery isn't silently dropped.
+        let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary)
+        _watchConnectivityProvider = State(initialValue: provider)
+        provider.start()
+        #endif
+    }
 
     var body: some Scene {
         WindowGroup {
             LibraryView(library: library, cloudLibrary: cloudLibrary)
                 .task {
                     cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
-                    #if os(iOS)
-                    let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary)
-                    watchConnectivityProvider = provider
-                    provider.start()
-                    #endif
                     await cloudLibrary.start()
                 }
         }

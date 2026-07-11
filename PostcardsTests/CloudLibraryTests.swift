@@ -157,4 +157,21 @@ final class CloudLibraryTests: XCTestCase {
         let item = CloudItem(path: "/cloud/trip.postcards", displayName: "trip", isCollection: true, downloadState: .remote)
         XCTAssertTrue(cloudLibrary.shouldAutoDownload(item))
     }
+
+    // MARK: - start() idempotency
+
+    /// `WatchConnectivityProvider` and `PostcardsApp`'s `.task` can both end up kicking
+    /// `start()` (the provider does so whenever a watch request arrives before the library is
+    /// ready) — a second call must be a harmless no-op rather than re-resolving the container
+    /// or restarting the query.
+    @MainActor
+    func testStartCalledTwiceIsIdempotent() async {
+        let cloudLibrary = CloudLibrary()
+        await cloudLibrary.start()
+        let stateAfterFirstStart = cloudLibrary.containerState
+
+        await cloudLibrary.start()
+
+        XCTAssertEqual(cloudLibrary.containerState, stateAfterFirstStart)
+    }
 }

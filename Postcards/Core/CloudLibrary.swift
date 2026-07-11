@@ -105,6 +105,7 @@ final class CloudLibrary {
     private(set) var documentsURL: URL?
 
     private let containerIdentifier: String
+    private var started = false
     private var query: NSMetadataQuery?
     private var observers: [NSObjectProtocol] = []
     /// The last known on-disk content-change date per path, so a later update for the
@@ -134,6 +135,9 @@ final class CloudLibrary {
     /// Resolves the ubiquity container and, if available, starts watching it. Safe to
     /// call once at app launch; does nothing destructive if the container never resolves.
     func start() async {
+        guard !started else { return }
+        started = true
+
         let identifier = containerIdentifier
         let documentsURL = await Task.detached(priority: .utility) { () -> URL? in
             let fm = FileManager.default

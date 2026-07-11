@@ -28,6 +28,10 @@ struct WatchPostcardScrollView: View {
     /// How long to wait for a requested manifest before giving up and showing a failure state,
     /// rather than spinning forever if the phone stops responding mid-transfer.
     private static let downloadTimeout: Duration = .seconds(20)
+    /// How many times a stalled download is silently re-requested before showing the failure
+    /// state — the phone may just be slow to notice the request (e.g. it woke from a
+    /// background launch and is still spinning up `CloudLibrary`), not gone for good.
+    private static let maxDownloadStrikes = 3
 
     @State private var phase: Phase = .loading
     @State private var timedOut = false
@@ -38,6 +42,9 @@ struct WatchPostcardScrollView: View {
     /// Bumped every time a download is (re)requested, so a timeout task from an earlier
     /// attempt (e.g. before a reachability flap) recognises it's stale and no-ops.
     @State private var downloadAttempt = 0
+    /// Consecutive timeouts within the current download attempt, reset whenever `beginLoading`
+    /// runs afresh (a new request, or the phase actually leaving `.downloading`).
+    @State private var timeoutStrikes = 0
 
     private var manifest: [WatchCardMeta]? { library.manifest(for: id) }
     private var title: String? { library.catalog.first { $0.id == id }?.title }
@@ -63,7 +70,7 @@ struct WatchPostcardScrollView: View {
                 ContentUnavailableView(
                     "Can't Open Collection",
                     systemImage: "exclamationmark.triangle",
-                    description: Text("Timed out waiting for the collection to arrive from iPhone.")
+                    description: Text("Timed out waiting for the collection to arrive from iPhone. It may be out of reach — try again once it's nearby.")
                 )
             } else {
                 ProgressView("Downloading from iPhone…")
@@ -102,6 +109,11 @@ struct WatchPostcardScrollView: View {
     /// initial `.task` and every subsequent `manifests`/`isPhoneReachable` change — since it's
     /// a no-op once loaded.
     private func beginLoading() {
+        // Any fresh call represents progress — either the collection is now present, or
+        // something changed (a new request, a reachability flap) worth giving a full set of
+        // retries again.
+        timeoutStrikes = 0
+
         if library.isPresent(id) {
             phase = .loaded
             library.requestDownloadIfNeeded(id: id)
@@ -119,9 +131,20 @@ struct WatchPostcardScrollView: View {
         Task { await watchForTimeout(attempt: attempt) }
     }
 
+    /// Fires once per `downloadTimeout` while still `.downloading`. The phone may simply be
+    /// slow to notice the request (e.g. it woke from a background launch and is still
+    /// spinning up `CloudLibrary`), so the first couple of strikes just re-send the request
+    /// and re-arm rather than failing permanently — only the last strike shows `.failed`.
     private func watchForTimeout(attempt: Int) async {
         try? await Task.sleep(for: Self.downloadTimeout)
         guard !Task.isCancelled, attempt == downloadAttempt, case .downloading = phase else { return }
+
+        timeoutStrikes += 1
+        guard timeoutStrikes >= Self.maxDownloadStrikes else {
+            library.requestDownloadIfNeeded(id: id)
+            await watchForTimeout(attempt: attempt)
+            return
+        }
         timedOut = true
     }
 }

@@ -27,6 +27,10 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// Collection ids currently being streamed, so a pin followed quickly by a request (or a
     /// retried watch request) doesn't race two overlapping streams for the same collection.
     private var inFlightStreamIDs: Set<String> = []
+    /// Ids requested before `cloudLibrary.items` had the matching collection — e.g. a
+    /// background launch delivering a queued request before `NSMetadataQuery` has gathered.
+    /// Retried once the catalog changes (see `armCatalogObservation`).
+    private var pendingStreamIDs: Set<String> = []
 
     init(cloudLibrary: CloudLibrary) {
         self.cloudLibrary = cloudLibrary
@@ -53,6 +57,18 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             Task { @MainActor in self?.armCatalogObservation() }
         }
         publishCatalog()
+        retryPendingStreams()
+    }
+
+    /// Re-attempts any stream request that arrived before its collection was in
+    /// `cloudLibrary.items` (see `streamCollectionIfNeeded`). Only touches ids whose item has
+    /// since appeared — still-missing ids are left in `pendingStreamIDs` untouched, so this
+    /// doesn't re-kick `cloudLibrary.start()` on every catalog change while genuinely waiting.
+    private func retryPendingStreams() {
+        for id in pendingStreamIDs where cloudLibrary.items.contains(where: { $0.isCollection && $0.displayName == id }) {
+            pendingStreamIDs.remove(id)
+            streamCollectionIfNeeded(id: id)
+        }
     }
 
     /// Builds and pushes the catalog. Collection files already known to be `.current` are
@@ -112,10 +128,19 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     }
 
     /// Starts streaming `id`'s manifest and cards to the watch, unless a stream for the same
-    /// id is already running.
+    /// id is already running. If `id` isn't in `cloudLibrary.items` yet — a background launch
+    /// or a request that beat `NSMetadataQuery`'s initial gather — the request is queued
+    /// rather than dropped, and `cloudLibrary.start()` is kicked (idempotent) so a library that
+    /// never started (e.g. this delegate existing before any view called `start()`) does.
+    /// `armCatalogObservation`'s change reaction retries queued ids once the catalog updates.
     private func streamCollectionIfNeeded(id: String) {
         guard !inFlightStreamIDs.contains(id) else { return }
-        guard let item = cloudLibrary.items.first(where: { $0.isCollection && $0.displayName == id }) else { return }
+        guard let item = cloudLibrary.items.first(where: { $0.isCollection && $0.displayName == id }) else {
+            pendingStreamIDs.insert(id)
+            logger.info("queued stream for \(id, privacy: .public): library not ready")
+            Task { await cloudLibrary.start() }
+            return
+        }
 
         inFlightStreamIDs.insert(id)
         Task.detached(priority: .utility) { [weak self] in
@@ -145,6 +170,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let reader = try CollectionReader(path: item.path)
             let summaries = try reader.cardSummaries()
 
+            logger.info("streaming \(id, privacy: .public): \(summaries.count) cards")
             sendManifest(summaries, id: id)
 
             var zoomTransfers: [PendingFaceTransfer] = []
@@ -154,6 +180,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             for transfer in zoomTransfers {
                 _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
             }
+            logger.info("finished streaming \(id, privacy: .public)")
         } catch {
             logger.error("Failed to stream watch collection \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
