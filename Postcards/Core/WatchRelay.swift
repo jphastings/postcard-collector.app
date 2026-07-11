@@ -43,12 +43,31 @@ enum WatchRelay {
     static let opManifest = "manifest"
     static let manifestKey = "manifest"
 
-    /// `transferFile` metadata op for one card's downsampled image. The file's metadata also
-    /// carries `idKey` (collection id), `cardNameKey`, `cardIndexKey`, and `cardCountKey`.
+    /// `transferFile` metadata op for one FACE of one card, at one quality tier. The file's
+    /// metadata also carries `idKey` (collection id), `cardNameKey`, `cardTierKey`,
+    /// `cardSideKey`, `cardIndexKey`, and `cardCountKey`.
+    ///
+    /// The phone does all the pixel work (splitting the stored combined image and un-rotating
+    /// hand-flip backs) and sends each face as its own ready-to-display image, so the watch
+    /// only ever decodes a small file — no cropping or rotation on the watch. Two tiers are
+    /// sent: every card's `tierScreen` faces first (in scroll order, sized for the watch
+    /// screen, so the whole collection becomes scrollable fast), then every card's `tierZoom`
+    /// faces trailing behind (for double-tap zoom sharpness).
     static let opCard = "card"
     static let cardNameKey = "cardName"
     static let cardIndexKey = "cardIndex"
     static let cardCountKey = "cardCount"
+    static let cardTierKey = "tier"
+    static let cardSideKey = "side"
+    static let tierScreen = "screen"
+    static let tierZoom = "zoom"
+    static let sideFront = "front"
+    static let sideBack = "back"
+
+    /// Longest-side pixel caps for the two tiers. Screen covers the largest Apple Watch
+    /// display (Ultra, 410×502) with headroom; zoom is the screen tier at the 2.5× zoom level.
+    static let screenTierMaxPixelSize = 512
+    static let zoomTierMaxPixelSize = 1280
 }
 
 /// One card's identity + layout info, as streamed to the watch in a collection's manifest.

@@ -20,11 +20,26 @@ final class WatchCacheLayoutTests: XCTestCase {
         XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/cards", isDirectory: true))
     }
 
-    func testCardBlobURLNestsUnderTheCardsDirectoryUsingTheSafeFileName() {
-        let url = WatchCacheLayout.cardBlobURL(id: "Trip to Kyoto", cardName: "Front & Back", in: supportDirectory)
+    func testCardBlobURLNestsUnderTheCardsDirectoryUsingTheSafeFileNamePlusTierAndSide() {
+        let url = WatchCacheLayout.cardBlobURL(
+            id: "Trip to Kyoto", cardName: "Front & Back", tier: WatchRelay.tierScreen, side: WatchRelay.sideFront, in: supportDirectory
+        )
         let expected = WatchCacheLayout.cardsDirectory(id: "Trip to Kyoto", in: supportDirectory)
-            .appendingPathComponent(WatchCacheLayout.safeCardFileName(for: "Front & Back"))
+            .appendingPathComponent("\(WatchCacheLayout.safeCardFileName(for: "Front & Back"))-screen-front")
         XCTAssertEqual(url, expected)
+    }
+
+    func testCardBlobURLDiffersByTierAndSideForTheSameCard() {
+        let screenFront = WatchCacheLayout.cardBlobURL(
+            id: "Trip to Kyoto", cardName: "Front & Back", tier: WatchRelay.tierScreen, side: WatchRelay.sideFront, in: supportDirectory
+        )
+        let screenBack = WatchCacheLayout.cardBlobURL(
+            id: "Trip to Kyoto", cardName: "Front & Back", tier: WatchRelay.tierScreen, side: WatchRelay.sideBack, in: supportDirectory
+        )
+        let zoomFront = WatchCacheLayout.cardBlobURL(
+            id: "Trip to Kyoto", cardName: "Front & Back", tier: WatchRelay.tierZoom, side: WatchRelay.sideFront, in: supportDirectory
+        )
+        XCTAssertEqual(Set([screenFront, screenBack, zoomFront]).count, 3)
     }
 
     func testCatalogFileURLIsDirectlyUnderSupportDirectory() {
@@ -57,6 +72,25 @@ final class WatchCacheLayoutTests: XCTestCase {
 
     func testCardNameReturnsNilForFileNamesThatArentValidSafeNames() {
         XCTAssertNil(WatchCacheLayout.cardName(fromSafeFileName: "not valid base64url!!"))
+    }
+
+    // MARK: - cardBlobComponents
+
+    func testCardBlobComponentsRoundTripsATierAndSideQualifiedBlobFileName() {
+        for tier in [WatchRelay.tierScreen, WatchRelay.tierZoom] {
+            for side in [WatchRelay.sideFront, WatchRelay.sideBack] {
+                let url = WatchCacheLayout.cardBlobURL(id: "Trip to Kyoto", cardName: "Front & Back", tier: tier, side: side, in: supportDirectory)
+                let components = WatchCacheLayout.cardBlobComponents(fromSafeFileName: url.lastPathComponent)
+                XCTAssertEqual(components?.cardName, "Front & Back")
+                XCTAssertEqual(components?.tier, tier)
+                XCTAssertEqual(components?.side, side)
+            }
+        }
+    }
+
+    func testCardBlobComponentsReturnsNilForAnOldFormatFileNameWithNoTierSideSuffix() {
+        let oldFormatFileName = WatchCacheLayout.safeCardFileName(for: "Front & Back")
+        XCTAssertNil(WatchCacheLayout.cardBlobComponents(fromSafeFileName: oldFormatFileName))
     }
 
     // MARK: - Catalog

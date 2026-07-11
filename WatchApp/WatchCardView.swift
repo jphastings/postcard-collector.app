@@ -8,9 +8,11 @@ import SwiftUI
 /// to avoid: SwiftUI cleanly disambiguates single- vs double-tap only when both gestures are
 /// attached to the same view.
 ///
-/// The card's own image blob may not have arrived yet — `meta` (from the collection's
+/// The card's own image blobs may not have arrived yet — `meta` (from the collection's
 /// manifest) is enough to lay out an aspect-correct placeholder slot immediately, and this
-/// view reacts the moment `library.receivedCards[collectionID]` gains `meta.name`.
+/// view reacts the moment `library.hasScreenFaces(...)` goes true. The phone does all pixel
+/// work (splitting/rotating) before sending each face, so this view only ever decodes —
+/// through `library.decodedFaceCache` — never crops or rotates.
 struct WatchCardView: View {
     let library: WatchLibrary
     let collectionID: String
@@ -28,6 +30,8 @@ struct WatchCardView: View {
     }
 
     @State private var loadState: LoadState = .waiting
+    @State private var zoomFront: CGImage?
+    @State private var zoomBack: CGImage?
     @State private var isFlipped = false
     @State private var isZoomed = false
     @State private var scale: CGFloat = 1
@@ -40,17 +44,33 @@ struct WatchCardView: View {
         return CGFloat(meta.frontPxW) / CGFloat(meta.frontPxH)
     }
 
-    /// Reading `library.receivedCards` here (rather than only inside `load()`) is what makes
-    /// this `@Observable`-tracked: SwiftUI only re-renders `body` for state actually read
-    /// during a previous render, so gating `.task(id:)` on this — not on `cardBlobURL`, which
-    /// touches disk rather than observable state — is what notices a blob landing.
+    private var hasBack: Bool { meta.flip != .none }
+
+    /// Reading `library.hasScreenFaces(...)` here (rather than only inside `loadScreenFaces()`)
+    /// is what makes this `@Observable`-tracked: SwiftUI only re-renders `body` for state
+    /// actually read during a previous render, so gating `.task(id:)` on this — not on
+    /// `cardBlobURL`, which touches disk rather than observable state — is what notices a face
+    /// landing.
     private var isReceived: Bool {
-        library.receivedCards[collectionID]?.contains(meta.name) ?? false
+        library.hasScreenFaces(id: collectionID, cardName: meta.name, hasBack: hasBack)
+    }
+
+    private struct ZoomLoadTrigger: Equatable {
+        let isZoomed: Bool
+        let hasZoomFaces: Bool
+    }
+
+    private var zoomLoadTrigger: ZoomLoadTrigger {
+        ZoomLoadTrigger(
+            isZoomed: isZoomed,
+            hasZoomFaces: library.hasZoomFaces(id: collectionID, cardName: meta.name, hasBack: hasBack)
+        )
     }
 
     var body: some View {
         content
-            .task(id: isReceived) { load() }
+            .task(id: isReceived) { await loadScreenFaces() }
+            .task(id: zoomLoadTrigger) { await loadZoomFacesIfNeeded() }
     }
 
     @ViewBuilder
@@ -67,8 +87,8 @@ struct WatchCardView: View {
             )
         case .loaded(let front, let back):
             FlippableCardView(
-                front: front,
-                back: back,
+                front: zoomFront ?? front,
+                back: zoomBack ?? back,
                 flip: meta.flip,
                 frontPixelSize: CGSize(width: meta.frontPxW, height: meta.frontPxH),
                 tapToFlip: false,
@@ -122,17 +142,43 @@ struct WatchCardView: View {
         zoomedCardID = zooming ? meta.name : nil
     }
 
-    private func load() {
-        guard let url = library.cardBlobURL(collectionID, cardName: meta.name) else {
+    private func loadScreenFaces() async {
+        guard let frontURL = library.cardBlobURL(collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: WatchRelay.sideFront) else {
             loadState = .waiting
             return
         }
-        do {
-            let data = try Data(contentsOf: url)
-            let split = try ImageSplitter.split(data: data, flip: meta.flip)
-            loadState = .loaded(front: split.front, back: split.back)
-        } catch {
-            loadState = .failed(error.localizedDescription)
+        let frontKey = WatchFaceKey(id: collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: WatchRelay.sideFront)
+        guard let front = await library.decodedFaceCache.decodedFace(frontKey, at: frontURL) else {
+            loadState = .failed("Couldn't decode this postcard's image.")
+            return
         }
+        guard hasBack else {
+            loadState = .loaded(front: front, back: nil)
+            return
+        }
+        guard let backURL = library.cardBlobURL(collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: WatchRelay.sideBack) else {
+            loadState = .waiting
+            return
+        }
+        let backKey = WatchFaceKey(id: collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: WatchRelay.sideBack)
+        guard let back = await library.decodedFaceCache.decodedFace(backKey, at: backURL) else {
+            loadState = .failed("Couldn't decode this postcard's image.")
+            return
+        }
+        loadState = .loaded(front: front, back: back)
+    }
+
+    private func loadZoomFacesIfNeeded() async {
+        guard isZoomed, library.hasZoomFaces(id: collectionID, cardName: meta.name, hasBack: hasBack) else { return }
+        guard let frontURL = library.cardBlobURL(collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideFront) else { return }
+        let frontKey = WatchFaceKey(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideFront)
+        guard let front = await library.decodedFaceCache.decodedFace(frontKey, at: frontURL) else { return }
+        zoomFront = front
+
+        guard hasBack else { return }
+        guard let backURL = library.cardBlobURL(collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideBack) else { return }
+        let backKey = WatchFaceKey(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideBack)
+        guard let back = await library.decodedFaceCache.decodedFace(backKey, at: backURL) else { return }
+        zoomBack = back
     }
 }

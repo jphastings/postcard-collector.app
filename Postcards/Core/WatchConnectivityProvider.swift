@@ -1,4 +1,5 @@
 #if os(iOS)
+import CoreGraphics
 import Foundation
 import Observation
 import os
@@ -10,9 +11,11 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 /// lightweight catalog of `CloudLibrary`'s collections as the `WCSession` application
 /// context, keeps it in sync as the library changes, and answers the watch's pin/request ops
 /// by streaming a collection progressively: a manifest of every card's identity/layout, then
-/// each card's downsampled image as its own file transfer, in display order — so the watch
-/// can show the first postcard within a second or two instead of waiting for a whole
-/// `.postcards` file.
+/// each card's faces (front, and back if present) as their own file transfers — screen-tier
+/// sized first in display order, so the watch can show the first postcard within a second or
+/// two, then zoom-tier sized trailing behind for double-tap sharpness. All pixel work
+/// (splitting, un-rotating, downsampling, encoding) happens here on the phone; the watch only
+/// ever decodes a ready-to-display image.
 ///
 /// Compiled into the iOS target only — `WatchConnectivity` doesn't exist on macOS, and this
 /// file is swept into `PostcardsTests` (a macOS bundle) along with the rest of `Postcards/Core`,
@@ -125,11 +128,17 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         inFlightStreamIDs.remove(id)
     }
 
-    /// The manifest + per-card streaming work, off the main actor: blocking SQLite reads and
-    /// ImageIO downsampling both belong on a background thread, and `WCSession`'s transfer
-    /// methods are documented as safe to call from any thread. A failure partway through
-    /// (unreadable file, unsupported schema, ...) is logged and simply stops the stream —
-    /// `markStreamFinished` still runs afterwards, so a later opRequest can retry.
+    /// The manifest + per-card streaming work, off the main actor: blocking SQLite reads,
+    /// `ImageSplitter`'s pixel-level rotation, and ImageIO encoding all belong on a background
+    /// thread, and `WCSession`'s transfer methods are documented as safe to call from any
+    /// thread. A failure partway through (unreadable file, unsupported schema, ...) is logged
+    /// and simply stops the stream — `markStreamFinished` still runs afterwards, so a later
+    /// opRequest can retry.
+    ///
+    /// Each card is split once, at full resolution, into its faces; screen-tier transfers are
+    /// enqueued immediately (so `transferFile`'s FIFO queue carries them first, in scroll
+    /// order) while zoom-tier transfers are buffered and only enqueued once every card's
+    /// screen tier is queued — see `sendCardFaces`.
     private nonisolated static func stream(item: CloudItem, id: String) async {
         do {
             try await CloudLibrary.primeForGoCore(path: item.path)
@@ -137,8 +146,13 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let summaries = try reader.cardSummaries()
 
             sendManifest(summaries, id: id)
+
+            var zoomTransfers: [PendingFaceTransfer] = []
             for (index, summary) in summaries.enumerated() {
-                sendCard(summary, index: index, count: summaries.count, id: id, reader: reader)
+                sendCardFaces(summary, index: index, count: summaries.count, id: id, reader: reader, zoomTransfers: &zoomTransfers)
+            }
+            for transfer in zoomTransfers {
+                _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
             }
         } catch {
             logger.error("Failed to stream watch collection \(id, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -157,26 +171,82 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         ])
     }
 
-    /// Downsamples and streams one card's image. Best-effort: a single unreadable/undecodable
-    /// card is logged and skipped rather than aborting the rest of the collection's stream.
-    private nonisolated static func sendCard(_ summary: CardSummary, index: Int, count: Int, id: String, reader: CollectionReader) {
+    /// A face's blob already written to a temp file, with its `transferFile` metadata, ready
+    /// to hand to `WCSession` — or to hold onto until the right point in the send order.
+    private struct PendingFaceTransfer {
+        let url: URL
+        let metadata: [String: Any]
+    }
+
+    /// Splits one card's stored (combined front+back) image ONCE at full resolution, then
+    /// produces up to four face blobs (front/back × screen/zoom, back only if the card has
+    /// one). Screen-tier faces are sent immediately; zoom-tier faces are appended to
+    /// `zoomTransfers` for the caller to send after every card's screen tier has been queued.
+    /// Best-effort: a single unreadable/undecodable card, or one face that fails to encode, is
+    /// logged and skipped rather than aborting the rest of the collection's stream.
+    private nonisolated static func sendCardFaces(
+        _ summary: CardSummary,
+        index: Int,
+        count: Int,
+        id: String,
+        reader: CollectionReader,
+        zoomTransfers: inout [PendingFaceTransfer]
+    ) {
         do {
             let imageData = try reader.imageData(name: summary.name)
-            guard let blob = WatchCardImage.downsampled(imageData) else {
-                logger.error("Couldn't downsample card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public)")
-                return
+            let split = try ImageSplitter.split(data: imageData, flip: summary.flip)
+
+            var faces: [(image: CGImage, side: String)] = [(split.front, WatchRelay.sideFront)]
+            if let back = split.back {
+                faces.append((back, WatchRelay.sideBack))
             }
-            let tempURL = try writeTempBlob(blob)
-            _ = WCSession.default.transferFile(tempURL, metadata: [
-                WatchRelay.opKey: WatchRelay.opCard,
-                WatchRelay.idKey: id,
-                WatchRelay.cardNameKey: summary.name,
-                WatchRelay.cardIndexKey: index,
-                WatchRelay.cardCountKey: count,
-            ])
+
+            for (image, side) in faces {
+                if let transfer = try faceTransfer(
+                    image, tier: WatchRelay.tierScreen, maxPixelSize: WatchRelay.screenTierMaxPixelSize,
+                    side: side, summary: summary, index: index, count: count, id: id
+                ) {
+                    _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
+                }
+                if let transfer = try faceTransfer(
+                    image, tier: WatchRelay.tierZoom, maxPixelSize: WatchRelay.zoomTierMaxPixelSize,
+                    side: side, summary: summary, index: index, count: count, id: id
+                ) {
+                    zoomTransfers.append(transfer)
+                }
+            }
         } catch {
             logger.error("Failed to send card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Downsamples+encodes one face at one tier and writes it to a temp file. `nil` (logged)
+    /// if the encode fails; the caller carries on to the next face/tier rather than aborting
+    /// the whole card.
+    private nonisolated static func faceTransfer(
+        _ image: CGImage,
+        tier: String,
+        maxPixelSize: Int,
+        side: String,
+        summary: CardSummary,
+        index: Int,
+        count: Int,
+        id: String
+    ) throws -> PendingFaceTransfer? {
+        guard let blob = WatchCardImage.encodedFace(image, maxPixelSize: maxPixelSize) else {
+            logger.error("Couldn't encode \(side, privacy: .public)/\(tier, privacy: .public) face of card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public)")
+            return nil
+        }
+        let url = try writeTempBlob(blob)
+        return PendingFaceTransfer(url: url, metadata: [
+            WatchRelay.opKey: WatchRelay.opCard,
+            WatchRelay.idKey: id,
+            WatchRelay.cardNameKey: summary.name,
+            WatchRelay.cardTierKey: tier,
+            WatchRelay.cardSideKey: side,
+            WatchRelay.cardIndexKey: index,
+            WatchRelay.cardCountKey: count,
+        ])
     }
 
     private nonisolated static func writeTempBlob(_ data: Data) throws -> URL {

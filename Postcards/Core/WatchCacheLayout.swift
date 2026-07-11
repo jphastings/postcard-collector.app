@@ -6,7 +6,8 @@ import Foundation
 ///
 /// Each collection gets its own directory (rather than one flat `.postcards` file) because
 /// progressive streaming fills it in incrementally: a manifest describing every card's slot,
-/// then each card's downsampled image blob as it arrives — see `WatchRelay`.
+/// then each card FACE's (front/back, at a screen or zoom tier) ready-to-display image blob as
+/// it arrives — see `WatchRelay`.
 enum WatchCacheLayout {
     static func collectionsDirectory(in supportDirectory: URL) -> URL {
         supportDirectory.appendingPathComponent("Collections", isDirectory: true)
@@ -24,8 +25,9 @@ enum WatchCacheLayout {
         collectionDirectory(id: id, in: supportDirectory).appendingPathComponent("cards", isDirectory: true)
     }
 
-    static func cardBlobURL(id: String, cardName: String, in supportDirectory: URL) -> URL {
-        cardsDirectory(id: id, in: supportDirectory).appendingPathComponent(safeCardFileName(for: cardName))
+    static func cardBlobURL(id: String, cardName: String, tier: String, side: String, in supportDirectory: URL) -> URL {
+        cardsDirectory(id: id, in: supportDirectory)
+            .appendingPathComponent("\(safeCardFileName(for: cardName))-\(tier)-\(side)")
     }
 
     /// Maps a card's `name` (may contain spaces, punctuation, slashes) to a filesystem-safe,
@@ -51,6 +53,28 @@ enum WatchCacheLayout {
         base64 += String(repeating: "=", count: paddingNeeded)
         guard let data = Data(base64Encoded: base64) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// The inverse of `cardBlobURL`'s filename — used on launch to recover which card/tier/side
+    /// a blob filename already on disk (`cards/` is listed by filename, not by the
+    /// `WatchCardMeta`/metadata that produced it) belongs to. `safeCardFileName`'s base64url
+    /// alphabet (`A-Za-z0-9-_`) already contains `-` and `_`, so the `-tier-side` suffix can't
+    /// just be split off generically — instead this tries each of the 4 known tier/side
+    /// combinations and matches whichever one the filename actually ends with. `nil` for an
+    /// old (pre-streaming-v2) blob filename with no tier/side suffix at all, or anything else
+    /// that doesn't parse — both cases mean a stale, unrecoverable file that should be deleted
+    /// rather than misattributed.
+    static func cardBlobComponents(fromSafeFileName safeFileName: String) -> (cardName: String, tier: String, side: String)? {
+        for tier in [WatchRelay.tierScreen, WatchRelay.tierZoom] {
+            for side in [WatchRelay.sideFront, WatchRelay.sideBack] {
+                let suffix = "-\(tier)-\(side)"
+                guard safeFileName.hasSuffix(suffix) else { continue }
+                let safeName = String(safeFileName.dropLast(suffix.count))
+                guard let name = cardName(fromSafeFileName: safeName) else { continue }
+                return (name, tier, side)
+            }
+        }
+        return nil
     }
 
     static func catalogFileURL(in supportDirectory: URL) -> URL {
@@ -97,4 +121,14 @@ enum WatchCacheLayout {
         guard temporary.count > limit else { return [] }
         return Set(temporary.prefix(temporary.count - limit).map(\.key))
     }
+}
+
+/// Identifies one face's blob: a specific card, side (front/back), and quality tier (screen/
+/// zoom) within a collection. Used both for `WatchLibrary`'s received-blob bookkeeping and as
+/// the decoded-image cache key in `WatchDecodedFaceCache`.
+struct WatchFaceKey: Hashable, Sendable {
+    let id: String
+    let cardName: String
+    let tier: String
+    let side: String
 }

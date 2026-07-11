@@ -177,12 +177,12 @@ targets:
       - path: WatchApp
       - path: Postcards/Core/Models.swift
       - path: Postcards/Core/FlipGeometry.swift
-      - path: Postcards/Core/ImageSplitter.swift
       - path: Postcards/Core/CardFileXMP.swift
       - path: Postcards/Core/LibrarySource.swift
       - path: Postcards/Core/PinStore.swift
       - path: Postcards/Core/WatchRelay.swift
       - path: Postcards/Core/WatchCacheLayout.swift
+      - path: Postcards/Core/WatchDecodedFaceCache.swift
       - path: Postcards/Core/ZoomGeometry.swift
       - path: Postcards/Motion/ParallaxGeometry.swift
       - path: Postcards/Motion/ParallaxModel.swift

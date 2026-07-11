@@ -4,14 +4,14 @@ import WatchConnectivity
 
 /// The watch's whole data layer: a `WCSessionDelegate` that receives the iPhone's catalog
 /// (pushed as the application context) and streams each pinned/requested collection
-/// progressively — a manifest naming every card slot, then each card's downsampled image as
-/// its own file transfer — caching both to disk so the app has something to show with no
-/// phone present. watchOS can't open iCloud Drive documents, so unlike the abandoned
-/// `CloudLibrary` design this never touches iCloud itself — see `WatchRelay` for the wire
-/// contract with the iPhone's (iOS-only) relay.
+/// progressively — a manifest naming every card slot, then each card FACE's (front/back, at a
+/// screen or zoom tier) ready-to-display image as its own file transfer — caching both to disk
+/// so the app has something to show with no phone present. watchOS can't open iCloud Drive
+/// documents, so unlike the abandoned `CloudLibrary` design this never touches iCloud itself —
+/// see `WatchRelay` for the wire contract with the iPhone's (iOS-only) relay.
 ///
 /// WCSession's delegate callbacks fire on a private background queue, but `catalog`,
-/// `isPhoneReachable`, `manifests` and `receivedCards` are all `@MainActor` state (via the
+/// `isPhoneReachable`, `manifests` and `receivedBlobs` are all `@MainActor` state (via the
 /// class-wide `@MainActor`/`@Observable`). Every delegate method below is therefore
 /// `nonisolated` and hops back with `Task { @MainActor in ... }` before touching that state —
 /// this app has a history of heap-corruption crashes from off-main mutation, so there's no
@@ -25,10 +25,11 @@ final class WatchLibrary: NSObject {
     /// slots can be laid out) the moment this lands, even if not every card's blob has
     /// arrived yet.
     private(set) var manifests: [String: [WatchCardMeta]] = [:]
-    /// `id` -> the names of cards whose downsampled image blob is cached on disk. Cards
-    /// arrive in scroll order but this is a `Set`, not an ordered list, because a card's slot
-    /// position comes from the manifest — this only answers "is this one ready yet".
-    private(set) var receivedCards: [String: Set<String>] = [:]
+    /// `id` -> the faces (one entry per card/tier/side) whose blob is cached on disk. Faces
+    /// arrive in scroll order (screen tier for every card, then zoom tier trailing behind) but
+    /// this is a `Set`, not an ordered list, because a card's slot position comes from the
+    /// manifest — this only answers "has this particular face landed yet".
+    private(set) var receivedBlobs: [String: Set<WatchFaceKey>] = [:]
 
     private let pinStore: PinStore
     /// Injected for the main-actor disk methods (test seam). The `nonisolated` file-receive
@@ -38,6 +39,11 @@ final class WatchLibrary: NSObject {
     /// `URL` is `Sendable`, so this stays readable from the `nonisolated` delegate methods
     /// below; only the mutable, `@Observable` properties above need a main-actor hop.
     private nonisolated let supportDirectory: URL
+    /// An `actor` is inherently `Sendable`, so — like `supportDirectory` above — this is
+    /// readable from any isolation domain (the `nonisolated` delegate methods, or a SwiftUI
+    /// view) without a main-actor hop; only its own internal state needs synchronizing, which
+    /// the actor already does.
+    nonisolated let decodedFaceCache = WatchDecodedFaceCache()
 
     init(
         pinStore: PinStore = PinStore(),
@@ -71,9 +77,28 @@ final class WatchLibrary: NSObject {
         manifests[id]
     }
 
-    func cardBlobURL(_ id: String, cardName: String) -> URL? {
-        let url = WatchCacheLayout.cardBlobURL(id: id, cardName: cardName, in: supportDirectory)
+    func cardBlobURL(_ id: String, cardName: String, tier: String, side: String) -> URL? {
+        let url = WatchCacheLayout.cardBlobURL(id: id, cardName: cardName, tier: tier, side: side, in: supportDirectory)
         return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func hasFaces(id: String, cardName: String, tier: String, hasBack: Bool) -> Bool {
+        let blobs = receivedBlobs[id] ?? []
+        guard blobs.contains(WatchFaceKey(id: id, cardName: cardName, tier: tier, side: WatchRelay.sideFront)) else { return false }
+        guard hasBack else { return true }
+        return blobs.contains(WatchFaceKey(id: id, cardName: cardName, tier: tier, side: WatchRelay.sideBack))
+    }
+
+    /// Whether the SCREEN tier (front, and back if `hasBack`) has landed for this card — what a
+    /// card view waits for before it can render at all.
+    func hasScreenFaces(id: String, cardName: String, hasBack: Bool) -> Bool {
+        hasFaces(id: id, cardName: cardName, tier: WatchRelay.tierScreen, hasBack: hasBack)
+    }
+
+    /// Whether the ZOOM tier has landed — what a zoomed-in card view waits for before swapping
+    /// up from the screen tier to the sharper zoom tier.
+    func hasZoomFaces(id: String, cardName: String, hasBack: Bool) -> Bool {
+        hasFaces(id: id, cardName: cardName, tier: WatchRelay.tierZoom, hasBack: hasBack)
     }
 
     func expectedCount(for id: String) -> Int? {
@@ -81,7 +106,8 @@ final class WatchLibrary: NSObject {
     }
 
     func receivedCount(for id: String) -> Int {
-        receivedCards[id]?.count ?? 0
+        guard let manifest = manifests[id] else { return 0 }
+        return manifest.filter { hasScreenFaces(id: id, cardName: $0.name, hasBack: $0.flip != .none) }.count
     }
 
     /// Whether the collection can be shown as a scroll of slots at all — i.e. its manifest has
@@ -108,11 +134,18 @@ final class WatchLibrary: NSObject {
 
     /// Asks the phone to stream this collection while reachable — pinning and live-viewing an
     /// unpinned collection both funnel through here; whether the result is later evicted
-    /// depends only on `isPinned`, not on which caller asked. A no-op once the manifest has
-    /// already landed, so re-navigating to an in-flight or fully-streamed collection doesn't
-    /// re-request it.
+    /// depends only on `isPinned`, not on which caller asked. A no-op once every card's screen
+    /// tier has already landed, so re-navigating to an in-flight or fully-streamed collection
+    /// doesn't re-request it — but a present manifest with incomplete screen faces (a stale
+    /// v1-format cache, or a stream that got interrupted) DOES re-request, since the phone
+    /// re-streaming and overwriting the same deterministic blob paths is harmless and this is
+    /// what self-heals those cases.
     func requestDownloadIfNeeded(id: String) {
-        guard manifest(for: id) == nil, isPhoneReachable else { return }
+        guard isPhoneReachable else { return }
+        if let manifest = manifests[id] {
+            let complete = manifest.allSatisfy { hasScreenFaces(id: id, cardName: $0.name, hasBack: $0.flip != .none) }
+            guard !complete else { return }
+        }
         WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opRequest, WatchRelay.idKey: id])
     }
 
@@ -140,9 +173,12 @@ final class WatchLibrary: NSObject {
         try? data.write(to: WatchCacheLayout.manifestURL(id: id, in: supportDirectory), options: .atomic)
     }
 
-    /// Rebuilds `manifests`/`receivedCards` on launch by scanning `Collections/` — the source
+    /// Rebuilds `manifests`/`receivedBlobs` on launch by scanning `Collections/` — the source
     /// of truth is always the disk, not anything persisted alongside it, so a crash or forced
     /// quit mid-stream can't leave the in-memory state out of sync with what's actually cached.
+    /// Any file in a collection's `cards/` directory whose name doesn't parse as a tier/side
+    /// blob (a stale v1-format blob — no `-tier-side` suffix) is deleted outright rather than
+    /// left to be misattributed.
     private func restoreCollectionsFromDisk() {
         let root = WatchCacheLayout.collectionsDirectory(in: supportDirectory)
         let ids = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
@@ -153,26 +189,32 @@ final class WatchLibrary: NSObject {
             {
                 manifests[id] = manifest
             }
-            let cardFileNames = (try? fileManager.contentsOfDirectory(
-                atPath: WatchCacheLayout.cardsDirectory(id: id, in: supportDirectory).path
-            )) ?? []
-            let cardNames = Set(cardFileNames.compactMap(WatchCacheLayout.cardName(fromSafeFileName:)))
-            if !cardNames.isEmpty {
-                receivedCards[id] = cardNames
+            let cardsDirectory = WatchCacheLayout.cardsDirectory(id: id, in: supportDirectory)
+            let cardFileNames = (try? fileManager.contentsOfDirectory(atPath: cardsDirectory.path)) ?? []
+            var keys: Set<WatchFaceKey> = []
+            for fileName in cardFileNames {
+                if let components = WatchCacheLayout.cardBlobComponents(fromSafeFileName: fileName) {
+                    keys.insert(WatchFaceKey(id: id, cardName: components.cardName, tier: components.tier, side: components.side))
+                } else {
+                    try? fileManager.removeItem(at: cardsDirectory.appendingPathComponent(fileName))
+                }
+            }
+            if !keys.isEmpty {
+                receivedBlobs[id] = keys
             }
         }
     }
 
-    /// Moves a just-received card blob into its collection's `cards/` directory. Must run
+    /// Moves a just-received card face blob into its collection's `cards/` directory. Must run
     /// synchronously, on whatever thread WCSession calls the delegate on: `file.fileURL`
     /// points at a temporary location WCSession may reclaim as soon as
     /// `session(_:didReceive:)` returns, so — unlike the `@Observable` state updates, which
     /// can wait for the main actor — this can't be deferred into a `Task`. Returns whether the
-    /// move succeeded, so the caller knows whether to record the card as received.
-    private nonisolated func cacheReceivedCardFile(_ file: WCSessionFile, id: String, cardName: String) -> Bool {
+    /// move succeeded, so the caller knows whether to record the face as received.
+    private nonisolated func cacheReceivedCardFile(_ file: WCSessionFile, id: String, cardName: String, tier: String, side: String) -> Bool {
         let fileManager = FileManager.default
         let cardsDirectory = WatchCacheLayout.cardsDirectory(id: id, in: supportDirectory)
-        let destination = WatchCacheLayout.cardBlobURL(id: id, cardName: cardName, in: supportDirectory)
+        let destination = WatchCacheLayout.cardBlobURL(id: id, cardName: cardName, tier: tier, side: side, in: supportDirectory)
         do {
             try fileManager.createDirectory(at: cardsDirectory, withIntermediateDirectories: true)
             if fileManager.fileExists(atPath: destination.path) {
@@ -214,7 +256,7 @@ final class WatchLibrary: NSObject {
         for id in evictable {
             try? fileManager.removeItem(at: WatchCacheLayout.collectionDirectory(id: id, in: supportDirectory))
             manifests[id] = nil
-            receivedCards[id] = nil
+            receivedBlobs[id] = nil
         }
     }
 }
@@ -271,12 +313,14 @@ extension WatchLibrary: WCSessionDelegate {
             let op = metadata[WatchRelay.opKey] as? String,
             op == WatchRelay.opCard,
             let id = metadata[WatchRelay.idKey] as? String,
-            let cardName = metadata[WatchRelay.cardNameKey] as? String
+            let cardName = metadata[WatchRelay.cardNameKey] as? String,
+            let tier = metadata[WatchRelay.cardTierKey] as? String,
+            let side = metadata[WatchRelay.cardSideKey] as? String
         else { return }
-        let succeeded = cacheReceivedCardFile(file, id: id, cardName: cardName)
+        let succeeded = cacheReceivedCardFile(file, id: id, cardName: cardName, tier: tier, side: side)
         Task { @MainActor in
             guard succeeded else { return }
-            self.receivedCards[id, default: []].insert(cardName)
+            self.receivedBlobs[id, default: []].insert(WatchFaceKey(id: id, cardName: cardName, tier: tier, side: side))
             if !self.isPinned(id) {
                 self.evictTemporaryFilesIfNeeded()
             }

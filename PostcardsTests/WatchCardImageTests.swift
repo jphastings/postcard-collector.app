@@ -4,13 +4,13 @@ import UniformTypeIdentifiers
 import XCTest
 
 final class WatchCardImageTests: XCTestCase {
-    func testDownsampledOutputIsSmallerAndPreservesAlpha() throws {
+    func testEncodedFaceIsSmallerAndPreservesAlpha() throws {
         let original = try XCTUnwrap(makeHalfTransparentImage(width: 400, height: 200))
-        let inputData = try XCTUnwrap(encodedPNG(original))
+        let naivePNG = try XCTUnwrap(encodedPNG(original))
 
-        let output = try XCTUnwrap(WatchCardImage.downsampled(inputData, maxPixelSize: 100))
+        let output = try XCTUnwrap(WatchCardImage.encodedFace(original, maxPixelSize: 100))
 
-        XCTAssertLessThan(output.count, inputData.count, "downsampling should shrink the payload")
+        XCTAssertLessThan(output.count, naivePNG.count, "downsampling should shrink the payload")
 
         let source = try XCTUnwrap(CGImageSourceCreateWithData(output as CFData, nil))
         let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
@@ -19,8 +19,9 @@ final class WatchCardImageTests: XCTestCase {
         XCTAssertTrue(alphaValues(of: decoded).contains { $0 < 200 }, "the transparent half must not be flattened to opaque")
     }
 
-    func testUndecodableDataReturnsNil() {
-        XCTAssertNil(WatchCardImage.downsampled(Data("not an image".utf8)))
+    func testNonPositiveMaxPixelSizeReturnsNil() throws {
+        let original = try XCTUnwrap(makeHalfTransparentImage(width: 400, height: 200))
+        XCTAssertNil(WatchCardImage.encodedFace(original, maxPixelSize: 0))
     }
 
     // MARK: - Fixtures

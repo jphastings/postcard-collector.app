@@ -5,12 +5,12 @@ import SwiftUI
 /// just another vertical scroll input to a paging `ScrollView`.
 ///
 /// Progressive streaming means the manifest (every card's slot) typically lands well before
-/// every card's image does, so this view renders a slot per `WatchCardMeta` the moment
+/// every card's faces do, so this view renders a slot per `WatchCardMeta` the moment
 /// `library.manifest(for: id)` is non-nil — each `WatchCardView` independently shows a
-/// placeholder until its own blob arrives — with a small "N of M" overlay while the stream is
-/// still filling in. If the manifest itself hasn't landed yet, this asks `library` to fetch it
-/// from a reachable iPhone and waits, reacting to `library.manifests` the moment it lands and
-/// to `library.isPhoneReachable` if the phone comes back within range mid-wait.
+/// placeholder until its own screen-tier faces arrive. If the manifest itself hasn't landed
+/// yet, this asks `library` to fetch it from a reachable iPhone and waits, reacting to
+/// `library.manifests` the moment it lands and to `library.isPhoneReachable` if the phone
+/// comes back within range mid-wait.
 struct WatchPostcardScrollView: View {
     let library: WatchLibrary
     let id: String
@@ -91,20 +91,10 @@ struct WatchPostcardScrollView: View {
                         .containerRelativeFrame(.vertical)
                 }
             }
+            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
+        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollDisabled(zoomedCardID != nil)
-        .overlay(alignment: .top) {
-            let received = library.receivedCount(for: id)
-            if received < manifest.count {
-                Text("\(received) of \(manifest.count)")
-                    .font(.caption2)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 4)
-            }
-        }
     }
 
     /// Loads from the cache if the manifest is already there; otherwise requests it (if
@@ -114,6 +104,7 @@ struct WatchPostcardScrollView: View {
     private func beginLoading() {
         if library.isPresent(id) {
             phase = .loaded
+            library.requestDownloadIfNeeded(id: id)
             return
         }
         guard library.isPhoneReachable else {
