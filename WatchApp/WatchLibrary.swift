@@ -116,6 +116,14 @@ final class WatchLibrary: NSObject {
         manifests[id] != nil
     }
 
+    /// Whether the collection can open into the postcard view: its manifest has arrived and at
+    /// least one card's screen-tier faces are fully cached — so tapping through always shows a
+    /// real postcard immediately, rather than a screenful of placeholders.
+    func isOpenable(_ id: String) -> Bool {
+        guard let manifest = manifests[id] else { return false }
+        return manifest.contains { hasScreenFaces(id: id, cardName: $0.name, hasBack: $0.flip != .none) }
+    }
+
     /// Pinning keeps a collection downloaded (and exempt from eviction) permanently; unpinning
     /// lets it fall back to being *temporary*, subject to eviction, rather than deleting it
     /// outright — so unpinning something you're currently viewing doesn't yank it out from
