@@ -133,6 +133,18 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// rather than dropped, and `cloudLibrary.start()` is kicked (idempotent) so a library that
     /// never started (e.g. this delegate existing before any view called `start()`) does.
     /// `armCatalogObservation`'s change reaction retries queued ids once the catalog updates.
+    ///
+    /// `inFlightStreamIDs` only guards the few seconds this method's own encode/enqueue loop
+    /// takes — it says nothing about whether the *previous* stream's transfers have actually
+    /// drained out of `WCSession`'s queue, which over Bluetooth can take minutes. So a retried
+    /// watch request (timeout-retry, or a re-tapped row) routinely arrives once this guard has
+    /// cleared but while the earlier transfers are still outstanding. Rather than adding a
+    /// second, queue-aware guard here — which would need to decide whether "some but not all
+    /// faces outstanding" counts as in-flight — every restart is let through, and `stream`
+    /// itself skips re-encoding/re-enqueuing any face still sitting in the outstanding queue
+    /// (see `outstandingCardFaceKeys`). The only "waste" of a redundant restart is then a
+    /// re-sent manifest (a few KB over the reliable user-info queue) and a cheap re-check per
+    /// card, which is simpler and safer than trying to short-circuit the whole stream.
     private func streamCollectionIfNeeded(id: String) {
         guard !inFlightStreamIDs.contains(id) else { return }
         guard let item = cloudLibrary.items.first(where: { $0.isCollection && $0.displayName == id }) else {
@@ -170,20 +182,63 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let reader = try CollectionReader(path: item.path)
             let summaries = try reader.cardSummaries()
 
-            logger.info("streaming \(id, privacy: .public): \(summaries.count) cards")
             sendManifest(summaries, id: id)
 
+            let alreadyQueued = outstandingCardFaceKeys()
             var zoomTransfers: [PendingFaceTransfer] = []
+            var skippedCount = 0
             for (index, summary) in summaries.enumerated() {
-                sendCardFaces(summary, index: index, count: summaries.count, id: id, reader: reader, zoomTransfers: &zoomTransfers)
+                sendCardFaces(
+                    summary, index: index, count: summaries.count, id: id, reader: reader,
+                    zoomTransfers: &zoomTransfers, alreadyQueued: alreadyQueued, skippedCount: &skippedCount
+                )
             }
             for transfer in zoomTransfers {
                 _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
             }
+            logger.info("streaming \(id, privacy: .public): \(summaries.count) cards (\(skippedCount) faces already queued, skipped)")
             logger.info("finished streaming \(id, privacy: .public)")
         } catch {
             logger.error("Failed to stream watch collection \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Identifies one face (front/back) of one card, at one quality tier, within one
+    /// collection — the same identity carried in a card `transferFile`'s metadata (see
+    /// `WatchRelay.opCard`). Used to match a face about to be sent against faces already
+    /// queued in `WCSession`'s outstanding-transfer list.
+    private struct CardFaceKey: Hashable {
+        let id: String
+        let cardName: String
+        let tier: String
+        let side: String
+
+        /// Builds a key from a queued transfer's `file.metadata`, or `nil` if it isn't a
+        /// card-face transfer (wrong/missing op) or is missing an expected field. Defensive
+        /// rather than force-unwrapped since this reads metadata `WCSession` handed back to
+        /// us, not metadata we just built ourselves.
+        static func from(metadata: [String: Any]) -> CardFaceKey? {
+            guard
+                metadata[WatchRelay.opKey] as? String == WatchRelay.opCard,
+                let id = metadata[WatchRelay.idKey] as? String,
+                let cardName = metadata[WatchRelay.cardNameKey] as? String,
+                let tier = metadata[WatchRelay.cardTierKey] as? String,
+                let side = metadata[WatchRelay.cardSideKey] as? String
+            else { return nil }
+            return CardFaceKey(id: id, cardName: cardName, tier: tier, side: side)
+        }
+    }
+
+    /// Snapshots the faces currently sitting in `WCSession`'s outstanding-transfer list, so
+    /// `stream` can skip re-encoding and re-enqueuing a face that's still draining from an
+    /// earlier stream of the same collection instead of piling a duplicate onto the queue.
+    /// `outstandingFileTransfers` is documented safe to read from any thread.
+    ///
+    /// Taken once, at the start of a stream: the queue only shrinks while we're sending (as
+    /// transfers finish draining), so a snapshot from the start can at worst under-skip —
+    /// resending something that finished mid-stream, no worse than today — never over-skip.
+    private nonisolated static func outstandingCardFaceKeys() -> Set<CardFaceKey> {
+        Set(WCSession.default.outstandingFileTransfers.compactMap { CardFaceKey.from(metadata: $0.file.metadata ?? [:]) })
     }
 
     private nonisolated static func sendManifest(_ summaries: [CardSummary], id: String) {
@@ -211,13 +266,21 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// `zoomTransfers` for the caller to send after every card's screen tier has been queued.
     /// Best-effort: a single unreadable/undecodable card, or one face that fails to encode, is
     /// logged and skipped rather than aborting the rest of the collection's stream.
+    ///
+    /// Before encoding each face, it's checked against `alreadyQueued` (the outstanding-queue
+    /// snapshot `stream` took at the start) — a face still draining from an earlier stream of
+    /// this same collection is skipped entirely (no encode, no temp file, no enqueue) rather
+    /// than piling a duplicate transfer onto `WCSession`'s queue. `skippedCount` accumulates
+    /// across the whole stream for the summary log.
     private nonisolated static func sendCardFaces(
         _ summary: CardSummary,
         index: Int,
         count: Int,
         id: String,
         reader: CollectionReader,
-        zoomTransfers: inout [PendingFaceTransfer]
+        zoomTransfers: inout [PendingFaceTransfer],
+        alreadyQueued: Set<CardFaceKey>,
+        skippedCount: inout Int
     ) {
         do {
             let imageData = try reader.imageData(name: summary.name)
@@ -229,13 +292,18 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             }
 
             for (image, side) in faces {
-                if let transfer = try faceTransfer(
+                if alreadyQueued.contains(CardFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierScreen, side: side)) {
+                    skippedCount += 1
+                } else if let transfer = try faceTransfer(
                     image, tier: WatchRelay.tierScreen, maxPixelSize: WatchRelay.screenTierMaxPixelSize,
                     side: side, summary: summary, index: index, count: count, id: id
                 ) {
                     _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
                 }
-                if let transfer = try faceTransfer(
+
+                if alreadyQueued.contains(CardFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierZoom, side: side)) {
+                    skippedCount += 1
+                } else if let transfer = try faceTransfer(
                     image, tier: WatchRelay.tierZoom, maxPixelSize: WatchRelay.zoomTierMaxPixelSize,
                     side: side, summary: summary, index: index, count: count, id: id
                 ) {
