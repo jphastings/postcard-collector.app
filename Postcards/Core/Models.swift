@@ -72,6 +72,17 @@ struct Person: Codable, Hashable, Sendable {
     var uri: String?
 }
 
+/// One distinct person across a collection/library's cards, as returned by
+/// `peopleJSON`/`library.peopleJSON` — unlike `Person` (one card's sender/recipient/author),
+/// this is de-duplicated across every card and annotated with every role they've held there,
+/// powering search-token suggestions (see `SearchSuggestions`). `roles` is a subset of
+/// `"from"`, `"to"`, `"collector"`.
+struct PersonRef: Codable, Hashable, Sendable {
+    var name: String?
+    var uri: String?
+    var roles: [String]
+}
+
 /// One annotation over a range of `AnnotatedText.text`, addressed in **UTF-8 byte
 /// offsets** (not Unicode scalars or `Character`s) — see `AnnotatedTextRenderer` for how
 /// these are converted into `String.Index`/`AttributedString.Index` ranges.

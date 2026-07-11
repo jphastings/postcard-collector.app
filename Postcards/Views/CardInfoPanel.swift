@@ -8,10 +8,9 @@ import SwiftUI
 struct CardInfoPanel: View {
     let summary: CardSummary
     let metadata: PostcardMetadata
-    /// Called with a preset like `"from:Claire"` or `"collector:\"Claire Smith\""` when a
-    /// person row's menu is used — `CardDetailView` forwards this straight to its
-    /// `SearchRequest`.
-    let onSearchPreset: (String) -> Void
+    /// Called with a pill token (e.g. `from: Claire`) when a person row's menu is used —
+    /// `CardDetailView` forwards this straight to its `SearchRequest`.
+    let onSearchPreset: (SearchToken) -> Void
 
     @State private var cameraPosition: MapCameraPosition
     @State private var showsMapResetButton = false
@@ -26,7 +25,7 @@ struct CardInfoPanel: View {
     // of this state — rather than reusing a previous card's camera position.
     private let initialMapRegion: MKCoordinateRegion?
 
-    init(summary: CardSummary, metadata: PostcardMetadata, onSearchPreset: @escaping (String) -> Void) {
+    init(summary: CardSummary, metadata: PostcardMetadata, onSearchPreset: @escaping (SearchToken) -> Void) {
         self.summary = summary
         self.metadata = metadata
         self.onSearchPreset = onSearchPreset
@@ -155,11 +154,11 @@ struct CardInfoPanel: View {
                 Menu {
                     switch presets {
                     case .fromToWith:
-                        presetButton(tag: "from", title: "More from \(name)", person: person)
-                        presetButton(tag: "to", title: "More to \(name)", person: person)
-                        presetButton(tag: "with", title: "More with \(name)", person: person)
+                        presetButton(kind: .from, title: "More from \(name)", person: person)
+                        presetButton(kind: .to, title: "More to \(name)", person: person)
+                        presetButton(kind: .with, title: "More with \(name)", person: person)
                     case .collectorOnly:
-                        presetButton(tag: "collector", title: "More collected by \(name)", person: person)
+                        presetButton(kind: .collector, title: "More collected by \(name)", person: person)
                     }
                     if let url = validURL(for: person) {
                         Divider()
@@ -177,21 +176,18 @@ struct CardInfoPanel: View {
         }
     }
 
-    private func presetButton(tag: String, title: String, person: Person) -> some View {
+    private func presetButton(kind: SearchToken.Kind, title: String, person: Person) -> some View {
         Button(title) {
-            onSearchPreset("\(tag):\(presetValue(for: person))")
+            onSearchPreset(SearchToken(kind: kind, display: person.name ?? "", value: presetValue(for: person)))
         }
     }
 
-    /// The value half of a preset like `from:Claire` or `from:"Claire Smith"`: the person's
-    /// URI when they have one that parses (used as-is — URIs don't normally contain
-    /// whitespace, but the same quoting rule applies uniformly just in case), else their
-    /// name; quoted with `"..."` only if it contains whitespace, since the parser's tokenizer
-    /// needs that to keep a multi-word value as one token.
+    /// A preset token's underlying search value: the person's URI when they have one that
+    /// parses, else their name — reused by every `presetButton` so "more from"/"more
+    /// to"/"more with"/"more collected by" all search the same identifier a promoted or
+    /// suggested pill for this same person would.
     private func presetValue(for person: Person) -> String {
-        let raw = validURL(for: person) != nil ? (person.uri ?? "") : (person.name ?? "")
-        guard raw.contains(where: \.isWhitespace) else { return raw }
-        return "\"\(raw)\""
+        validURL(for: person) != nil ? (person.uri ?? "") : (person.name ?? "")
     }
 
     private func validURL(for person: Person) -> URL? {

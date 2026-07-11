@@ -106,9 +106,7 @@ struct SearchQuery: Equatable, Codable {
             case "collector": query.collector.append(value)
             case "country": query.country.append(normalisedCountryCode(value))
             case "on", "before", "after":
-                if let range = dateRange(for: value) {
-                    apply(range, kind: tag, to: &query)
-                } else {
+                if !applyDateTag(tag, value: value, to: &query) {
                     textTokens.append(token)
                 }
             default:
@@ -124,7 +122,10 @@ struct SearchQuery: Equatable, Codable {
     /// whitespace inside one token — required for `tag:"quoted value with spaces"` (and, more
     /// generally, any `"..."` span anywhere in the input). Quote characters themselves are
     /// dropped from the returned tokens.
-    private static func tokenize(_ raw: String) -> [String] {
+    ///
+    /// Internal rather than `private` so `SearchToken.promote(from:)` can reuse the exact
+    /// same tokenization `parse` uses, instead of duplicating it.
+    static func tokenize(_ raw: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inToken = false
@@ -165,7 +166,9 @@ struct SearchQuery: Equatable, Codable {
     /// colon and a non-empty value — using the FIRST colon only, so a URI value containing
     /// its own colons (`from:mailto:claire@example.com`) still splits into tag `from` and
     /// value `mailto:claire@example.com`.
-    private static func splitTag(_ token: String) -> (tag: String, value: String)? {
+    ///
+    /// Internal rather than `private` so `SearchToken.promote(from:)` can reuse it too.
+    static func splitTag(_ token: String) -> (tag: String, value: String)? {
         guard let colonIndex = token.firstIndex(of: ":") else { return nil }
         let tag = token[token.startIndex..<colonIndex].lowercased()
         let value = token[token.index(after: colonIndex)...]
@@ -253,6 +256,27 @@ struct SearchQuery: Equatable, Codable {
         return combine(existing, candidate)
     }
 
+    /// Parses `value` as an `on`/`before`/`after` date-range and, if valid, tightens
+    /// `query`'s bound accordingly (see `apply`) — returning whether it was valid. Shared by
+    /// `parse` (where an invalid value falls back to free text) and
+    /// `SearchQuery.from(tokens:freeText:)` (where a date token's value is already
+    /// known-valid, since promotion/suggestion only ever create a date token once its value
+    /// has passed this same check).
+    @discardableResult
+    static func applyDateTag(_ tag: String, value: String, to query: inout SearchQuery) -> Bool {
+        guard let range = dateRange(for: value) else { return false }
+        apply(range, kind: tag, to: &query)
+        return true
+    }
+
+    /// Whether `value` parses as one of the three valid date forms (`yyyy`, `yyyy-MM`,
+    /// `yyyy-MM-dd`) — exposed so `SearchToken.promote`/`SearchSuggestions` can decide
+    /// whether a typed date tag is promotable, without duplicating `dateRange`'s parsing
+    /// rules.
+    static func isValidDateValue(_ value: String) -> Bool {
+        dateRange(for: value) != nil
+    }
+
     // MARK: - Country normalisation
 
     /// Resolves a raw `country:` token to an uppercased ISO 3166-1 alpha-3 code: an exact
@@ -283,5 +307,15 @@ struct SearchQuery: Equatable, Codable {
         }
 
         return upper
+    }
+
+    /// The display name for an ISO 3166-1 alpha-3 code — the reverse of
+    /// `normalisedCountryCode`'s name→code matching, used to show a friendly name on a
+    /// promoted/suggested `country` pill instead of its raw alpha-3 value. Tries the current
+    /// locale first, falling back to `en_US`; `nil` if `code` isn't a recognized alpha-3.
+    static func countryName(forAlpha3 code: String) -> String? {
+        guard let alpha2 = CountryFlags.alpha3ToAlpha2[code.uppercased()] else { return nil }
+        return Locale.current.localizedString(forRegionCode: alpha2)
+            ?? Locale(identifier: "en_US").localizedString(forRegionCode: alpha2)
     }
 }

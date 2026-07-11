@@ -72,11 +72,11 @@ struct CardDetailView: View {
     }
 
     /// Handles a person's "More from…"/"More collected by…" preset from `CardInfoPanel`:
-    /// hands the new query to the shared `searchRequest` for whichever grid pane picks it up
+    /// hands the new token to the shared `searchRequest` for whichever grid pane picks it up
     /// next, and — iOS only, where the info panel is a dismissible sheet rather than a
     /// persistent inspector — closes it so the user lands straight back on the grid.
-    private func handleSearchPreset(_ query: String) {
-        searchRequest.submit(query)
+    private func handleSearchPreset(_ token: SearchToken) {
+        searchRequest.submit(token: token)
         #if os(iOS)
         showingInfo = false
         #endif

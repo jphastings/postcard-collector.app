@@ -29,7 +29,8 @@ struct CollectionGridView: View {
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
     /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
-    /// `CardInfoPanel`) land here — see the `.onChange(of: searchRequest.token)` below.
+    /// `CardInfoPanel`) land here — see `applySearchPreset()`, hung off
+    /// `.onChange(of: searchRequest.generation)` below.
     let searchRequest: SearchRequest
     /// Creates a new, empty collection for the context menus' "New collection…" action
     /// and returns it as a move/copy target — supplied by `LibraryView`, which owns where
@@ -41,10 +42,22 @@ struct CollectionGridView: View {
     @State private var cards: [CardSummary]?
     @State private var title: String?
     @State private var searchText = ""
+    /// Active search-bar pills (people/country/date), alongside `searchText`'s free text —
+    /// see `SearchToken`.
+    @State private var searchTokens: [SearchToken] = []
+    /// This collection's known people, for search-token suggestions (see `SearchSuggestions`).
+    @State private var people: [PersonRef] = []
     @State private var loadError: String?
     @State private var loadErrorTitle = "Couldn't open collection"
     @State private var actionError: String?
     @State private var viewMode = CollectionViewMode.grid
+    #if os(iOS)
+    @FocusState private var isSearchFieldFocused: Bool
+    #else
+    /// Flipped to `true` to ask `BottomSearchBar` to focus its field (e.g. after a search
+    /// preset lands); it flips this back to `false` once done.
+    @State private var focusSearchFieldRequest = false
+    #endif
     /// Whether ANY card in the full, unfiltered collection has a coordinate — gates
     /// `CollectionModeSwitcher`. Only updated by `loadCards()` (never by `search()`, which
     /// can narrow `cards` to a search-filtered subset) so it always reflects the whole
@@ -102,14 +115,30 @@ struct CollectionGridView: View {
         // Search narrows the same `cards` array both the grid and the map read from, so
         // map pins are filtered by an active search too.
         #if os(macOS)
-        .bottomSearchBar(text: $searchText, prompt: "Search this collection")
+        .bottomSearchBar(
+            text: $searchText,
+            tokens: $searchTokens,
+            suggestions: suggestedTokens,
+            onPickSuggestion: acceptSuggestion,
+            prompt: "Search this collection",
+            focusRequest: $focusSearchFieldRequest
+        )
         #else
-        .searchable(text: $searchText, prompt: "Search this collection")
+        .searchable(
+            text: $searchText,
+            tokens: $searchTokens,
+            suggestedTokens: .constant(suggestedTokens),
+            prompt: "Search this collection",
+            token: { Text($0.pillLabel) }
+        )
+        .modifier(SearchFocusedIfAvailable(binding: $isSearchFieldFocused))
         #endif
         .task(id: source.id) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
-        .task(id: searchText) { await search() }
-        .onChange(of: searchRequest.token) { _, _ in searchText = searchRequest.query }
+        .task(id: source.id) { await loadPeople() }
+        .task(id: SearchInputKey(text: searchText, tokens: searchTokens)) { await search() }
+        .onChange(of: searchText) { _, newValue in promoteTypedTokens(from: newValue) }
+        .onChange(of: searchRequest.generation) { _, _ in applySearchPreset() }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -125,7 +154,7 @@ struct CollectionGridView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if searchText.isEmpty {
+        if searchText.isEmpty, searchTokens.isEmpty {
             ContentUnavailableView("No Postcards", systemImage: "photo.stack")
         } else {
             ContentUnavailableView.search
@@ -158,7 +187,7 @@ struct CollectionGridView: View {
     }
 
     private func search() async {
-        let query = SearchQuery.parse(searchText)
+        let query = SearchQuery.from(tokens: searchTokens, freeText: searchText)
         guard !(query.isPlainText && query.text.isEmpty) else {
             await loadCards()
             return
@@ -175,6 +204,63 @@ struct CollectionGridView: View {
             loadError = error.localizedDescription
         }
     }
+
+    private func loadPeople() async {
+        people = (try? await GoCore.shared.people(inCollectionAt: source.path)) ?? []
+    }
+
+    private var suggestedTokens: [SearchToken] {
+        SearchSuggestions.suggestions(for: searchText, people: people, existingTokens: searchTokens)
+    }
+
+    /// Converts any complete `tag:value` expression just typed into a pill, leaving whatever
+    /// text is still mid-typing behind — see `SearchToken.promote(from:)`.
+    private func promoteTypedTokens(from text: String) {
+        let (promoted, remainder) = SearchToken.promote(from: text)
+        guard !promoted.isEmpty else { return }
+        appendTokens(promoted)
+        searchText = remainder
+    }
+
+    /// Picks up the latest search preset from `CardInfoPanel`'s "More from…" menu (routed
+    /// through `SearchRequest`): appends it as a pill, clears any in-progress free text, and
+    /// focuses the search field so the user sees where the new pill landed.
+    private func applySearchPreset() {
+        guard let token = searchRequest.token else { return }
+        appendTokens([token])
+        searchText = ""
+        #if os(iOS)
+        isSearchFieldFocused = true
+        #else
+        focusSearchFieldRequest = true
+        #endif
+    }
+
+    private func appendTokens(_ tokens: [SearchToken]) {
+        let existingIDs = Set(searchTokens.map(\.id))
+        searchTokens.append(contentsOf: tokens.filter { !existingIDs.contains($0.id) })
+    }
+
+    #if os(macOS)
+    /// A suggestion tapped in `BottomSearchBar`'s floating list: appends its token and
+    /// strips the fragment it was suggested from out of `searchText` (the engine computed
+    /// the suggestion from that fragment, so it's already accounted for as a pill).
+    private func acceptSuggestion(_ token: SearchToken) {
+        appendTokens([token])
+        searchText = strippingTrailingFragment(from: searchText)
+    }
+
+    /// Drops the raw, as-typed trailing whitespace-separated fragment from `text` — mirrors
+    /// `SearchSuggestions`'s own trailing-fragment scan (which is what a suggestion is
+    /// computed from), re-quoting any fragment left behind that still needs it so re-parsing
+    /// isn't affected.
+    private func strippingTrailingFragment(from text: String) -> String {
+        var fragments = SearchQuery.tokenize(text)
+        guard !fragments.isEmpty else { return text }
+        fragments.removeLast()
+        return fragments.map { $0.contains(where: \.isWhitespace) ? "\"\($0)\"" : $0 }.joined(separator: " ")
+    }
+    #endif
 
     // MARK: - Card actions (Feature 4)
 
@@ -241,6 +327,13 @@ struct CollectionGridView: View {
             actionError = error.localizedDescription
         }
     }
+}
+
+/// `.task(id:)` key for re-running search when EITHER the free text or the active pills
+/// change.
+private struct SearchInputKey: Equatable {
+    var text: String
+    var tokens: [SearchToken]
 }
 
 /// The pending "New collection…" context-menu action: which card to transfer, and how,

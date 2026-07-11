@@ -20,7 +20,8 @@ struct LibraryView: View {
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
     /// Search presets submitted from a person's context menu in `CardInfoPanel` — see
-    /// `SearchRequest`'s doc comment for why a bumped token, not just the string, drives it.
+    /// `SearchRequest`'s doc comment for why panes key off a bumped `generation`, not the
+    /// `token` alone, when picking up a new preset.
     @State private var searchRequest = SearchRequest()
 
     // Sidebar row actions (Feature 3).
@@ -210,6 +211,16 @@ struct LibraryView: View {
         }
         .onChange(of: cloudLibrary.items, initial: true) { _, _ in
             Task { await syncLibrarySearchSources() }
+        }
+        // On iPhone (compact width), a search preset from `CardInfoPanel`'s "More from…"
+        // menu should land the user back on the grid of results, not leave them stuck on
+        // the detail view they tapped the preset from — popping `selectedCard` collapses
+        // `CompactDetailPush`'s pushed destination back to the content column, which is
+        // about to show the new search. Regular width (iPad/mac) keeps the detail visible,
+        // since its `detail:` column and the content column are both on screen already.
+        .onChange(of: searchRequest.generation) { _, _ in
+            guard horizontalSizeClass == .compact else { return }
+            selectedCard = nil
         }
     }
 

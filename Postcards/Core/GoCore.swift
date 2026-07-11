@@ -91,6 +91,16 @@ actor GoCore {
         return try Self.decode([SearchResult].self, from: json, context: "searching \(path)")
     }
 
+    /// Every distinct person (sender/recipient/collector) across the collection's cards,
+    /// each annotated with which role(s) they've held — powers search-token suggestions.
+    /// NOTE: calls the gobind-generated `peopleJSON`, which lands alongside this method in
+    /// the framework rebuild; this won't compile against an older `Postcards.xcframework`.
+    func people(inCollectionAt path: String) throws -> [PersonRef] {
+        let col = try collection(at: path)
+        let json = try Self.call({ col.peopleJSON($0) })
+        return try Self.decode([PersonRef].self, from: json, context: "listing people in \(path)")
+    }
+
     /// The full metadata record for a card in a collection.
     func metadata(forCard name: String, inCollectionAt path: String) throws -> PostcardMetadata {
         let col = try collection(at: path)
@@ -238,6 +248,14 @@ actor GoCore {
     func searchLibraryFiltered(filter: SearchQuery) throws -> [LibraryHit] {
         let json = try Self.call({ library.searchFilteredJSON(filter.filterJSON ?? "", error: $0) })
         return try Self.decode([LibraryHit].self, from: json, context: "searching the library")
+    }
+
+    /// Every distinct person across the library's registered sources. NOTE: calls the
+    /// gobind-generated `peopleJSON`, which lands alongside this method in the framework
+    /// rebuild; this won't compile against an older `Postcards.xcframework`.
+    func libraryPeople() throws -> [PersonRef] {
+        let json = try Self.call({ library.peopleJSON($0) })
+        return try Self.decode([PersonRef].self, from: json, context: "listing people in the library")
     }
 
     /// Searches ONLY the given bare `.postcard.*` files, via a transient Go `Library`
