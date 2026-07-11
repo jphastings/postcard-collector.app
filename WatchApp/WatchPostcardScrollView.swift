@@ -100,6 +100,11 @@ struct WatchPostcardScrollView: View {
             }
             .scrollTargetLayout()
         }
+        // Only the bottom: the top edge stays under the nav bar's safe area so the
+        // previous card keeps scrolling up under the translucent controls. Extending the
+        // bottom to the physical screen edge reclaims the space that used to be spent
+        // peeking the next card, so the current card's slot can use all of it instead.
+        .ignoresSafeArea(edges: .bottom)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollDisabled(zoomedCardID != nil)
     }

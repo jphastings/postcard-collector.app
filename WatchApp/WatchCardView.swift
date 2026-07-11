@@ -94,7 +94,10 @@ struct WatchCardView: View {
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
-            .padding(8)
+            // No vertical padding: the slot now runs to the physical screen edge, and the
+            // card should use all of that height (it aspect-fits itself). Keep a touch of
+            // horizontal padding so it doesn't touch the curved left/right edges.
+            .padding(.horizontal, 4)
             .background {
                 // Captured before scale/offset so drag translation and the zoom clamp both
                 // work in one stable, unscaled coordinate space — see `ZoomGeometry`.
