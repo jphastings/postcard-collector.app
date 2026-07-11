@@ -127,10 +127,18 @@ struct CollectionGridView: View {
         .searchable(
             text: $searchText,
             tokens: $searchTokens,
-            suggestedTokens: .constant(suggestedTokens),
             prompt: "Search this collection",
             token: { Text($0.pillLabel) }
         )
+        // iOS ignores the `suggestedTokens:` binding in this configuration (it renders fine
+        // on macOS); the reliable iOS path is searchSuggestions rows whose searchCompletion
+        // converts a tapped row into a token and clears the typed fragment — the Mail model.
+        .searchSuggestions {
+            ForEach(suggestedTokens) { token in
+                Label(token.pillLabel, systemImage: token.suggestionSymbol)
+                    .searchCompletion(token)
+            }
+        }
         .modifier(SearchFocusedIfAvailable(binding: $isSearchFieldFocused))
         #endif
         .task(id: source.id) { await loadCards() }

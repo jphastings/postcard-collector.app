@@ -34,6 +34,15 @@ struct SearchToken: Identifiable, Hashable, Codable, Sendable {
         }
     }
 
+    /// SF Symbol for a suggestion row of this token's kind.
+    var suggestionSymbol: String {
+        switch kind {
+        case .from, .to, .with, .collector: return "person"
+        case .country: return "globe"
+        case .on, .before, .after: return "calendar"
+        }
+    }
+
     // MARK: - Promotion (typed text -> tokens)
 
     /// Scans `text` for COMPLETE tag expressions (`tag:value` or `tag:"quoted value"`) and
