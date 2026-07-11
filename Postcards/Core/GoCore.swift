@@ -83,6 +83,14 @@ actor GoCore {
         return try Self.decode([SearchResult].self, from: json, context: "searching \(path)")
     }
 
+    /// Structured (person/country/date) search within a single collection, best matches
+    /// first.
+    func searchFiltered(inCollectionAt path: String, filter: SearchQuery) throws -> [SearchResult] {
+        let col = try collection(at: path)
+        let json = try Self.call({ col.searchFilteredJSON(filter.filterJSON ?? "", error: $0) })
+        return try Self.decode([SearchResult].self, from: json, context: "searching \(path)")
+    }
+
     /// The full metadata record for a card in a collection.
     func metadata(forCard name: String, inCollectionAt path: String) throws -> PostcardMetadata {
         let col = try collection(at: path)
@@ -226,6 +234,12 @@ actor GoCore {
         return try Self.decode([LibraryHit].self, from: json, context: "searching the library")
     }
 
+    /// Structured (person/country/date) search across the library's registered sources.
+    func searchLibraryFiltered(filter: SearchQuery) throws -> [LibraryHit] {
+        let json = try Self.call({ library.searchFilteredJSON(filter.filterJSON ?? "", error: $0) })
+        return try Self.decode([LibraryHit].self, from: json, context: "searching the library")
+    }
+
     /// Searches ONLY the given bare `.postcard.*` files, via a transient Go `Library`
     /// scoped to a cards-only source list — the shared `library`'s cross-source fan-out is
     /// untouched. Exists so Single postcards' search shares the Go core's one definition
@@ -237,6 +251,17 @@ actor GoCore {
         let data = try JSONEncoder().encode(payload)
         try transient.setSourcesJSON(String(decoding: data, as: UTF8.self))
         let json = try Self.call({ transient.searchJSON(query, error: $0) })
+        return try Self.decode([LibraryHit].self, from: json, context: "searching bare card files")
+    }
+
+    /// Structured (person/country/date) search over the same cards-only source list as
+    /// `searchCardFiles`.
+    func searchCardFilesFiltered(paths: [String], filter: SearchQuery) throws -> [LibraryHit] {
+        let transient = AppcoreNewLibrary()!
+        let payload = LibrarySourcesPayload(collections: [], cards: paths)
+        let data = try JSONEncoder().encode(payload)
+        try transient.setSourcesJSON(String(decoding: data, as: UTF8.self))
+        let json = try Self.call({ transient.searchFilteredJSON(filter.filterJSON ?? "", error: $0) })
         return try Self.decode([LibraryHit].self, from: json, context: "searching bare card files")
     }
 

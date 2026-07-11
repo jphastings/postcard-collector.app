@@ -19,6 +19,9 @@ struct LibraryView: View {
     @State private var selectedSource: LibrarySource?
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
+    /// Search presets submitted from a person's context menu in `CardInfoPanel` — see
+    /// `SearchRequest`'s doc comment for why a bumped token, not just the string, drives it.
+    @State private var searchRequest = SearchRequest()
 
     // Sidebar row actions (Feature 3).
     @State private var renamingSource: LibrarySource?
@@ -97,6 +100,11 @@ struct LibraryView: View {
             } message: {
                 Text("This deletes the file. This can't be undone.")
             }
+            #if os(macOS)
+            // Wide enough that the "Add…" toolbar button never collapses into the ">>"
+            // overflow menu at the sidebar's minimum width.
+            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+            #endif
         } content: {
             Group {
                 if !hasAnySources {
@@ -109,6 +117,7 @@ struct LibraryView: View {
                             selection: $selectedCard,
                             writableCollections: writableCollections,
                             cloudLibrary: cloudLibrary,
+                            searchRequest: searchRequest,
                             onCreateCollection: { try await createCollection(titled: $0) }
                         )
                     case .cardFile(let path, _):
@@ -122,6 +131,7 @@ struct LibraryView: View {
                             selection: $selectedCard,
                             writableCollections: writableCollections,
                             cloudLibrary: cloudLibrary,
+                            searchRequest: searchRequest,
                             onFileConsumed: { library.remove(path: $0) },
                             onCreateCollection: { try await createCollection(titled: $0) }
                         )
@@ -130,17 +140,23 @@ struct LibraryView: View {
                             collectionPaths: writableCollections.map(\.path),
                             barePaths: singlePostcardPaths,
                             selection: $selectedCard,
-                            cloudLibrary: cloudLibrary
+                            cloudLibrary: cloudLibrary,
+                            searchRequest: searchRequest
                         )
                     }
                 } else {
                     ContentUnavailableView("Select a Collection", systemImage: "photo.stack.fill")
                 }
             }
-            .modifier(CompactDetailPush(selectedCard: $selectedCard, isCompact: horizontalSizeClass == .compact))
+            .modifier(CompactDetailPush(selectedCard: $selectedCard, isCompact: horizontalSizeClass == .compact, searchRequest: searchRequest))
+            #if os(macOS)
+            // Wide enough that the pane's own toolbar items (e.g. `CollectionModeSwitcher`)
+            // never detach into overflow as the column narrows.
+            .navigationSplitViewColumnWidth(min: 300, ideal: 420)
+            #endif
         } detail: {
             if let selectedCard {
-                CardDetailView(reference: selectedCard)
+                CardDetailView(reference: selectedCard, searchRequest: searchRequest)
             } else {
                 // Carries the SAME `.primaryAction` toolbar slot as `CardDetailView`'s Info
                 // button (disabled, since there's no card to show info for) so a
@@ -158,6 +174,11 @@ struct LibraryView: View {
                     }
             }
         }
+        #if os(macOS)
+        // Sidebar + content minimums above, plus a little room for the detail column, so
+        // all three columns always fit without the window forcing one of them narrower.
+        .frame(minWidth: 900, minHeight: 500)
+        #endif
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
             Task { await library.importSources(from: urls) }
@@ -566,11 +587,12 @@ private struct SourceRow: View {
 private struct CompactDetailPush: ViewModifier {
     @Binding var selectedCard: CardReference?
     let isCompact: Bool
+    let searchRequest: SearchRequest
 
     func body(content: Content) -> some View {
         if isCompact {
             content.navigationDestination(item: $selectedCard) { card in
-                CardDetailView(reference: card)
+                CardDetailView(reference: card, searchRequest: searchRequest)
             }
         } else {
             content

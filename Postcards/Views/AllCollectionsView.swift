@@ -15,6 +15,9 @@ struct AllCollectionsView: View {
     let barePaths: [String]
     @Binding var selection: CardReference?
     let cloudLibrary: CloudLibrary
+    /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
+    /// `CardInfoPanel`) land here — see the `.onChange(of: searchRequest.token)` below.
+    let searchRequest: SearchRequest
 
     /// The full union; `nil` until the first load completes.
     @State private var entries: [MapCardEntry]?
@@ -67,9 +70,14 @@ struct AllCollectionsView: View {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #if os(macOS)
+        .bottomSearchBar(text: $searchText, prompt: "Search all collections")
+        #else
         .searchable(text: $searchText, prompt: "Search all collections")
+        #endif
         .task(id: SourcesKey(collections: collectionPaths, bare: barePaths)) { await loadUnion() }
         .task(id: searchText) { await search() }
+        .onChange(of: searchRequest.token) { _, _ in searchText = searchRequest.query }
     }
 
     @ViewBuilder
@@ -108,12 +116,18 @@ struct AllCollectionsView: View {
     }
 
     private func search() async {
-        guard !searchText.isEmpty else {
+        let query = SearchQuery.parse(searchText)
+        guard !(query.isPlainText && query.text.isEmpty) else {
             searchResults = nil
             return
         }
         do {
-            let hits = try await GoCore.shared.searchLibrary(query: searchText)
+            let hits: [LibraryHit]
+            if query.isPlainText {
+                hits = try await GoCore.shared.searchLibrary(query: searchText)
+            } else {
+                hits = try await GoCore.shared.searchLibraryFiltered(filter: query)
+            }
             searchResults = MapCardEntry.entries(fromHits: hits)
         } catch {
             loadError = error.localizedDescription

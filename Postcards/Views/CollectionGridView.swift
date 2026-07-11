@@ -28,6 +28,9 @@ struct CollectionGridView: View {
     /// context menus — excludes this collection itself at the point of use.
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
+    /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
+    /// `CardInfoPanel`) land here — see the `.onChange(of: searchRequest.token)` below.
+    let searchRequest: SearchRequest
     /// Creates a new, empty collection for the context menus' "New collection…" action
     /// and returns it as a move/copy target — supplied by `LibraryView`, which owns where
     /// new collections live (iCloud vs local) and source registration.
@@ -98,10 +101,15 @@ struct CollectionGridView: View {
         }
         // Search narrows the same `cards` array both the grid and the map read from, so
         // map pins are filtered by an active search too.
+        #if os(macOS)
+        .bottomSearchBar(text: $searchText, prompt: "Search this collection")
+        #else
         .searchable(text: $searchText, prompt: "Search this collection")
+        #endif
         .task(id: source.id) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
         .task(id: searchText) { await search() }
+        .onChange(of: searchRequest.token) { _, _ in searchText = searchRequest.query }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -150,13 +158,18 @@ struct CollectionGridView: View {
     }
 
     private func search() async {
-        guard !searchText.isEmpty else {
+        let query = SearchQuery.parse(searchText)
+        guard !(query.isPlainText && query.text.isEmpty) else {
             await loadCards()
             return
         }
         loadError = nil
         do {
-            cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
+            if query.isPlainText {
+                cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
+            } else {
+                cards = try await GoCore.shared.searchFiltered(inCollectionAt: source.path, filter: query).map(\.card)
+            }
         } catch {
             loadErrorTitle = "Search failed"
             loadError = error.localizedDescription

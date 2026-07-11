@@ -13,6 +13,9 @@ struct SinglePostcardsGridView: View {
     @Binding var selection: CardReference?
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
+    /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
+    /// `CardInfoPanel`) land here — see the `.onChange(of: searchRequest.token)` below.
+    let searchRequest: SearchRequest
     /// Called after a bare file is deleted (directly, or consumed by a successful move),
     /// so `LibraryModel` drops it from `sources` — a no-op if it was only ever an iCloud
     /// item, since `CloudLibrary`'s own metadata query notices the file is gone.
@@ -78,9 +81,14 @@ struct SinglePostcardsGridView: View {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #if os(macOS)
+        .bottomSearchBar(text: $searchText, prompt: "Search single postcards")
+        #else
         .searchable(text: $searchText, prompt: "Search single postcards")
+        #endif
         .task(id: paths) { await loadCards() }
         .task(id: searchText) { await search() }
+        .onChange(of: searchRequest.token) { _, _ in searchText = searchRequest.query }
         .alert(
             "Couldn't complete that action",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -121,12 +129,18 @@ struct SinglePostcardsGridView: View {
     }
 
     private func search() async {
-        guard !searchText.isEmpty else {
+        let query = SearchQuery.parse(searchText)
+        guard !(query.isPlainText && query.text.isEmpty) else {
             searchResults = nil
             return
         }
         do {
-            let hits = try await GoCore.shared.searchCardFiles(paths: paths, query: searchText)
+            let hits: [LibraryHit]
+            if query.isPlainText {
+                hits = try await GoCore.shared.searchCardFiles(paths: paths, query: searchText)
+            } else {
+                hits = try await GoCore.shared.searchCardFilesFiltered(paths: paths, filter: query)
+            }
             searchResults = MapCardEntry.entries(fromHits: hits)
         } catch {
             actionError = error.localizedDescription
