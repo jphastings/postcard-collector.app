@@ -28,11 +28,11 @@ struct ToolbarGeometry {
 /// card clear of the band from that regime's vantage point:
 ///
 /// - **Between-buttons** (transparent only): the card ducks between the leading/trailing
-///   clusters, so it may use the full pane height; only the horizontal clearance
-///   (`max(leadingWidth, trailingWidth)`, since absent any other inset the card would need
-///   identical clearance on both sides) limits its width. Nothing obstructs the card vertically
-///   in this regime, so no vertical margin is added — matching the previous "narrow card fills
-///   the full height" behaviour this replaces.
+///   clusters, so only the horizontal clearance (`max(leadingWidth, trailingWidth)`, since absent
+///   any other inset the card would need identical clearance on both sides) limits its width.
+///   Nothing obstructs the card vertically in this regime, but a small `margin` is still applied
+///   top/bottom — every regime must guarantee some breathing room on all four sides at rest, so a
+///   full-bleed portrait card never touches the pane's top/bottom edge.
 /// - **Below-band, transparent**: the card stays clear of the band altogether by centring in
 ///   `paneHeight − 2×bandHeight` (symmetric, because the card is centred *in the pane*, not
 ///   pinned below the band) with a modest side margin.
@@ -54,8 +54,12 @@ struct ToolbarGeometry {
 /// call site for the derivation), landing the card in the pane MINUS the inspector.
 ///
 /// For a transparent toolbar, both applicable regimes are evaluated and whichever fits the
-/// bounding box at the larger scale wins — a narrow portrait card wins between-buttons (full
-/// height), a wide landscape card wins below-band (full width).
+/// bounding box at the larger scale wins — a narrow portrait card wins between-buttons (near-full
+/// height, margin aside), a wide landscape card wins below-band (full width).
+///
+/// Invariant: every regime returns padding of at least `margin` on all four sides (plus
+/// `leadingInset`/`trailingInset` where applicable) — the at-rest card must never touch a pane
+/// edge, in any regime.
 enum CardFitGeometry {
     static func atRestPadding(
         paneSize: CGSize,
@@ -95,7 +99,7 @@ enum CardFitGeometry {
     ) -> EdgeInsets {
         let clearance = max(toolbar.leadingWidth, toolbar.trailingWidth) + margin
         return EdgeInsets(
-            top: 0, leading: clearance + leadingInset, bottom: 0, trailing: clearance + trailingInset
+            top: margin, leading: clearance + leadingInset, bottom: margin, trailing: clearance + trailingInset
         )
     }
 

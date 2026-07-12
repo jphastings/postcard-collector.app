@@ -14,8 +14,8 @@ final class CardFitGeometryTests: XCTestCase {
         let bounding = CGSize(width: 300, height: 500)
         let padding = CardFitGeometry.atRestPadding(paneSize: pane, boundingSize: bounding, toolbar: toolbar, bottomInset: 0)
 
-        XCTAssertEqual(padding.top, 0)
-        XCTAssertEqual(padding.bottom, 0)
+        XCTAssertEqual(padding.top, 16) // margin only — nothing obstructs vertically in this regime
+        XCTAssertEqual(padding.bottom, 16)
         XCTAssertEqual(padding.leading, toolbar.trailingWidth + 16) // max(leading, trailing) + margin
         XCTAssertEqual(padding.trailing, toolbar.trailingWidth + 16)
     }
@@ -48,12 +48,12 @@ final class CardFitGeometryTests: XCTestCase {
 
         // Each card's own winning regime must never be smaller than the OTHER regime would
         // have made it — that's the whole point of comparing scales.
-        let narrowBetweenButtons = EdgeInsets(top: 0, leading: 68, bottom: 0, trailing: 68)
+        let narrowBetweenButtons = EdgeInsets(top: 16, leading: 68, bottom: 16, trailing: 68)
         let narrowBelowBand = EdgeInsets(top: 60, leading: 16, bottom: 60, trailing: 16)
         XCTAssertGreaterThanOrEqual(fittedHeight(narrowPadding, narrow), fittedHeight(narrowBetweenButtons, narrow))
         XCTAssertGreaterThanOrEqual(fittedHeight(narrowPadding, narrow), fittedHeight(narrowBelowBand, narrow))
 
-        let wideBetweenButtons = EdgeInsets(top: 0, leading: 68, bottom: 0, trailing: 68)
+        let wideBetweenButtons = EdgeInsets(top: 16, leading: 68, bottom: 16, trailing: 68)
         let wideBelowBand = EdgeInsets(top: 60, leading: 16, bottom: 60, trailing: 16)
         XCTAssertGreaterThanOrEqual(fittedHeight(widePadding, wide), fittedHeight(wideBetweenButtons, wide))
         XCTAssertGreaterThanOrEqual(fittedHeight(widePadding, wide), fittedHeight(wideBelowBand, wide))
@@ -133,6 +133,39 @@ final class CardFitGeometryTests: XCTestCase {
             XCTAssertEqual(padding.leading, 16)
             XCTAssertEqual(padding.trailing, 16)
             XCTAssertGreaterThanOrEqual(padding.top, opaqueToolbar.bandHeight, "card must clear the opaque bar")
+        }
+    }
+
+    // MARK: - Invariant: the at-rest card never touches a pane edge, in any regime
+
+    func testEveryRegimeKeepsAtLeastAMarginOnAllFourSides() {
+        let margin: CGFloat = 16
+        let leadingInset: CGFloat = 40
+        let trailingInset: CGFloat = 40
+        let bottomInset: CGFloat = 20
+
+        var opaqueToolbar = toolbar
+        opaqueToolbar.isTransparent = false
+
+        let scenarios: [(name: String, bounding: CGSize, toolbar: ToolbarGeometry)] = [
+            ("between-buttons", CGSize(width: 300, height: 500), toolbar),
+            ("below-band, transparent", CGSize(width: 500, height: 300), toolbar),
+            ("below-band, opaque", CGSize(width: 500, height: 300), opaqueToolbar),
+        ]
+
+        for scenario in scenarios {
+            let padding = CardFitGeometry.atRestPadding(
+                paneSize: pane, boundingSize: scenario.bounding, toolbar: scenario.toolbar,
+                bottomInset: bottomInset, leadingInset: leadingInset, trailingInset: trailingInset, margin: margin
+            )
+            XCTAssertGreaterThanOrEqual(padding.top, margin, "\(scenario.name): top must clear the margin")
+            XCTAssertGreaterThanOrEqual(padding.bottom, margin, "\(scenario.name): bottom must clear the margin")
+            XCTAssertGreaterThanOrEqual(
+                padding.leading, margin + leadingInset, "\(scenario.name): leading must clear the margin + inset"
+            )
+            XCTAssertGreaterThanOrEqual(
+                padding.trailing, margin + trailingInset, "\(scenario.name): trailing must clear the margin + inset"
+            )
         }
     }
 

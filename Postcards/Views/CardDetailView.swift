@@ -26,11 +26,10 @@ struct CardDetailView: View {
     @State private var scrollMonitor: Any?
     #endif
 
-    // The flip is driven through this binding (with FlippableCardView's own `tapToFlip`
-    // disabled) so a single container can own both the flip tap and the zoom double-tap and
-    // let SwiftUI disambiguate them — see `tapGesture`.
+    // The flip is driven through this binding; FlippableCardView's own `tapToFlip` is disabled
+    // so this view's `tapGesture` — attached to the outer, untransformed container alongside
+    // the pan/magnify gestures — owns the tap instead.
     @State private var isFlipped = false
-    private let doubleTapZoomScale: CGFloat = 2.5
 
     private let minZoomScale: CGFloat = 1
     private let maxZoomScale: CGFloat = 5
@@ -127,7 +126,7 @@ struct CardDetailView: View {
     }
 
     // Pinch handles magnification directly; drag only pans once zoomed in. Both run alongside
-    // `tapGesture` (below), which drives the flip/zoom taps that would otherwise compete with
+    // `tapGesture` (below), which drives the flip tap that would otherwise compete with
     // FlippableCardView's own internal tap-to-flip gesture — disabled here via `tapToFlip: false`.
     private var magnifyGesture: some Gesture {
         MagnifyGesture()
@@ -172,45 +171,15 @@ struct CardDetailView: View {
             }
     }
 
-    // Local space: the tap location must be in the same pre-transform coordinate space as
-    // `contentSize` for ZoomGeometry's anchor math (see its doc comment).
-    // Standard tap disambiguation: a double tap zooms (anchored at the tap point); a single
-    // tap flips, but only once the double-tap window has elapsed without a second tap.
-    // `ExclusiveGesture` gives the double-tap precedence, so the single-tap flip can't fire
-    // until a double-tap has been ruled out — no half-started flip for a second tap to undo.
+    // A plain single tap flips the card immediately — no exclusively-before double-tap check,
+    // so the flip isn't held up waiting out a double-tap window.
     private var tapGesture: some Gesture {
-        SpatialTapGesture(count: 2, coordinateSpace: .local)
-            .onEnded { value in toggleZoom(at: value.location) }
-            .exclusively(
-                before: SpatialTapGesture(count: 1, coordinateSpace: .local)
-                    .onEnded { _ in if canFlip { isFlipped.toggle() } }
-            )
+        TapGesture()
+            .onEnded { if canFlip { isFlipped.toggle() } }
     }
 
     private var canFlip: Bool {
         splitImage?.back != nil && reference.summary.flip != .none
-    }
-
-    private func toggleZoom(at location: CGPoint) {
-        withAnimation(.easeInOut(duration: 0.25)) {
-            if zoomScale > minZoomScale {
-                zoomScale = 1
-                lastZoomScale = 1
-                zoomOffset = .zero
-                lastZoomOffset = .zero
-            } else {
-                zoomScale = doubleTapZoomScale
-                lastZoomScale = doubleTapZoomScale
-                zoomOffset = ZoomGeometry.offset(
-                    keepingAnchor: location,
-                    inContentOfSize: contentSize,
-                    previousScale: 1,
-                    previousOffset: .zero,
-                    newScale: doubleTapZoomScale
-                )
-                lastZoomOffset = zoomOffset
-            }
-        }
     }
 
     private func resetZoom() {
