@@ -43,11 +43,13 @@ enum CollectionViewMode: String, CaseIterable, Identifiable {
 /// `View.collectionModeSwitcherOverlay(mode:isEnabled:)` below — a plain
 /// `.overlay(alignment: .topTrailing)` INSIDE the content pane itself, styled as a floating
 /// glass chip (reusing `BottomSearchBar`'s `floatingGlassBackground(in:)`) that floats above
-/// the grid/map content, which scrolls beneath it. Being part of the pane's own view tree
-/// rather than the shared window toolbar, its position no longer depends on the detail
-/// column's contribution at all — so on macOS, `LibraryView`'s placeholder-mirroring doc
-/// comment is now historical rather than load-bearing (the placeholder is still kept
-/// there because iOS still needs it).
+/// the grid/map content, which scrolls beneath it, and is vertically centred in the
+/// transparent window-toolbar band so it reads as one of the toolbar's own glass buttons
+/// (see that function's doc comment for how). Being part of the pane's own view tree rather
+/// than the shared window toolbar, its position no longer depends on the detail column's
+/// contribution at all — so on macOS, `LibraryView`'s placeholder-mirroring doc comment is
+/// now historical rather than load-bearing (the placeholder is still kept there because iOS
+/// still needs it).
 ///
 /// Deliberately plain `Button`s rather than a `Picker(.segmented)`: on iOS 26 a segmented
 /// control has its own Liquid Glass material, and stacking that inside the toolbar item's
@@ -102,17 +104,81 @@ extension View {
     @ViewBuilder
     func collectionModeSwitcherOverlay(mode: Binding<CollectionViewMode>, isEnabled: Bool) -> some View {
         #if os(macOS)
-        overlay(alignment: .topTrailing) {
-            // Sized/styled to read like the window-toolbar glass buttons (the detail pane's
-            // (i)): icon glyphs on one small floating capsule of glass.
-            CollectionModeSwitcher(mode: mode, isEnabled: isEnabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .floatingGlassBackground(in: Capsule())
-                .padding(12)
-        }
+        modifier(CollectionModeSwitcherOverlayModifier(mode: mode, isEnabled: isEnabled))
         #else
         self
         #endif
     }
 }
+
+#if os(macOS)
+/// Positions the chip so it appears to sit IN the transparent window-toolbar band above the
+/// content pane (vertically centred, like the toolbar's own glass buttons — e.g. the detail
+/// pane's (i)) while remaining structurally an overlay owned by the content pane itself.
+///
+/// A plain `.overlay(alignment: .topTrailing)` on the pane renders its content BELOW the
+/// pane's top safe-area inset by default — that inset is exactly the toolbar band's height,
+/// since the pane's own content (the grid) already extends full-bleed behind the transparent
+/// bar and scrolls under it. Two things are needed to lift the chip into that band instead:
+///
+/// 1. Measure the band's height. A `GeometryReader` placed as the overlay's content, left
+///    WITHIN the safe area (i.e. not itself `.ignoresSafeArea(_:)`), still reports the
+///    band's height via `proxy.safeAreaInsets.top` even though its own layout is confined
+///    below the bar — the same technique `CardDetailView.body` uses (see its doc comment)
+///    to read surrounding chrome insets before a nested view bleeds past them.
+/// 2. Let the chip itself bleed upward. `.ignoresSafeArea(edges: .top)` is applied to the
+///    chip's own frame (not to the measuring `GeometryReader` — doing it there would zero
+///    out the very inset step 1 just read), which lets `.frame(maxWidth: .infinity,
+///    maxHeight: .infinity, alignment: .topTrailing)` expand past the safe boundary so
+///    `.topTrailing` resolves against the pane's true top-trailing corner, inside the band,
+///    rather than below it.
+///
+/// With the band height known, the chip is padded from the top by `(band - chipHeight) / 2`
+/// to centre it vertically in the band, keeping the original ~12pt trailing padding. The
+/// chip's own height is measured (not hard-coded) via a second `GeometryReader`/
+/// `PreferenceKey` pair, mirroring how `BottomSearchBar` measures its field's height —
+/// Dynamic Type or a future icon size change could otherwise throw the centring off. If the
+/// band is 0 (no toolbar — shouldn't happen in this app, but guarded anyway) or thinner than
+/// the chip, this falls back to the original below-the-bar placement (12pt clear of the top).
+private struct CollectionModeSwitcherOverlayModifier: ViewModifier {
+    @Binding var mode: CollectionViewMode
+    var isEnabled: Bool
+
+    @State private var chipHeight: CGFloat = 36
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .topTrailing) {
+            GeometryReader { proxy in
+                let bandHeight = proxy.safeAreaInsets.top
+                chip
+                    .padding(.top, bandHeight > 0 ? max((bandHeight - chipHeight) / 2, 0) : 12)
+                    .padding(.trailing, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .ignoresSafeArea(edges: .top)
+            }
+        }
+    }
+
+    // Sized/styled to read like the window-toolbar glass buttons (the detail pane's (i)):
+    // icon glyphs on one small floating capsule of glass.
+    private var chip: some View {
+        CollectionModeSwitcher(mode: $mode, isEnabled: isEnabled)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .floatingGlassBackground(in: Capsule())
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ModeSwitcherChipHeightPreferenceKey.self, value: proxy.size.height)
+                }
+            )
+            .onPreferenceChange(ModeSwitcherChipHeightPreferenceKey.self) { chipHeight = $0 }
+    }
+}
+
+private struct ModeSwitcherChipHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 36
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+#endif
