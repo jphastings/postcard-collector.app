@@ -147,6 +147,10 @@ targets:
           - "Support/**"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.mac
+      # The bundle users see: "Postcard Collector.app" (also the menu-bar name via
+      # CFBundleName). The target/scheme stays Postcards-macOS; release.yaml's paths
+      # reference the product name.
+      PRODUCT_NAME: Postcard Collector
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       INFOPLIST_KEY_NSHumanReadableCopyright: ""
       COMBINE_HIDPI_IMAGES: true

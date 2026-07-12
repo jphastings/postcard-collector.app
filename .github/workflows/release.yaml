@@ -155,8 +155,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
           mkdir -p build/export-macos
-          # PRODUCT_NAME is $(TARGET_NAME) in project.yml, so the built bundle is Postcards-macOS.app.
-          cp -R build/Postcards-macOS.xcarchive/Products/Applications/Postcards-macOS.app build/export-macos/
+          # PRODUCT_NAME is "Postcard Collector" in project.yml, so the built bundle is
+          # "Postcard Collector.app" (the scheme/archive keep the Postcards-macOS name).
+          cp -R "build/Postcards-macOS.xcarchive/Products/Applications/Postcard Collector.app" build/export-macos/
 
       - name: Notarize & staple
         if: ${{ env.BUILD_CERTIFICATE_BASE64 != '' && env.MACOS_PROVISIONING_PROFILE_BASE64 != '' && env.NOTARY_KEY_ID != '' }}
@@ -164,17 +165,17 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/notary_key.p8"
           echo -n "$NOTARY_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
 
-          ditto -c -k --keepParent build/export-macos/Postcards-macOS.app build/Postcards-notarize.zip
+          ditto -c -k --keepParent "build/export-macos/Postcard Collector.app" build/Postcards-notarize.zip
 
           xcrun notarytool submit build/Postcards-notarize.zip \
             --key "$KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
 
-          xcrun stapler staple build/export-macos/Postcards-macOS.app
+          xcrun stapler staple "build/export-macos/Postcard Collector.app"
 
       - name: Zip app
         run: |
           mkdir -p dist
-          ditto -c -k --keepParent build/export-macos/Postcards-macOS.app dist/Postcards-macOS.zip
+          ditto -c -k --keepParent "build/export-macos/Postcard Collector.app" dist/Postcards-macOS.zip
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
