@@ -255,6 +255,15 @@ struct CardDetailView: View {
         .gesture(magnifyGesture)
         .simultaneousGesture(panGesture)
         .simultaneousGesture(tapGesture)
+        // Drag-out export (see `PostcardFileExport`) is only offered at rest. Once zoomed,
+        // `panGesture`'s click-drag recognizer is live and must win every pointer-down so
+        // panning stays responsive — coexisting with `.draggable`'s own drag-session
+        // recognizer risks exactly the kind of gesture-priority fight this file's other
+        // comments describe fixing elsewhere, so it's simplest to not attach it at all rather
+        // than reason about who wins. At rest `panGesture` is already a no-op (see its own
+        // `guard zoomScale > minZoomScale`), so there's nothing for `.draggable` to compete
+        // with there.
+        .draggablePostcard(reference, enabled: zoomScale <= minZoomScale)
         // Zoomed/panned content would otherwise spill past the detail pane's bounds.
         .clipped()
         // Lets zoomed content reach the physical screen edges, under the translucent toolbar

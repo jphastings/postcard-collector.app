@@ -423,6 +423,7 @@ private struct GridCell: View {
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
         .gridSelectionHighlight(isSelected, image: thumbnail)
+        .draggablePostcard(.inCollection(path: source.path, summary: card))
         .accessibilityLabel(frontDescription ?? card.name)
         // Stable machine-facing handle for UI tests; the label above stays human-readable.
         .accessibilityIdentifier(card.name)

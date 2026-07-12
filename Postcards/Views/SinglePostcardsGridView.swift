@@ -384,6 +384,7 @@ private struct BareGridCell: View {
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
         .gridSelectionHighlight(isSelected, image: thumbnail)
+        .draggablePostcard(.bareFile(path: path, summary: card))
         .accessibilityLabel(card.name)
         .accessibilityIdentifier(card.name)
         .task(id: path) { await loadThumbnail() }

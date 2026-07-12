@@ -59,8 +59,9 @@ enum CardTransferAction {
 }
 
 /// A single card, addressable back to the source it came from — either one card among
-/// many in a collection, or the sole card in a bare file.
-enum CardReference: Identifiable, Hashable {
+/// many in a collection, or the sole card in a bare file. `Sendable` because it crosses into
+/// `PostcardFileExport`'s async, `@Sendable` `Transferable` export closure (see that type).
+enum CardReference: Identifiable, Hashable, Sendable {
     case inCollection(path: String, summary: CardSummary)
     case bareFile(path: String, summary: CardSummary)
 

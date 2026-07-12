@@ -290,6 +290,7 @@ private struct UnionGridCell: View {
         .contentShape(Rectangle())
         .thumbnailHoverParallax()
         .gridSelectionHighlight(isSelected, image: thumbnail)
+        .draggablePostcard(entry.reference)
         .accessibilityLabel(entry.summary.name)
         .accessibilityIdentifier(entry.summary.name)
         .task(id: entry.id) { await loadThumbnail() }
