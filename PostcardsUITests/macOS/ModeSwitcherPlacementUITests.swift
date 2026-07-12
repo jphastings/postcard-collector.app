@@ -24,6 +24,10 @@ final class ModeSwitcherPlacementUITests: XCTestCase {
         )
 
         app = XCUIApplication()
+        // macOS restores the previous session's window/split-view state, which can leave
+        // the sidebar effectively collapsed (a prior run's saved 148pt frame is below the
+        // sidebar's minimum) and hide the row this test waits for — launch stateless.
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launchArguments += ["-uitest-import", db.path]
         app.launch()
     }
@@ -47,14 +51,11 @@ final class ModeSwitcherPlacementUITests: XCTestCase {
         // Regression check #2: it must sit INSIDE the content pane, not detached out toward
         // the detail column/window's trailing edge.
         //
-        // Anchoring on the detail pane's own bounds would need an accessibility identifier
-        // on `CardDetailView`'s root, which lives in a file this change doesn't own. Instead,
-        // anchor on the window's own width, which is available regardless: the sidebar's
-        // minimum width is 230pt and the content pane's is 300pt (see `LibraryView`), for a
-        // combined 530pt against the window's own 900pt minimum (~59%) — so asserting the
-        // switcher stays within the leading 75% of the window is a conservative bound that
-        // holds at the window's smallest size and only gets safer as the window (and hence
-        // the detail column's own share) grows.
+        // Anchored on the detail pane's own leading edge (via the "DetailPane"
+        // accessibility identifier on `LibraryView`'s detail column) rather than any
+        // window-width fraction: at the window's 900pt minimum SwiftUI legitimately gives
+        // the content column more than its ideal width, which broke a 75%-of-window
+        // heuristic on CI while the switcher was exactly where it belonged.
         assertSwitcherIsWithinContentPane(switcher)
 
         // Re-check with a card selected too (the scenario the bug report/original three
@@ -75,13 +76,19 @@ final class ModeSwitcherPlacementUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let window = app.windows.firstMatch
-        XCTAssertTrue(window.exists, "no window to measure the switcher against", file: file, line: line)
-        XCTAssertLessThan(
+        let detailPane = app.descendants(matching: .any).matching(identifier: "DetailPane").firstMatch
+        XCTAssertTrue(
+            detailPane.waitForExistence(timeout: 10),
+            "detail pane (identifier \"DetailPane\") not found to measure the switcher against",
+            file: file,
+            line: line
+        )
+        // A point of tolerance absorbs sub-pixel frame rounding.
+        XCTAssertLessThanOrEqual(
             switcher.frame.maxX,
-            window.frame.width * 0.75,
+            detailPane.frame.minX + 1,
             "mode switcher drifted out of the content pane (trailing edge \(switcher.frame.maxX) "
-                + "vs. a 75%-of-window bound of \(window.frame.width * 0.75))",
+                + "vs. the detail pane's leading edge \(detailPane.frame.minX))",
             file: file,
             line: line
         )

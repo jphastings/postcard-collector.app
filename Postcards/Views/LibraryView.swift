@@ -170,9 +170,10 @@ struct LibraryView: View {
             .navigationSplitViewColumnWidth(min: 300, ideal: 420)
             #endif
         } detail: {
-            if let selectedCard {
-                CardDetailView(reference: selectedCard, searchRequest: searchRequest)
-            } else {
+            Group {
+                if let selectedCard {
+                    CardDetailView(reference: selectedCard, searchRequest: searchRequest)
+                } else {
                 // iOS ONLY: mirrors `CardDetailView`'s at-rest (unzoomed) detail-column
                 // toolbar contribution, so a `NavigationSplitView`'s per-column toolbar merge
                 // sees an identical shape whether or not a card is selected — otherwise the
@@ -199,7 +200,12 @@ struct LibraryView: View {
                         }
                     }
                     #endif
+                }
             }
+            // Queryable handle for the ModeSwitcherPlacementUITests regression test, which
+            // asserts the mode switcher's frame stays left of this pane's leading edge.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("DetailPane")
         }
         #if os(macOS)
         // Sidebar + content minimums above, plus a little room for the detail column, so
