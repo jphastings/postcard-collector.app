@@ -34,4 +34,23 @@ final class LRUCacheTests: XCTestCase {
         XCTAssertNil(cache.value(for: "b"))
         XCTAssertEqual(cache.value(for: "c"), 3)
     }
+
+    func testRemoveValuesDropsMatchingKeysAndKeepsTheRestUsable() {
+        var cache = LRUCache<String, Int>(capacity: 5)
+        cache.setValue(1, for: "a1")
+        cache.setValue(2, for: "a2")
+        cache.setValue(3, for: "b1")
+
+        cache.removeValues { $0.hasPrefix("a") }
+
+        XCTAssertNil(cache.value(for: "a1"))
+        XCTAssertNil(cache.value(for: "a2"))
+        XCTAssertEqual(cache.value(for: "b1"), 3)
+
+        // The freed capacity is usable again, and eviction still follows recency order.
+        cache.setValue(4, for: "c1")
+        cache.setValue(5, for: "c2")
+        XCTAssertEqual(cache.value(for: "c1"), 4)
+        XCTAssertEqual(cache.value(for: "c2"), 5)
+    }
 }

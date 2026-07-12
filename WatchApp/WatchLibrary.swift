@@ -30,6 +30,11 @@ final class WatchLibrary: NSObject {
     /// this is a `Set`, not an ordered list, because a card's slot position comes from the
     /// manifest — this only answers "has this particular face landed yet".
     private(set) var receivedBlobs: [String: Set<WatchFaceKey>] = [:]
+    /// Observable mirror of `pinStore.pinnedKeys` — `pinStore` itself is a plain
+    /// UserDefaults-backed object, not `@Observable`, so `isPinned(_:)` reading it directly
+    /// would register no Observation dependency and toggling a pin would never re-render
+    /// `WatchCollectionListView`. Kept in sync with `pinStore` by every mutating call site.
+    private(set) var pinnedIDs: Set<String>
 
     private let pinStore: PinStore
     /// Injected for the main-actor disk methods (test seam). The `nonisolated` file-receive
@@ -54,6 +59,7 @@ final class WatchLibrary: NSObject {
         self.fileManager = fileManager
         self.supportDirectory = supportDirectory
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.pinnedIDs = pinStore.pinnedKeys
         super.init()
         restoreCatalog()
         restoreCollectionsFromDisk()
@@ -70,7 +76,7 @@ final class WatchLibrary: NSObject {
     }
 
     func isPinned(_ id: String) -> Bool {
-        pinStore.isPinned(id)
+        pinnedIDs.contains(id)
     }
 
     func manifest(for id: String) -> [WatchCardMeta]? {
@@ -129,15 +135,39 @@ final class WatchLibrary: NSObject {
     /// outright — so unpinning something you're currently viewing doesn't yank it out from
     /// under you.
     func setPinned(_ pinned: Bool, id: String) {
-        pinStore.setPinned(pinned, for: id)
         if pinned {
+            pinStore.setPinned(true, for: id)
+            pinnedIDs.insert(id)
             requestDownloadIfNeeded(id: id)
         } else {
-            if WCSession.default.activationState == .activated {
-                WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opUnpin, WatchRelay.idKey: id])
-            }
+            unpin(id: id)
             evictTemporaryFilesIfNeeded()
         }
+    }
+
+    /// Marks `id` unpinned in both `pinStore` and the observable `pinnedIDs` mirror, and tells
+    /// the phone so it can drop any queued resend. Shared by `setPinned(false, ...)` and
+    /// `removeDownload`, which both need this same notify step.
+    private func unpin(id: String) {
+        pinStore.setPinned(false, for: id)
+        pinnedIDs.remove(id)
+        if WCSession.default.activationState == .activated {
+            WCSession.default.transferUserInfo([WatchRelay.opKey: WatchRelay.opUnpin, WatchRelay.idKey: id])
+        }
+    }
+
+    /// Deletes a downloaded collection outright, unlike unpinning alone (which only makes the
+    /// cache eligible for background eviction): unpins it first if pinned, removes its on-disk
+    /// cache directory, clears its in-memory manifest/blob state, and invalidates any of its
+    /// faces still held in `decodedFaceCache`.
+    func removeDownload(id: String) {
+        if isPinned(id) {
+            unpin(id: id)
+        }
+        try? fileManager.removeItem(at: WatchCacheLayout.collectionDirectory(id: id, in: supportDirectory))
+        manifests[id] = nil
+        receivedBlobs[id] = nil
+        Task { await decodedFaceCache.invalidate(collectionID: id) }
     }
 
     /// Asks the phone to stream this collection while reachable — pinning and live-viewing an

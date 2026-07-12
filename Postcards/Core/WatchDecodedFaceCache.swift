@@ -32,6 +32,15 @@ struct LRUCache<Key: Hashable, Value> {
         order.removeAll { $0 == key }
         order.append(key)
     }
+
+    /// Removes every key matching `shouldRemove` from both the backing storage and the
+    /// recency order, so a removed key can't be resurrected by later LRU bookkeeping.
+    mutating func removeValues(where shouldRemove: (Key) -> Bool) {
+        for key in order where shouldRemove(key) {
+            storage[key] = nil
+        }
+        order.removeAll(where: shouldRemove)
+    }
 }
 
 /// Decodes a face image at most once, keyed by which collection/card/tier/side it is, so
@@ -59,5 +68,11 @@ actor WatchDecodedFaceCache {
         else { return nil }
         cache.setValue(image, for: key)
         return image
+    }
+
+    /// Drops every decoded face belonging to `collectionID` — called when its download is
+    /// removed outright, so a stale decoded image can't outlive the blob it was decoded from.
+    func invalidate(collectionID: String) {
+        cache.removeValues { $0.id == collectionID }
     }
 }

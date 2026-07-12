@@ -2,7 +2,9 @@ import SwiftUI
 
 /// Lists every collection the iPhone has advertised (`library.catalog`), pinned ones first.
 /// Pinning (via the swipe action) asks the phone to stream the collection so it's cached on
-/// the watch and opens with no phone present; unpinning lets that cache lapse.
+/// the watch and opens with no phone present; unpinning lets that cache lapse rather than
+/// deleting it. A separate "Remove Download" swipe action, shown once a collection has any
+/// download, deletes its cache outright (unpinning it first if needed).
 ///
 /// A row only navigates once it's `library.isOpenable` — manifest landed and at least one
 /// card's screen faces cached — so opening it always shows a real postcard immediately. Before
@@ -85,7 +87,12 @@ private struct CollectionRow: View {
                 .buttonStyle(.plain)
             }
         }
-        .swipeActions {
+        // Full swipe would fire the edge-most action — the destructive Remove Download,
+        // whose undo is a minutes-long Bluetooth re-stream — so it always takes a tap.
+        .swipeActions(allowsFullSwipe: false) {
+            if library.isPresent(info.id) {
+                removeDownloadButton
+            }
             pinButton
         }
     }
@@ -136,13 +143,26 @@ private struct CollectionRow: View {
         }
     }
 
+    /// Toggles whether the collection is exempt from background eviction — "Unpin" doesn't
+    /// delete anything itself, it just lets the cache lapse; use `removeDownloadButton` to
+    /// delete outright.
     private var pinButton: some View {
         let isPinned = library.isPinned(info.id)
         return Button {
             library.setPinned(!isPinned, id: info.id)
         } label: {
-            Label(isPinned ? "Remove" : "Keep Downloaded", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
+            Label(isPinned ? "Unpin" : "Keep Downloaded", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
         }
-        .tint(isPinned ? .red : .accentColor)
+        .tint(isPinned ? .gray : .accentColor)
+    }
+
+    /// Deletes the downloaded collection outright (unpinning it first if needed), rather than
+    /// just making it eligible for eviction. Only shown once something's actually downloaded.
+    private var removeDownloadButton: some View {
+        Button(role: .destructive) {
+            library.removeDownload(id: info.id)
+        } label: {
+            Label("Remove Download", systemImage: "trash")
+        }
     }
 }

@@ -296,6 +296,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
                     skippedCount += 1
                 } else if let transfer = try faceTransfer(
                     image, tier: WatchRelay.tierScreen, maxPixelSize: WatchRelay.screenTierMaxPixelSize,
+                    quality: WatchRelay.screenTierQuality,
                     side: side, summary: summary, index: index, count: count, id: id
                 ) {
                     _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
@@ -305,6 +306,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
                     skippedCount += 1
                 } else if let transfer = try faceTransfer(
                     image, tier: WatchRelay.tierZoom, maxPixelSize: WatchRelay.zoomTierMaxPixelSize,
+                    quality: WatchRelay.zoomTierQuality,
                     side: side, summary: summary, index: index, count: count, id: id
                 ) {
                     zoomTransfers.append(transfer)
@@ -322,13 +324,14 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         _ image: CGImage,
         tier: String,
         maxPixelSize: Int,
+        quality: CGFloat,
         side: String,
         summary: CardSummary,
         index: Int,
         count: Int,
         id: String
     ) throws -> PendingFaceTransfer? {
-        guard let blob = WatchCardImage.encodedFace(image, maxPixelSize: maxPixelSize) else {
+        guard let blob = WatchCardImage.encodedFace(image, maxPixelSize: maxPixelSize, quality: quality) else {
             logger.error("Couldn't encode \(side, privacy: .public)/\(tier, privacy: .public) face of card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public)")
             return nil
         }

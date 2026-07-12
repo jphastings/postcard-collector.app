@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// The wire contract between the iPhone app (`WatchConnectivityProvider`, iOS only) and the
@@ -68,6 +69,14 @@ enum WatchRelay {
     /// display (Ultra, 410×502) with headroom; zoom is the screen tier at the 2.5× zoom level.
     static let screenTierMaxPixelSize = 512
     static let zoomTierMaxPixelSize = 1280
+
+    /// HEIC quality for the screen tier — matches the previous implicit system default, now
+    /// made explicit.
+    static let screenTierQuality: CGFloat = 0.8
+    /// HEIC quality for the zoom tier — near-lossless, since sharpness under a double-tap
+    /// zoom is the whole reason this tier exists; visible compression artifacts there would
+    /// defeat it.
+    static let zoomTierQuality: CGFloat = 0.95
 }
 
 /// One card's identity + layout info, as streamed to the watch in a collection's manifest.

@@ -14,13 +14,15 @@ enum WatchCardImage {
     /// Downsamples `image` to `maxPixelSize` (longest side, never upscaled) and encodes it as
     /// HEIC (small, alpha-capable), falling back to PNG if HEIC encoding is unavailable or
     /// drops the alpha channel — never JPEG, which flattens transparency onto a rectangle.
-    /// `nil` if `maxPixelSize` isn't positive or the resize fails.
-    static func encodedFace(_ image: CGImage, maxPixelSize: Int) -> Data? {
+    /// `quality` is the HEIC lossy-compression quality, in `0...1`; it has no effect on the PNG
+    /// fallback, which is always lossless. `nil` if `maxPixelSize` isn't positive or the resize
+    /// fails.
+    static func encodedFace(_ image: CGImage, maxPixelSize: Int, quality: CGFloat) -> Data? {
         guard maxPixelSize > 0, let resized = resized(image, maxPixelSize: maxPixelSize) else { return nil }
-        if let heic = encode(resized, as: .heic), preservesAlpha(heic) {
+        if let heic = encode(resized, as: .heic, quality: quality), preservesAlpha(heic) {
             return heic
         }
-        return encode(resized, as: .png)
+        return encode(resized, as: .png, quality: quality)
     }
 
     /// Draws `image` into a fresh premultiplied-alpha RGBA8 context scaled so its longest side
@@ -47,12 +49,12 @@ enum WatchCardImage {
         return context.makeImage()
     }
 
-    private static func encode(_ image: CGImage, as type: UTType) -> Data? {
+    private static func encode(_ image: CGImage, as type: UTType, quality: CGFloat) -> Data? {
         let mutableData = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(mutableData, type.identifier as CFString, 1, nil) else {
             return nil
         }
-        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return mutableData as Data
     }

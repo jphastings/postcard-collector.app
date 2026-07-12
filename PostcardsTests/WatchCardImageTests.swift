@@ -8,7 +8,7 @@ final class WatchCardImageTests: XCTestCase {
         let original = try XCTUnwrap(makeHalfTransparentImage(width: 400, height: 200))
         let naivePNG = try XCTUnwrap(encodedPNG(original))
 
-        let output = try XCTUnwrap(WatchCardImage.encodedFace(original, maxPixelSize: 100))
+        let output = try XCTUnwrap(WatchCardImage.encodedFace(original, maxPixelSize: 100, quality: 0.8))
 
         XCTAssertLessThan(output.count, naivePNG.count, "downsampling should shrink the payload")
 
@@ -21,7 +21,22 @@ final class WatchCardImageTests: XCTestCase {
 
     func testNonPositiveMaxPixelSizeReturnsNil() throws {
         let original = try XCTUnwrap(makeHalfTransparentImage(width: 400, height: 200))
-        XCTAssertNil(WatchCardImage.encodedFace(original, maxPixelSize: 0))
+        XCTAssertNil(WatchCardImage.encodedFace(original, maxPixelSize: 0, quality: 0.8))
+    }
+
+    func testHigherQualityProducesALargerPayloadAndBothPreserveAlpha() throws {
+        let original = try XCTUnwrap(makeHalfTransparentImage(width: 400, height: 200))
+
+        let low = try XCTUnwrap(WatchCardImage.encodedFace(original, maxPixelSize: 400, quality: 0.3))
+        let high = try XCTUnwrap(WatchCardImage.encodedFace(original, maxPixelSize: 400, quality: 0.95))
+
+        XCTAssertGreaterThan(high.count, low.count, "a higher lossy-compression quality should produce a larger payload")
+
+        for data in [low, high] {
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+            let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertNotEqual(decoded.alphaInfo, .none, "the alpha channel must survive the round trip")
+        }
     }
 
     // MARK: - Fixtures
