@@ -212,6 +212,16 @@ struct LibraryView: View {
         // all three columns always fit without the window forcing one of them narrower.
         .frame(minWidth: 900, minHeight: 500)
         #endif
+        // The window toolbar's background is hidden PERMANENTLY on macOS (15+), not just
+        // while a card is selected: macOS only turns the toolbar to liquid glass by itself
+        // above scroll views, and two things here sit inside the titlebar band that an
+        // opaque strip would spoil — a full-height portrait card in the detail pane (its
+        // top would be clipped) and the grid/map switcher chip (it would be painted over
+        // entirely until a card's selection made the bar transparent, which read as the
+        // chip "not appearing until a postcard is clicked"). One consistent transparent
+        // band also avoids the visible flip that per-selection hiding caused.
+        // NSToolbar is one shared bar for the whole window, so this is necessarily global.
+        .transparentWindowToolbarBackground()
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
             Task { await library.importSources(from: urls) }
@@ -680,5 +690,28 @@ private struct CloudItemRow: View {
         if let fetched = try? await GoCore.shared.title(ofCollectionAt: item.path), !fetched.isEmpty {
             title = fetched
         }
+    }
+}
+
+#if os(macOS)
+private struct TransparentWindowToolbarBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            content
+        }
+    }
+}
+#endif
+
+private extension View {
+    /// See the call site in `LibraryView.body` for why this is applied app-wide.
+    func transparentWindowToolbarBackground() -> some View {
+        #if os(macOS)
+        modifier(TransparentWindowToolbarBackground())
+        #else
+        self
+        #endif
     }
 }
