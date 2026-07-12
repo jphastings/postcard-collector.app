@@ -60,7 +60,7 @@ struct CollectionModeSwitcher: View {
     var isEnabled: Bool
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 10) {
             ForEach(CollectionViewMode.allCases) { candidate in
                 Button(candidate.label, systemImage: candidate.systemImage) {
                     mode = candidate
@@ -69,6 +69,12 @@ struct CollectionModeSwitcher: View {
                 .foregroundStyle(mode == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
         }
+        // Icon-only + borderless: a toolbar applies both automatically, but this control
+        // also renders inside the macOS in-pane overlay, where the defaults would show the
+        // buttons' text with bordered push-button chrome.
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .imageScale(.large)
         .disabled(!isEnabled)
         .accessibilityHint(isEnabled ? "" : "No postcards in this collection have a location")
         // `.contain` (rather than the default) gives the HStack itself a real, queryable
@@ -97,11 +103,12 @@ extension View {
     func collectionModeSwitcherOverlay(mode: Binding<CollectionViewMode>, isEnabled: Bool) -> some View {
         #if os(macOS)
         overlay(alignment: .topTrailing) {
+            // Sized/styled to read like the window-toolbar glass buttons (the detail pane's
+            // (i)): icon glyphs on one small floating capsule of glass.
             CollectionModeSwitcher(mode: mode, isEnabled: isEnabled)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .floatingGlassBackground(in: Capsule())
-                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
                 .padding(12)
         }
         #else
