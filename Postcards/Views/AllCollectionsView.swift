@@ -51,8 +51,16 @@ struct AllCollectionsView: View {
 
     /// What both the grid and the map show: search hits while a query is active, the full
     /// union otherwise — map pins are filtered by search exactly like grid cells.
+    ///
+    /// Falls back to `entries` while a just-started query's own `.task(id:)` hasn't resolved
+    /// yet, rather than going `nil`: `searchResults` only starts life as `nil` and isn't
+    /// filled in until `search()`'s Go-core call returns, so without this fallback the very
+    /// first keystroke into an empty field would flip this `nil` for a frame — swapping the
+    /// pane's `Group` out of its `ZStack` branch into the loading `ProgressView()` branch,
+    /// which (per the comment on that `ZStack` below) is exactly the kind of view-identity
+    /// churn that drops `BottomSearchBar`'s focus.
     private var displayedEntries: [MapCardEntry]? {
-        (searchText.isEmpty && searchTokens.isEmpty) ? entries : searchResults
+        (searchText.isEmpty && searchTokens.isEmpty) ? entries : (searchResults ?? entries)
     }
 
     var body: some View {
