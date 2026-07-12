@@ -128,6 +128,14 @@ struct CollectionMapView: View {
     /// while still `nil`, the signal that the very first settle hasn't been seeded yet
     /// (see the `.continuous` handler in `body`).
     @State private var settledCamera: MapCamera?
+    /// Each multi-member POSITIONAL group's `MapClusterZoom.decision(for:centeredOn:)`
+    /// outcome, cached at the settle that produced it (keyed by `MapPinGroup.id`, the
+    /// group's coordinate) rather than recomputed every render: the decision is O(n²) in
+    /// its closest-pair check, and re-running it on every frame of a camera gesture would
+    /// scale with that instead of with settles. Read via `clusterDecision(for:)`, which
+    /// falls back to computing it directly for the brief window before the first settle
+    /// has populated this cache.
+    @State private var clusterDecisions: [String: MapClusterZoom.Decision] = [:]
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
         self.entries = entries
@@ -189,6 +197,7 @@ struct CollectionMapView: View {
                             MapPinAnnotation(
                                 group: visual.group,
                                 isRepresentative: visual.isRepresentative,
+                                decision: visual.group.elements.count > 1 ? clusterDecision(for: visual.group) : nil,
                                 glideDelta: glideDeltas[entry.id] ?? .zero,
                                 glideProgress: glideProgress,
                                 glideGeneration: glideGeneration,
@@ -275,6 +284,11 @@ struct CollectionMapView: View {
 
         settleGeneration += 1
         screenClusters = newGroups
+        clusterDecisions = Dictionary(uniqueKeysWithValues: newGroups
+            .filter { $0.elements.count > 1 }
+            .map { group in
+                (group.id, MapClusterZoom.decision(for: group.elements.compactMap(\.summary.coordinate), centeredOn: group.coordinate))
+            })
         glideDeltas = deltas
         glideArrivals = []
         if deltas.isEmpty {
@@ -378,13 +392,15 @@ struct CollectionMapView: View {
     /// each time by `MapClusterZoom` (see its doc comment and the file's doc comment):
     /// either the camera animates to a region that pulls the members apart on screen, or
     /// — when they're packed too tightly for that to help — the tap opens the next member
-    /// in rotation instead (`MapPinRotation`).
+    /// in rotation instead (`MapPinRotation`). Shares `clusterDecision(for:)` with the
+    /// badge colour, so the colour a pin shows and the behaviour a tap performs can never
+    /// disagree.
     private func pinClicked(_ group: MapPinGroup<MapCardEntry>) {
         guard group.elements.count > 1 else {
             selection = group.elements.first?.reference
             return
         }
-        switch MapClusterZoom.decision(for: group.elements.compactMap(\.summary.coordinate), centeredOn: group.coordinate) {
+        switch clusterDecision(for: group) {
         case .zoom(let region):
             withAnimation(.easeInOut(duration: Self.clusterZoomDuration)) {
                 cameraPosition = .region(region)
@@ -394,6 +410,17 @@ struct CollectionMapView: View {
                 selection = next
             }
         }
+    }
+
+    /// `MapClusterZoom.decision(for:centeredOn:)` for `group`, read from the settle-time
+    /// cache (`clusterDecisions`) when available. Falls back to computing it directly —
+    /// same function, no duplicated threshold logic — for the brief window before the
+    /// first settle has populated that cache (see its doc comment).
+    private func clusterDecision(for group: MapPinGroup<MapCardEntry>) -> MapClusterZoom.Decision {
+        clusterDecisions[group.id] ?? MapClusterZoom.decision(
+            for: group.elements.compactMap(\.summary.coordinate),
+            centeredOn: group.coordinate
+        )
     }
 }
 
@@ -408,6 +435,12 @@ private struct MapPinAnnotation: View {
     /// Whether this card is its VISUAL group's representative (first member): the one
     /// visible, hit-testable pin of a stack.
     let isRepresentative: Bool
+    /// What tapping this pin will do — `nil` for a single-card pin (no badge, so nothing
+    /// to colour). Colours the count badge so it signals its own tap outcome (see
+    /// `CollectionMapView.clusterDecision(for:)` and `MapClusterZoom`): blue for a pin
+    /// that will zoom in to pull its members apart, red for one packed too tightly for
+    /// that, which cycles through its members instead.
+    let decision: MapClusterZoom.Decision?
     /// This card's FLIP inverse delta — `.zero` unless a glide is in progress (see
     /// `CollectionMapView`'s doc comment).
     let glideDelta: CGSize
@@ -479,7 +512,7 @@ private struct MapPinAnnotation: View {
                     .font(.caption2.bold())
                     .foregroundStyle(.white)
                     .padding(3)
-                    .background(Circle().fill(.blue))
+                    .background(Circle().fill(badgeColor))
                     .offset(x: 7, y: -7)
                     // No animation in either direction: an animated appearance also
                     // animates the badge's frame settling within the annotation, which
@@ -490,6 +523,19 @@ private struct MapPinAnnotation: View {
     }
 
     private var badgeVisible: Bool { !isSingle }
+
+    /// Blue when a tap will zoom in and pull the members apart, red when they're packed
+    /// too tightly for that and a tap instead cycles through them (see `decision`'s doc
+    /// comment). Blue is also the fallback for a single-card pin's hidden badge, where
+    /// the colour is never actually seen.
+    private var badgeColor: Color {
+        switch decision {
+        case .zoom, .none:
+            return .blue
+        case .cycle:
+            return .red
+        }
+    }
 
     /// NOT a `Button`: a real `Button` on macOS tracks clicks through AppKit's own
     /// mouseDown/mouseUp cell-tracking loop, which loses out to MapKit's own hit-test
@@ -513,8 +559,22 @@ private struct MapPinAnnotation: View {
             .accessibilityLabel(
                 isSingle
                     ? group.elements[0].summary.name
-                    : "\(group.elements.count) postcards: \(group.elements.map(\.summary.name).joined(separator: ", "))"
+                    : "\(group.elements.count) postcards: \(group.elements.map(\.summary.name).joined(separator: ", "))\(decisionAccessibilitySuffix)"
             )
+    }
+
+    /// Spells out the badge colour's meaning in words, since colour alone isn't an
+    /// accessible signal: appended to a multi-card pin's label so a tap's outcome —
+    /// zoom vs. cycle — is conveyed either way.
+    private var decisionAccessibilitySuffix: String {
+        switch decision {
+        case .zoom:
+            return ", opens map zoom"
+        case .cycle:
+            return ", cycles through postcards"
+        case .none:
+            return ""
+        }
     }
 }
 
