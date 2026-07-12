@@ -62,28 +62,41 @@ struct AllCollectionsView: View {
             } else if let displayedEntries {
                 if viewMode == .map {
                     CollectionMapView(entries: displayedEntries.filter { $0.summary.coordinate != nil }, selection: $selection)
-                } else if displayedEntries.isEmpty {
-                    emptyState
                 } else {
-                    MasonryGrid(items: displayedEntries, aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) }) { entry in
-                        Button {
-                            selection = entry.reference
-                        } label: {
-                            UnionGridCell(entry: entry, isSelected: selection == entry.reference)
+                    // The grid stays mounted (just laid out with zero items) rather than
+                    // being replaced by `emptyState` outright: swapping the whole
+                    // `ScrollView`-backed `MasonryGrid` out for an entirely different view on
+                    // every keystroke that narrows results to zero was what dropped the
+                    // search field's focus (see `BottomSearchBar`'s call site below) —
+                    // keeping one stable, always-mounted grid instance and only overlaying
+                    // the empty-state message removes that churn.
+                    ZStack {
+                        MasonryGrid(items: displayedEntries, aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) }) { entry in
+                            Button {
+                                selection = entry.reference
+                            } label: {
+                                UnionGridCell(entry: entry, isSelected: selection == entry.reference)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                        if displayedEntries.isEmpty {
+                            emptyState
+                        }
                     }
                 }
             } else {
                 ProgressView()
             }
         }
+        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle("All collections")
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #endif
         #if os(macOS)
         .bottomSearchBar(
             text: $searchText,

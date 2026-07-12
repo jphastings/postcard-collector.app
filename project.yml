@@ -307,6 +307,7 @@ targets:
       - path: PostcardsUITests
         excludes:
           - "Resources/**"
+          - "macOS/**"
       - path: PostcardsUITests/Resources
         buildPhase: resources
     settings:
@@ -314,6 +315,25 @@ targets:
       TEST_TARGET_NAME: Postcards-iOS
     dependencies:
       - target: Postcards-iOS
+
+  # macOS UI tests live in their own subdirectory (PostcardsUITests/macOS) rather than
+  # sharing PostcardsUITests' top-level files: ImportedCollectionUITests' scroll/tap
+  # assertions were written and only ever verified against iOS, so this keeps the two
+  # platforms' suites independently scoped instead of assuming those iOS behaviors also
+  # hold on macOS.
+  PostcardsUITests-macOS:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PostcardsUITests/macOS
+      - path: PostcardsUITests/Resources
+        buildPhase: resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.dotpostcard.collector.uitests.mac
+      TEST_TARGET_NAME: Postcards-macOS
+    dependencies:
+      - target: Postcards-macOS
 
 schemes:
   Postcards-iOS:
@@ -336,6 +356,7 @@ schemes:
       config: Debug
       targets:
         - PostcardsTests
+        - PostcardsUITests-macOS
   PostcardsTests:
     build:
       targets:

@@ -47,20 +47,38 @@ struct CardInfoPanel: View {
 
     var body: some View {
         Form {
+            // Kept at the very top: the new section order (transcriptions, then from/to, …)
+            // doesn't mention this row, and it was already leading the panel before the
+            // restructure, so it stays put rather than being folded into a section below.
             if let sentOn = metadata.sentOn ?? summary.sentOn {
                 LabeledContent("Sent") {
                     Text(sentOn.date.formatted(date: .long, time: .omitted))
                 }
             }
 
-            Section("From & to") {
-                personRow(metadata.sender, label: "Sender", presets: .sender)
-                personRow(metadata.recipient, label: "Recipient", presets: .recipient)
+            if hasFrontTranscription || hasBackTranscription {
+                Section {
+                    if hasFrontTranscription {
+                        captionedBlock(caption: showsBothTranscriptions ? "front" : nil) {
+                            Text(AnnotatedTextRenderer.attributedString(for: metadata.front.transcription))
+                        }
+                    }
+                    if hasBackTranscription {
+                        captionedBlock(caption: showsBothTranscriptions ? "back" : nil) {
+                            Text(AnnotatedTextRenderer.attributedString(for: metadata.back.transcription))
+                        }
+                    }
+                }
+            }
+
+            Section {
+                personRow(metadata.sender, label: "From", presets: .sender)
+                personRow(metadata.recipient, label: "To", presets: .recipient)
             }
 
             if let location = displayableLocation {
-                Section("Location") {
-                    LabeledContent("Place") {
+                Section {
+                    LabeledContent("Sent from") {
                         HStack(spacing: 6) {
                             if let flag = location.countryCode.flatMap(CountryFlags.flag(forAlpha3:)) {
                                 Text(flag)
@@ -77,15 +95,29 @@ struct CardInfoPanel: View {
                 }
             }
 
-            sideSection(title: "Front", side: metadata.front)
-            sideSection(title: "Back", side: metadata.back)
-
             if hasContext {
                 Section("Context") {
                     if let description = metadata.context.description, !description.isEmpty {
                         Text(description)
                     }
                     personRow(metadata.context.author, label: "Catalogued by", presets: .collectorOnly)
+                }
+            }
+
+            if hasFrontDescription || hasBackDescription {
+                Section("Alt text") {
+                    if hasFrontDescription {
+                        captionedBlock(caption: showsBothDescriptions ? "front" : nil) {
+                            Text(metadata.front.description ?? "")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if hasBackDescription {
+                        captionedBlock(caption: showsBothDescriptions ? "back" : nil) {
+                            Text(metadata.back.description ?? "")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
         }
@@ -137,6 +169,14 @@ struct CardInfoPanel: View {
     private var hasContext: Bool {
         !(metadata.context.description ?? "").isEmpty || !(metadata.context.author.name ?? "").isEmpty
     }
+
+    private var hasFrontTranscription: Bool { !metadata.front.transcription.text.isEmpty }
+    private var hasBackTranscription: Bool { !metadata.back.transcription.text.isEmpty }
+    private var showsBothTranscriptions: Bool { hasFrontTranscription && hasBackTranscription }
+
+    private var hasFrontDescription: Bool { !(metadata.front.description ?? "").isEmpty }
+    private var hasBackDescription: Bool { !(metadata.back.description ?? "").isEmpty }
+    private var showsBothDescriptions: Bool { hasFrontDescription && hasBackDescription }
 
     /// Which search-preset buttons a `personRow`'s menu offers, and how they're worded: every
     /// row offers all three of from/to/with (a sender can just as easily be the subject of a
@@ -231,20 +271,19 @@ struct CardInfoPanel: View {
         }
     }
 
+    /// A block of text with a small "front"/"back" caption pinned to its bottom-right corner.
+    /// Used wherever a card's two sides supply the same kind of content (transcription, alt
+    /// text) side by side — `caption` is `nil` when only one side has that content, so a lone
+    /// block reads as plain text with no "which side is this" label needed.
     @ViewBuilder
-    private func sideSection(title: String, side: Side) -> some View {
-        let hasDescription = !(side.description ?? "").isEmpty
-        let hasTranscription = !side.transcription.text.isEmpty
-
-        if hasDescription || hasTranscription {
-            Section(title) {
-                if hasDescription, let description = side.description {
-                    Text(description)
-                        .foregroundStyle(.secondary)
-                }
-                if hasTranscription {
-                    Text(AnnotatedTextRenderer.attributedString(for: side.transcription))
-                }
+    private func captionedBlock(caption: String?, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

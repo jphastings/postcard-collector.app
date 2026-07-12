@@ -50,25 +50,18 @@ struct LibraryView: View {
             }
             .navigationTitle("Postcards")
             .toolbar {
-                #if os(macOS)
-                // Leading (next to the sidebar toggle) rather than the default trailing/
-                // automatic section: at narrow sidebar widths, the trailing section is the
-                // first to collapse into the ">>" overflow menu, which would hide this
-                // button entirely. `.navigation` is the leading window-toolbar section on
-                // macOS and never competes with that overflow.
-                ToolbarItem(placement: .navigation) {
-                    Button("Add…", systemImage: "plus") { isImporting = true }
-                }
-                #else
-                // iOS's sidebar column is the split view's root — it never has a back
-                // button of its own to potentially collide with — but its current
-                // (automatic) placement already works fine there, and this button isn't
-                // reachable via a ">>" overflow the way the macOS window toolbar is, so
-                // there's nothing to fix on this platform; leave it as-is.
+                // Default (automatic) placement on both platforms: this renders over the
+                // sidebar column's own toolbar section, which is where it belongs and where
+                // the user expects it. `.navigation` placement was tried on macOS to dodge
+                // the trailing section's ">>" overflow at narrow widths, but that renders
+                // the button in the NEXT toolbar section (to the right of the sidebar,
+                // outside it) rather than over the sidebar itself — worse than the overflow
+                // it was meant to avoid. The overflow risk is instead handled below by
+                // giving the sidebar column a minimum width the title + button can't
+                // collapse past.
                 ToolbarItem {
                     Button("Add…", systemImage: "plus") { isImporting = true }
                 }
-                #endif
             }
             .fileImporter(
                 isPresented: $isImporting,
@@ -118,10 +111,14 @@ struct LibraryView: View {
                 Text("This deletes the file. This can't be undone.")
             }
             #if os(macOS)
-            // Wide enough that the sidebar never gets uncomfortably cramped — belt and
-            // braces alongside the leading `.navigation` placement above, which is what
-            // actually keeps "Add…" out of the trailing overflow menu at any width.
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
+            // The sidebar's own toolbar section has to fit "Postcards" (the navigation
+            // title) plus the "Add…" (+) button without either collapsing into the ">>"
+            // overflow menu — raised from a 200pt minimum (which let that happen) to 230:
+            // comfortably above the ~190-210pt the title + button need at the system font's
+            // default size, with a little headroom for wider titles/Dynamic-Type-like
+            // scaling. Worth eyeballing on-device across a couple of window sizes, since
+            // exact toolbar-item measurement isn't available at this layer.
+            .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 300)
             #endif
         } content: {
             Group {
@@ -176,20 +173,23 @@ struct LibraryView: View {
             if let selectedCard {
                 CardDetailView(reference: selectedCard, searchRequest: searchRequest)
             } else {
-                // Mirrors `CardDetailView`'s at-rest (unzoomed) detail-column toolbar
-                // contribution for the CURRENT platform, so a `NavigationSplitView`'s
-                // per-column toolbar merge sees an identical shape whether or not a card is
-                // selected — otherwise the content column's own toolbar items (e.g.
-                // `CollectionModeSwitcher`) shift position depending on what the detail column
-                // happens to contain (see that type's doc comment).
+                // iOS ONLY: mirrors `CardDetailView`'s at-rest (unzoomed) detail-column
+                // toolbar contribution, so a `NavigationSplitView`'s per-column toolbar merge
+                // sees an identical shape whether or not a card is selected — otherwise the
+                // content column's own `.primaryAction` toolbar item (`CollectionModeSwitcher`)
+                // would shift position depending on what the detail column happens to
+                // contain (see that type's doc comment). `CardDetailView` keeps an
+                // unconditional (i) in its own `ToolbarItemGroup` on iOS, so this stands in
+                // with a disabled one to match.
                 //
-                // iOS: `CardDetailView` keeps an unconditional (i) in its own
-                // `ToolbarItemGroup`, so this stands in with a disabled one. macOS: the (i)
-                // moved to the `.inspector` content's own toolbar (see `CardDetailView.
-                // infoPanel`), which doesn't exist here at all with no card selected — so the
-                // detail column's own `ToolbarItemGroup` contribution is empty at rest there
-                // too (only "Reset Zoom" ever populates it, and only while zoomed, which
-                // requires a card), and this placeholder contributes nothing to match.
+                // macOS has no equivalent block below: `CollectionModeSwitcher` no longer
+                // lives in the content column's toolbar there at all (it's an in-pane
+                // overlay now — see its doc comment), so the content column contributes
+                // nothing for the detail column to match regardless of selection, and this
+                // mirroring is moot on that platform. (For the curious: `CardDetailView`'s
+                // own macOS (i) lives on the `.inspector` content's toolbar instead — see
+                // `CardDetailView.infoPanel` — which was the other half of why this used to
+                // need matching there too.)
                 ContentUnavailableView("Select a Postcard", systemImage: "photo")
                     #if os(iOS)
                     .toolbar {

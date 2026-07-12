@@ -66,37 +66,50 @@ struct SinglePostcardsGridView: View {
             } else if let displayedCards {
                 if viewMode == .map {
                     CollectionMapView(entries: displayedCards.filter { $0.summary.coordinate != nil }, selection: $selection)
-                } else if displayedCards.isEmpty {
-                    emptyState
                 } else {
-                    MasonryGrid(items: displayedCards, aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) }) { entry in
-                        Button {
-                            selection = entry.reference
-                        } label: {
-                            BareGridCell(
-                                path: entry.reference.sourcePath,
-                                card: entry.summary,
-                                isSelected: selection == entry.reference,
-                                writableCollections: writableCollections,
-                                onCopy: { card, target in Task { await copyCard(entry.reference.sourcePath, card, to: target) } },
-                                onMove: { card, target in Task { await moveCard(entry.reference.sourcePath, card, to: target) } },
-                                onNewCollection: { card, action in promptForNewCollection(path: entry.reference.sourcePath, card: card, action: action) },
-                                onDelete: { Task { await deleteFromDevice(entry.reference.sourcePath) } }
-                            )
+                    // The grid stays mounted (just laid out with zero items) rather than
+                    // being replaced by `emptyState` outright: swapping the whole
+                    // `ScrollView`-backed `MasonryGrid` out for an entirely different view on
+                    // every keystroke that narrows results to zero was what dropped the
+                    // search field's focus (see `BottomSearchBar`'s call site below) —
+                    // keeping one stable, always-mounted grid instance and only overlaying
+                    // the empty-state message removes that churn.
+                    ZStack {
+                        MasonryGrid(items: displayedCards, aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) }) { entry in
+                            Button {
+                                selection = entry.reference
+                            } label: {
+                                BareGridCell(
+                                    path: entry.reference.sourcePath,
+                                    card: entry.summary,
+                                    isSelected: selection == entry.reference,
+                                    writableCollections: writableCollections,
+                                    onCopy: { card, target in Task { await copyCard(entry.reference.sourcePath, card, to: target) } },
+                                    onMove: { card, target in Task { await moveCard(entry.reference.sourcePath, card, to: target) } },
+                                    onNewCollection: { card, action in promptForNewCollection(path: entry.reference.sourcePath, card: card, action: action) },
+                                    onDelete: { Task { await deleteFromDevice(entry.reference.sourcePath) } }
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                        if displayedCards.isEmpty {
+                            emptyState
+                        }
                     }
                 }
             } else {
                 ProgressView()
             }
         }
+        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle("Single postcards")
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #endif
         #if os(macOS)
         .bottomSearchBar(
             text: $searchText,

@@ -81,9 +81,13 @@ struct CollectionGridView: View {
                     ProgressView()
                 }
             } else if let cards {
-                if cards.isEmpty {
-                    emptyState
-                } else {
+                // The grid stays mounted (just laid out with zero items) rather than being
+                // replaced by `emptyState` outright: swapping the whole `ScrollView`-backed
+                // `MasonryGrid` out for an entirely different view on every keystroke that
+                // narrows results to zero was what dropped the search field's focus (see
+                // `BottomSearchBar`'s call site below) — keeping one stable, always-mounted
+                // grid instance and only overlaying the empty-state message removes that churn.
+                ZStack {
                     MasonryGrid(items: cards, aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) }) { card in
                         Button {
                             selection = .inCollection(path: source.path, summary: card)
@@ -101,17 +105,23 @@ struct CollectionGridView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    if cards.isEmpty {
+                        emptyState
+                    }
                 }
             } else {
                 ProgressView()
             }
         }
+        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle(title ?? source.displayName)
+        #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #endif
         // Search narrows the same `cards` array both the grid and the map read from, so
         // map pins are filtered by an active search too.
         #if os(macOS)
