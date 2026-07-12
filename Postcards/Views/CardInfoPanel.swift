@@ -277,7 +277,11 @@ struct CardInfoPanel: View {
     /// block reads as plain text with no "which side is this" label needed.
     @ViewBuilder
     private func captionedBlock(caption: String?, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .trailing, spacing: 4) {
+        // Last-baseline HStack rather than a VStack row: the caption rides the text's FINAL
+        // line at the trailing edge ("box.   front") instead of adding a row of vertical
+        // space beneath the block. The text column is narrower by the caption's width on
+        // every line, which for words as short as "front"/"back" is imperceptible.
+        HStack(alignment: .lastTextBaseline, spacing: 8) {
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let caption {
