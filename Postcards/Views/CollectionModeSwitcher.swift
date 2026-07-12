@@ -64,11 +64,33 @@ struct CollectionModeSwitcher: View {
     var body: some View {
         HStack(spacing: 10) {
             ForEach(CollectionViewMode.allCases) { candidate in
+                #if os(macOS)
+                // A tap gesture, NOT a Button: the macOS chip sits inside the window's
+                // titlebar/toolbar band (see the overlay modifier below), where a Button's
+                // AppKit mouseDown/mouseUp tracking loop loses the FIRST click to the
+                // titlebar's own hit-testing — the same double-click-to-activate failure the
+                // map pins had among stacked annotation views, fixed the same way.
+                Label(candidate.label, systemImage: candidate.systemImage)
+                    .symbolVariant(mode == candidate ? .fill : .none)
+                    .foregroundStyle(mode == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .opacity(isEnabled ? 1 : 0.4)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard isEnabled else { return }
+                        mode = candidate
+                    }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction {
+                        guard isEnabled else { return }
+                        mode = candidate
+                    }
+                #else
                 Button(candidate.label, systemImage: candidate.systemImage) {
                     mode = candidate
                 }
                 .symbolVariant(mode == candidate ? .fill : .none)
                 .foregroundStyle(mode == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                #endif
             }
         }
         // Icon-only + borderless: a toolbar applies both automatically, but this control
