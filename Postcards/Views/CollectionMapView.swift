@@ -94,9 +94,11 @@ struct CollectionMapView: View {
     @Binding var selection: CardReference?
 
     @State private var cameraPosition: MapCameraPosition
-    /// POSITIONAL membership — the current zoom's screen-space clusters; `nil` until the
-    /// first camera settle makes projection possible, when exact-coordinate grouping
-    /// stands in. Drives annotation coordinates and FLIP offsets.
+    /// POSITIONAL membership — the current zoom's screen-space clusters; `nil` only until
+    /// the map's very first camera callback (seeded from `.continuous`, since `.onEnd`
+    /// never fires for the initial camera on macOS — see the `.continuous` handler in
+    /// `body`), when exact-coordinate grouping stands in as a one-frame stopgap. Drives
+    /// annotation coordinates and FLIP offsets.
     @State private var screenClusters: [MapPinGroup<MapCardEntry>]?
     /// VISUAL membership during a glide (see the type's doc comment) — badges and stacked-
     /// pin visibility read from this; `nil` means "same as positional", the steady state.
@@ -122,7 +124,9 @@ struct CollectionMapView: View {
     /// the choreography's final beat runs. Reset by every settle and interrupt.
     @State private var glideArrivals: Set<String> = []
     /// The camera recorded at the last settle, for telling real gestures apart from the
-    /// settle's own `.continuous` echo (see `MapCameraMotion.isMaterialMotion`).
+    /// settle's own `.continuous` echo (see `MapCameraMotion.isMaterialMotion`) — and,
+    /// while still `nil`, the signal that the very first settle hasn't been seeded yet
+    /// (see the `.continuous` handler in `body`).
     @State private var settledCamera: MapCamera?
 
     init(entries: [MapCardEntry], selection: Binding<CardReference?>) {
@@ -205,19 +209,42 @@ struct CollectionMapView: View {
             // Membership recomputes ONLY when the camera FULLY settles — `.onEnd` IS
             // the settle signal, so no debounce is needed. Mid-gesture the pins need
             // no help at all: their annotation coordinates are their display
-            // positions, so MapKit tracks them geographically for free.
+            // positions, so MapKit tracks them geographically for free. (This callback
+            // never fires for the INITIAL camera on macOS, though — see the
+            // `.continuous` handler below for the seed that covers that gap.)
             .onMapCameraChange(frequency: .onEnd) { context in
                 settledCamera = context.camera
                 recluster(with: proxy)
             }
-            // A MATERIAL camera change (as opposed to a settle, or the settle's own
-            // floating-point-drifted echo — see `MapCameraMotion`) means a gesture is
-            // underway: snap any in-flight glide to zero and resolve its visual
-            // membership, so every pin sits exactly on its geo anchor, correctly
-            // badged, for the whole gesture. The jump is at most the glide's
-            // remaining distance — the documented trade-off in the type's doc comment.
+            // The first callback of either frequency, before any settle has ever been
+            // recorded, seeds the missing initial settle: MapKit applies the initial
+            // `cameraPosition` without ever running it through a user gesture, and on
+            // macOS `.onMapCameraChange(frequency: .onEnd)` above — which only fires at
+            // the end of a recognized interactive gesture — never fires for it at all.
+            // Without this, `screenClusters` stays nil (pin taps see only
+            // `MapPinGrouping`'s exact-coordinate groups) until the user's FIRST real
+            // gesture: identical-coordinate groups always decide `.cycle`, never
+            // `.zoom` (see `MapClusterZoom`), and merely-nearby-but-distinct cards never
+            // aggregate into one clickable pin at all — so a freshly-opened map's
+            // aggregated-pin taps were dead on arrival. `.continuous` DOES fire
+            // immediately once the map has laid out and can project coordinates — its
+            // very first delivery is exactly the "nothing settled yet" case
+            // `MapCameraMotion.isMaterialMotion` already treats as unconditional motion
+            // — so that first callback doubles as the seed.
             .onMapCameraChange(frequency: .continuous) { context in
-                guard MapCameraMotion.isMaterialMotion(context.camera, since: settledCamera) else { return }
+                guard let settled = settledCamera else {
+                    settledCamera = context.camera
+                    recluster(with: proxy)
+                    return
+                }
+                // A MATERIAL camera change (as opposed to a settle, or the settle's own
+                // floating-point-drifted echo — see `MapCameraMotion`) means a gesture
+                // is underway: snap any in-flight glide to zero and resolve its visual
+                // membership, so every pin sits exactly on its geo anchor, correctly
+                // badged, for the whole gesture. The jump is at most the glide's
+                // remaining distance — the documented trade-off in the type's doc
+                // comment.
+                guard MapCameraMotion.isMaterialMotion(context.camera, since: settled) else { return }
                 cancelGlideIfActive()
             }
             // A new entry set (search narrowing, collection switch) re-clusters
