@@ -14,6 +14,12 @@ struct AllCollectionsView: View {
     /// Paths of every known bare `.postcard.*` file.
     let barePaths: [String]
     @Binding var selection: CardReference?
+    /// Grid/map toggle, lifted to `LibraryView` and owned by its `CollectionBrowser`
+    /// destination wrapper — see that type's doc comment.
+    @Binding var viewMode: CollectionViewMode
+    /// Whether ANY card anywhere has a coordinate — gates `CollectionModeSwitcher`.
+    /// Computed from the full union load, never search results. Lifted alongside `viewMode`.
+    @Binding var hasAnyLocation: Bool
     let cloudLibrary: CloudLibrary
     /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
     /// `CardInfoPanel`) land here — see `applySearchPreset()`, hung off
@@ -31,7 +37,6 @@ struct AllCollectionsView: View {
     /// Every known person across the library's registered sources, for search-token
     /// suggestions (see `SearchSuggestions`).
     @State private var people: [PersonRef] = []
-    @State private var viewMode = CollectionViewMode.grid
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
     #else
@@ -39,9 +44,6 @@ struct AllCollectionsView: View {
     /// preset lands); it flips this back to `false` once done.
     @State private var focusSearchFieldRequest = false
     #endif
-    /// Whether ANY card anywhere has a coordinate — gates `CollectionModeSwitcher`.
-    /// Computed from the full union load, never search results.
-    @State private var hasAnyLocation = false
     @State private var loadError: String?
 
     private struct SourcesKey: Equatable {
@@ -96,15 +98,7 @@ struct AllCollectionsView: View {
                 ProgressView()
             }
         }
-        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle("All collections")
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
-            }
-        }
-        #endif
         #if os(macOS)
         .bottomSearchBar(
             text: $searchText,

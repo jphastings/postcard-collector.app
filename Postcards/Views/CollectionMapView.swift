@@ -264,6 +264,9 @@ struct CollectionMapView: View {
                 recluster(with: proxy)
             }
         }
+        // Stable machine-facing handle for UI tests asserting map mode is actually showing
+        // (e.g. after tapping `CollectionModeSwitcher`'s map button).
+        .accessibilityIdentifier("CollectionMap")
     }
 
     private func recluster(with proxy: MapProxy) {

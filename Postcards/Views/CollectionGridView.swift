@@ -24,6 +24,14 @@ final class ThumbnailCache {
 struct CollectionGridView: View {
     let source: LibrarySource
     @Binding var selection: CardReference?
+    /// Grid/map toggle, lifted to `LibraryView` and owned by its `CollectionBrowser`
+    /// destination wrapper — see that type's doc comment.
+    @Binding var viewMode: CollectionViewMode
+    /// Whether ANY card in the full, unfiltered collection has a coordinate — gates
+    /// `CollectionModeSwitcher`. Only updated by `loadCards()` (never by `search()`, which
+    /// can narrow `cards` to a search-filtered subset) so it always reflects the whole
+    /// collection, not whatever's currently displayed. Lifted alongside `viewMode`.
+    @Binding var hasAnyLocation: Bool
     /// Every collection a card can be moved/copied into (Feature 4), for the grid cells'
     /// context menus — excludes this collection itself at the point of use.
     var writableCollections: [WritableCollection] = []
@@ -50,7 +58,6 @@ struct CollectionGridView: View {
     @State private var loadError: String?
     @State private var loadErrorTitle = "Couldn't open collection"
     @State private var actionError: String?
-    @State private var viewMode = CollectionViewMode.grid
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
     #else
@@ -58,11 +65,6 @@ struct CollectionGridView: View {
     /// preset lands); it flips this back to `false` once done.
     @State private var focusSearchFieldRequest = false
     #endif
-    /// Whether ANY card in the full, unfiltered collection has a coordinate — gates
-    /// `CollectionModeSwitcher`. Only updated by `loadCards()` (never by `search()`, which
-    /// can narrow `cards` to a search-filtered subset) so it always reflects the whole
-    /// collection, not whatever's currently displayed.
-    @State private var hasAnyLocation = false
     @State private var newCollectionPrompt: NewCollectionPrompt?
     @State private var newCollectionTitle = ""
 
@@ -113,15 +115,7 @@ struct CollectionGridView: View {
                 ProgressView()
             }
         }
-        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle(title ?? source.displayName)
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
-            }
-        }
-        #endif
         // Search narrows the same `cards` array both the grid and the map read from, so
         // map pins are filtered by an active search too.
         #if os(macOS)

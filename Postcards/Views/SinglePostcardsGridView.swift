@@ -11,6 +11,13 @@ import SwiftUI
 struct SinglePostcardsGridView: View {
     let paths: [String]
     @Binding var selection: CardReference?
+    /// Grid/map toggle, lifted to `LibraryView` and owned by its `CollectionBrowser`
+    /// destination wrapper — see that type's doc comment.
+    @Binding var viewMode: CollectionViewMode
+    /// Whether ANY loaded card has a coordinate — gates `CollectionModeSwitcher`. Computed
+    /// from the full `cards` load, never search results, so a search can't disable it.
+    /// Lifted alongside `viewMode`.
+    @Binding var hasAnyLocation: Bool
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
     /// Search presets submitted from elsewhere (e.g. a person's "More from…" context menu in
@@ -39,7 +46,6 @@ struct SinglePostcardsGridView: View {
     @State private var people: [PersonRef] = []
     @State private var loadError: String?
     @State private var actionError: String?
-    @State private var viewMode = CollectionViewMode.grid
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
     #else
@@ -47,9 +53,6 @@ struct SinglePostcardsGridView: View {
     /// preset lands); it flips this back to `false` once done.
     @State private var focusSearchFieldRequest = false
     #endif
-    /// Whether ANY loaded card has a coordinate — gates `CollectionModeSwitcher`. Computed
-    /// from the full `cards` load, never search results, so a search can't disable it.
-    @State private var hasAnyLocation = false
     @State private var newCollectionPrompt: NewCollectionPrompt?
     @State private var newCollectionTitle = ""
 
@@ -109,15 +112,7 @@ struct SinglePostcardsGridView: View {
                 ProgressView()
             }
         }
-        .collectionModeSwitcherOverlay(mode: $viewMode, isEnabled: hasAnyLocation)
         .navigationTitle("Single postcards")
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
-            }
-        }
-        #endif
         #if os(macOS)
         .bottomSearchBar(
             text: $searchText,

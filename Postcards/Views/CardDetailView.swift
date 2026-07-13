@@ -9,6 +9,11 @@ struct CardDetailView: View {
     let reference: CardReference
     let searchRequest: SearchRequest
 
+    // iOS only: gates `toolbarGeometry(insets:)`'s leading (back button) estimate — this view
+    // is pushed (compact) with a back button, or shown directly in the iPad detail column
+    // (regular) with none. Harmless on macOS, where it's always nil and unused.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     @State private var splitImage: SplitPostcardImage?
     @State private var metadata: PostcardMetadata?
     @State private var loadError: String?
@@ -40,7 +45,8 @@ struct CardDetailView: View {
     // The (i) button's width over the detail pane, including its trailing margin.
     private let macOSInfoButtonClusterWidth: CGFloat = 52
     #else
-    // The back button's width in this view's compact push-navigation context.
+    // The back button's width when this view is pushed in a compact-width navigation
+    // context — see `toolbarGeometry(insets:)`'s size-class gate.
     private let iOSBackButtonClusterWidth: CGFloat = 60
     // The (i) button's width, including its trailing margin.
     private let iOSInfoButtonClusterWidth: CGFloat = 52
@@ -338,8 +344,9 @@ struct CardDetailView: View {
     /// estimates from platform and `@State`, not measurements.
     private func toolbarGeometry(insets: EdgeInsets) -> ToolbarGeometry {
         #if os(macOS)
-        // Nothing on the leading edge of the detail pane — the sidebar/content columns own
-        // that side, not the detail pane's own toolbar items.
+        // Nothing on the leading edge of the detail pane: this is a 2-column
+        // NavigationSplitView now (no middle content column) — the sidebar owns the window's
+        // leading toolbar items (back/add/switcher — see `CollectionBrowser`), not this pane.
         let leadingWidth: CGFloat = 0
         // The (i) button, unless the inspector is open — then it sits above the inspector,
         // outside the detail pane, so the pane's own trailing cluster is empty. (Reset Zoom
@@ -353,10 +360,13 @@ struct CardDetailView: View {
             isTransparent = false
         }
         #else
-        // The back button (this view is always pushed in a compact navigation context) and the
-        // (i) button — both present at rest regardless of whether the info sheet is showing,
-        // since the sheet floats on top rather than claiming toolbar space.
-        let leadingWidth: CGFloat = iOSBackButtonClusterWidth
+        // The back button only exists when this view is pushed onto a compact-width
+        // NavigationStack (iPhone, or a narrowed iPad) — see `CompactDetailPush`. At regular
+        // width (iPad), the outer NavigationSplitView shows this view directly in its detail
+        // column with no push and so no back button. The (i) button is present at rest either
+        // way, regardless of whether the info sheet is showing, since the sheet floats on top
+        // rather than claiming toolbar space.
+        let leadingWidth: CGFloat = horizontalSizeClass == .compact ? iOSBackButtonClusterWidth : 0
         let trailingWidth: CGFloat = iOSInfoButtonClusterWidth
         // iOS bars are translucent on every OS version this app targets.
         let isTransparent = true
