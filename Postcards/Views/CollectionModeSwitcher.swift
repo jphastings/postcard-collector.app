@@ -21,27 +21,39 @@ struct CollectionModeSwitcher: View {
     var isEnabled: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        // A single connected control (not two loose icons) so grid and map read as one
+        // mutually-exclusive either-or, with the selected segment highlighted. Only the map
+        // segment is gated on the collection having locations; grid is always available.
+        HStack(spacing: 0) {
             ForEach(CollectionViewMode.allCases) { candidate in
-                Button(candidate.label, systemImage: candidate.systemImage) {
-                    mode = candidate
+                segment(candidate)
+                if candidate != CollectionViewMode.allCases.last {
+                    Divider().frame(height: 16)
                 }
-                .symbolVariant(mode == candidate ? .fill : .none)
-                .foregroundStyle(mode == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .imageScale(.large)
-        .disabled(!isEnabled)
-        .accessibilityHint(isEnabled ? "" : "No postcards in this collection have a location")
-        // `.contain` gives the HStack itself a real, queryable accessibility element/frame —
-        // needed for `.accessibilityIdentifier` below to resolve to something in a UI test —
-        // while still exposing the "Grid"/"Map" buttons as their own elements underneath it
-        // (unlike `.combine`, which would merge them into one and make VoiceOver unable to
-        // select a mode directly).
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary, lineWidth: 1))
         .accessibilityElement(children: .contain)
         // Stable machine-facing handle for UI tests.
         .accessibilityIdentifier("CollectionModeSwitcher")
+    }
+
+    private func segment(_ candidate: CollectionViewMode) -> some View {
+        let selected = mode == candidate
+        return Button {
+            mode = candidate
+        } label: {
+            Image(systemName: candidate.systemImage)
+                .imageScale(.medium)
+                .frame(width: 34, height: 22)
+                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .background(selected ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(candidate.label)
+        .disabled(candidate == .map && !isEnabled)
+        .accessibilityHint(candidate == .map && !isEnabled ? "No postcards in this collection have a location" : "")
     }
 }

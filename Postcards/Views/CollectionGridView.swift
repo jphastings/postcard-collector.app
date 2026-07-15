@@ -90,7 +90,11 @@ struct CollectionGridView: View {
                 // `BottomSearchBar`'s call site below) — keeping one stable, always-mounted
                 // grid instance and only overlaying the empty-state message removes that churn.
                 ZStack {
-                    MasonryGrid(items: cards, aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) }) { card in
+                    MasonryGrid(
+                        items: cards,
+                        aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) },
+                        header: { ScrollingCollectionTitle(title: title ?? source.displayName) }
+                    ) { card in
                         Button {
                             selection = .inCollection(path: source.path, summary: card)
                         } label: {

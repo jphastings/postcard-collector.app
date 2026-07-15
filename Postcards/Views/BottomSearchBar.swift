@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// How far the sidebar's browsing region is shifted up (by `SidebarDestinationFill`) to bleed
+/// under the transparent titlebar. The bottom search bar counter-shifts by the same amount so it
+/// stays pinned to the sidebar's true bottom edge rather than floating this far above it.
+enum SidebarBleed {
+    static let inset: CGFloat = 52
+}
+
 /// macOS-only stand-in for `.searchable(text:tokens:suggestedTokens:...)`: docks a search
 /// field — with Mail-style token pills — to the bottom of a content pane instead of the
 /// toolbar (see call sites in `CollectionGridView`, `SinglePostcardsGridView`,
@@ -24,6 +31,10 @@ struct BottomSearchBar: View {
     /// triggered again later.
     @Binding var focusRequest: Bool
 
+    /// A token pill's height (measured from a hidden reference in `fieldContent`), used as the
+    /// field's constant height so adding or removing tags never resizes it.
+    @State private var pillHeight: CGFloat = 24
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -47,9 +58,9 @@ struct BottomSearchBar: View {
         .frame(maxWidth: 360)
         // Floats the field as its own glass capsule above the grid rather than a full-width
         // bar: no `.background` on this outer container, so the safeAreaInset it sits in
-        // stays transparent and grid content scrolls visibly beneath/around it.
-        .padding(.horizontal)
-        .padding(.bottom, 8)
+        // stays transparent and grid content scrolls visibly beneath/around it. Equal side and
+        // bottom insets so the capsule sits symmetrically in the sidebar's corner.
+        .padding([.horizontal, .bottom])
         .frame(maxWidth: .infinity)
         // Hidden ⌘F shortcut focuses the field from anywhere in the pane, standing in for
         // the "Find" affordance `.searchable` gets for free from the toolbar on other platforms.
@@ -68,26 +79,43 @@ struct BottomSearchBar: View {
     }
 
     private var fieldContent: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(tokens) { token in
-                    SearchTokenChip(token: token) {
-                        tokens.removeAll { $0.id == token.id }
-                    }
+        // A plain HStack, not a horizontal ScrollView: the ScrollView was vertically greedy —
+        // it filled the bottom safe-area inset (the ~3× height) and, once height-constrained,
+        // swallowed the click that should focus the field. Tokens are few and fit the field's
+        // width, so a plain row is single-line tall and the TextField stays directly focusable.
+        HStack(spacing: 4) {
+            ForEach(tokens) { token in
+                SearchTokenChip(token: token) {
+                    tokens.removeAll { $0.id == token.id }
                 }
-                TextField(prompt, text: $text)
-                    .textFieldStyle(.plain)
-                    .focused(isFocused)
-                    .frame(minWidth: 80)
-                    // Mail-style: backspace in an already-empty field deletes the last pill,
-                    // rather than doing nothing.
-                    .onKeyPress(.delete) {
-                        guard text.isEmpty, !tokens.isEmpty else { return .ignored }
-                        tokens.removeLast()
-                        return .handled
-                    }
             }
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .focused(isFocused)
+                .frame(minWidth: 80)
+                // Mail-style: backspace in an already-empty field deletes the last pill,
+                // rather than doing nothing.
+                .onKeyPress(.delete) {
+                    guard text.isEmpty, !tokens.isEmpty else { return .ignored }
+                    tokens.removeLast()
+                    return .handled
+                }
         }
+        // Hold a constant height equal to a token pill's, so the field doesn't grow when the
+        // first tag is added (or shrink when the last is removed). The height comes from a
+        // hidden reference matching SearchTokenChip's own metrics rather than a magic number.
+        .frame(height: pillHeight)
+        .background(alignment: .leading) {
+            Text(verbatim: "Ag")
+                .font(.callout)
+                .padding(.vertical, 4)
+                .hidden()
+                .accessibilityHidden(true)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: PillHeightPreferenceKey.self, value: proxy.size.height)
+                })
+        }
+        .onPreferenceChange(PillHeightPreferenceKey.self) { pillHeight = $0 }
     }
 
     private var fieldShape: Capsule { Capsule() }
@@ -169,6 +197,9 @@ private struct BottomSearchBarModifier: ViewModifier {
                     isFocused: $isFocused,
                     focusRequest: $focusRequest
                 )
+                // Counter the browsing region's upward bleed offset (`SidebarDestinationFill`)
+                // so the bar sits at the sidebar's true bottom edge, not floating above it.
+                .offset(y: SidebarBleed.inset)
                 .background(
                     GeometryReader { proxy in
                         Color.clear.preference(key: FieldHeightPreferenceKey.self, value: proxy.size.height)
@@ -188,6 +219,13 @@ private struct BottomSearchBarModifier: ViewModifier {
 
 private struct FieldHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 44
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct PillHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 24
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }

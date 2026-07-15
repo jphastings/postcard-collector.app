@@ -65,18 +65,21 @@ struct LibraryView: View {
     private var selectedSource: LibrarySource? { sidebarPath.last }
 
     #if os(macOS)
-    /// Measured geometry feeding `SidebarDestinationFill` — see that modifier's doc comment
-    /// for the macOS framework bug this works around. The stack frame and window height are
-    /// captured together at the ROOT navigation level (the only time SwiftUI's own frames in
-    /// this column are honest); the live window height then tracks resizes, so the usable
-    /// bottom edge is always `rootStackMaxY + (windowHeight − windowHeightAtRootCapture)`.
-    @State private var sidebarStackFrame: CGRect = .zero
-    @State private var windowHeightAtRootCapture: CGFloat = 0
+    /// Geometry feeding `SidebarDestinationFill` — see that modifier's doc comment for the macOS
+    /// framework bug it works around. The sidebar column's content rect is captured at the ROOT
+    /// navigation level (the only time SwiftUI's own frames in this column are honest — once a
+    /// destination is pushed the stack hugs whatever height the fill modifier forces on it, so a
+    /// mid-push read would just echo that back). The live window height then tracks resizes, so
+    /// the usable column height stays correct even when the window is resized while a collection
+    /// is open. Nothing here depends on the destination's OWN placement — that self-reference is
+    /// what made an earlier version oscillate into AppKit's constraint-update watchdog.
+    @State private var sidebarColumnRect: CGRect = .zero
+    @State private var windowHeightAtCapture: CGFloat = 0
     @State private var windowHeight: CGFloat = 0
 
-    private var sidebarColumnBottom: CGFloat {
-        guard sidebarStackFrame != .zero, windowHeightAtRootCapture > 0, windowHeight > 0 else { return 0 }
-        return sidebarStackFrame.maxY + (windowHeight - windowHeightAtRootCapture)
+    private var sidebarColumnHeight: CGFloat {
+        guard sidebarColumnRect != .zero, windowHeightAtCapture > 0, windowHeight > 0 else { return 0 }
+        return max(0, sidebarColumnRect.height + (windowHeight - windowHeightAtCapture))
     }
     #endif
 
@@ -128,25 +131,25 @@ struct LibraryView: View {
                         barePaths: singlePostcardPaths
                     )
                     #if os(macOS)
-                    .modifier(SidebarDestinationFill(
-                        stackRootFrame: sidebarStackFrame,
-                        columnBottom: sidebarColumnBottom
-                    ))
+                    .modifier(SidebarDestinationFill(columnHeight: sidebarColumnHeight))
                     #endif
                 }
             }
             #if os(macOS)
-            // Measures the sidebar stack's column-sized frame for `SidebarDestinationFill`.
-            // Only while showing the root (collections) level: while a destination is pushed
-            // the stack sizes itself to that destination's extent, so a mid-push measurement
-            // would echo whatever height the fill modifier just applied instead of the
-            // column's real height. The window height is captured alongside so resizes that
-            // happen while a destination is pushed can be tracked as a delta.
+            // Captures the sidebar column's content rect for `SidebarDestinationFill`, but only
+            // while the ROOT (collections) level shows: once a destination is pushed the stack
+            // sizes itself to the fill modifier's forced height, so a mid-push read would just
+            // echo that back. The window height is captured alongside so resizes while a
+            // destination is pushed track as a delta. The writes are deferred and jitter-gated
+            // in `captureColumnGeometry` — writing @State synchronously here, mid-layout-pass,
+            // is what let the split view's inset updates and this measurement feed each other
+            // into AppKit's constraint-update watchdog (a crash cycling the sidebar hidden/shown).
             .background(GeometryReader { proxy in
                 Color.clear
-                    .onAppear { captureRootStackGeometry(proxy.frame(in: .global)) }
-                    .onChange(of: proxy.frame(in: .global)) { _, frame in captureRootStackGeometry(frame) }
-                    .onChange(of: windowHeight) { _, _ in captureRootStackGeometry(proxy.frame(in: .global)) }
+                    .onChange(of: proxy.frame(in: .global), initial: true) { _, frame in
+                        captureColumnGeometry(frame)
+                    }
+                    .onChange(of: windowHeight) { _, _ in captureColumnGeometry(proxy.frame(in: .global)) }
             })
             #endif
             .fileImporter(
@@ -299,14 +302,24 @@ struct LibraryView: View {
     }
 
     #if os(macOS)
-    /// Root-level (collections list) capture for `SidebarDestinationFill` — see the
-    /// measurement `background` in `body` for why this must never run while a destination is
-    /// pushed. Window height is captured atomically with the stack frame so the pair stays a
+    /// Root-level (collections list) capture for `SidebarDestinationFill`. Deferred out of the
+    /// current layout transaction (via `Task`) and gated to ignore sub-point jitter, degenerate
+    /// (collapsed, zero-width) frames, and anything measured while a destination is pushed: a
+    /// synchronous, ungated write here fed AppKit's constraint-update cycle back into itself
+    /// while the sidebar animated in/out, tripping its "more Update Constraints passes than
+    /// views" watchdog. Window height is captured atomically with the frame so the pair stays a
     /// consistent baseline for the resize delta.
-    private func captureRootStackGeometry(_ frame: CGRect) {
-        guard sidebarPath.isEmpty, frame.height > 0, windowHeight > 0 else { return }
-        sidebarStackFrame = frame
-        windowHeightAtRootCapture = windowHeight
+    private func captureColumnGeometry(_ frame: CGRect) {
+        guard sidebarPath.isEmpty, frame.width > 100, frame.height > 0, windowHeight > 0 else { return }
+        let capturedWindowHeight = windowHeight
+        Task { @MainActor in
+            guard sidebarPath.isEmpty else { return }
+            if abs(sidebarColumnRect.height - frame.height) < 0.5, windowHeightAtCapture == capturedWindowHeight {
+                return
+            }
+            sidebarColumnRect = frame
+            windowHeightAtCapture = capturedWindowHeight
+        }
     }
     #endif
 
@@ -626,6 +639,10 @@ private struct CollectionBrowser: View {
     let collectionPaths: [String]
     let barePaths: [String]
 
+    /// Pops this destination off the sidebar's `NavigationStack` (used by the top-left back
+    /// button on macOS, since the framework's own inline back button is hidden).
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         Group {
             switch source {
@@ -698,10 +715,24 @@ private struct CollectionBrowser: View {
             // chevron, but placed it past the sidebar/detail split instead — `.primaryAction`
             // for both is the more predictable, adjacent pairing.)
             ToolbarItemGroup(placement: .primaryAction) {
+                #if os(macOS)
+                // Back lives here, as a real toolbar item, because it's the only reliably
+                // clickable control in the titlebar band (see CLAUDE.md) — the framework's own
+                // inline back button is hidden. Popping the sidebar stack via `dismiss()`.
+                Button("Back", systemImage: "chevron.backward") { dismiss() }
+                    .accessibilityIdentifier("SidebarBack")
+                #endif
                 Button("Add…", systemImage: "plus", action: onImport)
                 CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
             }
         }
+        #if os(macOS)
+        // Hide this pushed destination's own inline back button + title band — the back button
+        // moves to a real toolbar item (see the `ToolbarItemGroup` above), the collection name
+        // into the scrollable grid, and hiding the band lets the grid/map fill the column to the
+        // very top (see `SidebarDestinationFill`).
+        .modifier(HideInlineNavBar())
+        #endif
     }
 }
 
@@ -846,88 +877,60 @@ private final class WindowHeightTrackingView: NSView {
 }
 
 /// Works around a macOS layout bug in `NavigationStack`-in-sidebar hosting: the sidebar
-/// column's stack proposes each pushed `navigationDestination` its IDEAL height rather than
-/// the column's, then anchors the undersized result at the column's bottom. None of this
-/// design's panes have a meaningful ideal height (`MasonryGrid` is `GeometryReader`-rooted and
-/// `Map` accepts anything), so a pushed browser collapsed to just its bottom search bar's
-/// height (~44pt), pinned at the bottom of the column, with the rest of the column showing
-/// empty sidebar material — in both grid and map modes. The stack's root level is unaffected
-/// only because `List` is greedy under the same treatment. (Confirmed empirically on
-/// macOS 26.5: an outer `.frame(maxHeight: .infinity)` or `.frame(idealHeight:)` on the
-/// destination changes nothing — the tiny height arrives as a real PROPOSAL — while width is
-/// always proposed correctly.)
+/// column proposes each pushed `navigationDestination` its IDEAL height rather than the
+/// column's, then anchors the undersized result at the column's bottom. None of this design's
+/// panes have a meaningful ideal height (`MasonryGrid` is `GeometryReader`-rooted and `Map`
+/// accepts anything), so a pushed browser collapsed to just its bottom search bar's height
+/// (~44pt), pinned at the bottom of the column, with the rest showing empty sidebar material —
+/// in both grid and map modes. The stack's root level is unaffected only because `List` is
+/// greedy under the same treatment. (Confirmed on macOS 26.5: the tiny height arrives as a real
+/// PROPOSAL, so an outer `.frame(maxHeight: .infinity)` doesn't help; width is always fine.)
 ///
-/// The workaround sizes the destination explicitly from measured geometry: the destination
-/// should reach from wherever the stack places its top (the bottom edge of the navigation
-/// band — the strip hosting the back chevron) down to the split view's bottom, so its height
-/// is `columnBottom − placedTop`, both measured, no hard-coded band height. The measurement
-/// is self-correcting: the first pass (top not yet measured) uses the stack's full height,
-/// which over-fills and gets clamped to the band's bottom edge — making the top measurable —
-/// and the stack centres any not-exactly-fitting destination in the same region, so each
-/// subsequent pass halves any residual error; the fixed point is the exact region fit.
-/// The `plausibleTopBand` acceptance filter keeps a transiently-mismeasured pass from
-/// collapsing the destination back into the degenerate bottom-bar layout (which would be
-/// self-sustaining otherwise, since a bar-sized destination is bottom-anchored and its
-/// placed top yields a bar-sized height).
+/// The fix forces the destination to the measured full column height (`SidebarDestinationFill`
+/// receives it as `columnHeight`), `alignment: .top`, and pulls it up under the transparent nav
+/// band with `.offset` so the browser REGION spans the whole column — its scrollable content
+/// flows under the back/Add/switcher buttons, matching how the detail pane's card bleeds under
+/// the window titlebar. `.contentMargins` then re-insets the scroll CONTENT (not the region) by
+/// the band height so the first postcard rests just below those buttons while still scrolling up
+/// beneath them; `.contentMargins` is used rather than a bottom/top `safeAreaInset` because the
+/// split view's safe-area/edge-inset plumbing is exactly the cycle the constraint-watchdog crash
+/// ran through — feeding it more insets courts the same loop.
+///
+/// Crucially the applied height depends ONLY on the root-captured column height (frozen while a
+/// destination is pushed) and the external window height — never on a measurement of the
+/// destination's own placement. An earlier version measured where the stack placed the
+/// destination and fed that back into its height; that self-reference made the layout oscillate
+/// and, during the sidebar's show/hide animation, trip AppKit's constraint-update watchdog
+/// ("more Update Constraints in Window passes than there are views in the window").
 private struct SidebarDestinationFill: ViewModifier {
-    /// The stack's frame measured at the ROOT level (the only time it's honestly
-    /// column-sized): its height seeds the oversized first pass, and its top bounds which
-    /// placement measurements are believable (see `plausibleTopBand`).
-    let stackRootFrame: CGRect
-    /// The usable content region's bottom edge in global coordinates (measured off the
-    /// detail column, which the sidebar's layout can't distort).
-    let columnBottom: CGFloat
+    /// The sidebar column's full content height, measured at the root nav level (see
+    /// `LibraryView.sidebarColumnHeight`). Zero until first measured — the modifier is inert
+    /// then, so the destination briefly takes its (buggy) proposed height before snapping.
+    let columnHeight: CGFloat
 
-    /// Where the stack placed this destination (global minY) once layout SETTLED while it
-    /// was oversized. In practice this is the bottom edge of the navigation band — an
-    /// oversized destination's top always lands there — and it's how the band's height
-    /// enters the computed fill height without being hard-coded.
-    @State private var placedTop: CGFloat = 0
-    /// One-shot latch per input geometry: placement readings are only believable BEFORE a
-    /// fitted height is adopted. An undersized destination is bottom-anchored, which makes
-    /// every undersized state a fixed point of "height = bottom − placedTop" — re-adopting
-    /// a reading after the latch could capture one of those and stick there.
-    @State private var latchedInputs: String?
-    /// Push/resize animations stream transient placements; only a reading that has stopped
-    /// changing for this long is a settled layout.
-    @State private var settleTask: Task<Void, Never>?
-
-    /// Accept only placement tops within this distance below the stack's root top. A
-    /// region-sized-or-larger destination's top always sits just below the stack top (the
-    /// navigation band, ~55pt); anything far lower is a transient from an undersized layout
-    /// pass (the stack bottom-anchors those), and folding one into `height` would collapse
-    /// the destination back toward the degenerate bottom-bar layout this modifier exists to
-    /// prevent.
-    private let plausibleTopBand: CGFloat = 200
-
-    private var inputsKey: String { "\(columnBottom)|\(stackRootFrame.minY)|\(stackRootFrame.height)" }
-
-    private var height: CGFloat? {
-        if placedTop > 0, columnBottom > placedTop {
-            return columnBottom - placedTop
-        }
-        return stackRootFrame.height > 0 ? stackRootFrame.height : nil
-    }
+    /// The window toolbar strip's height (traffic lights / back / Add / switcher) the browsing
+    /// region bleeds under. Shared with the bottom search bar's counter-shift (`SidebarBleed`).
+    /// A constant, not a measured value: measuring it means measuring the destination's own
+    /// placement — the self-reference that caused the constraint-watchdog crash.
+    static let toolbarInset = SidebarBleed.inset
 
     func body(content: Content) -> some View {
         content
-            .frame(height: height)
-            .background(GeometryReader { proxy in
-                Color.clear.onChange(of: proxy.frame(in: .global).minY, initial: true) { _, top in
-                    guard latchedInputs != inputsKey,
-                          top > stackRootFrame.minY - 0.5,
-                          top < stackRootFrame.minY + plausibleTopBand
-                    else { return }
-                    settleTask?.cancel()
-                    let key = inputsKey
-                    settleTask = Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(200))
-                        guard !Task.isCancelled else { return }
-                        placedTop = top
-                        latchedInputs = key
-                    }
-                }
-            })
+            // Fill the column PLUS the toolbar strip, then render the whole region shifted up by
+            // that strip (`.offset`) so the grid/map bleed visually up under the transparent
+            // titlebar and traffic lights. `.offset` is a RENDER-only shift: the region's layout
+            // (hit-testing) frame stays below the toolbar, so the real toolbar buttons keep
+            // receiving their clicks — unlike `.ignoresSafeArea`, which extends the hit frame over
+            // them and swallows the clicks. The scroll view moves its own content with it, so grid
+            // cells stay clickable; only free-floating overlays would diverge (hence the back
+            // button is a real toolbar item, not an overlay). `columnHeight` already spans the
+            // full column, so the offset alone lands the top under the titlebar and the bottom at
+            // the column's bottom edge — no extra height, which would overshoot past the window.
+            .frame(height: columnHeight > 0 ? columnHeight : nil, alignment: .top)
+            .offset(y: -Self.toolbarInset)
+            // Re-inset the scroll content so the first item (the collection title) rests just below
+            // the toolbar buttons while still scrolling up under them (a no-op for the map).
+            .contentMargins(.top, Self.toolbarInset, for: .scrollContent)
     }
 }
 
@@ -937,6 +940,22 @@ private struct TransparentWindowToolbarBackground: ViewModifier {
             content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         } else {
             content
+        }
+    }
+}
+
+/// Hides a pushed destination's inline back button + title band. `toolbar(removing: .title)` needs
+/// macOS 15; below that only the back button is hidden (the inline title stays — an acceptable
+/// degradation, as the Liquid-Glass sidebar this targets is a macOS 26 concern anyway).
+private struct HideInlineNavBar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content
+                .navigationBarBackButtonHidden(true)
+                .toolbar(removing: .title)
+        } else {
+            content
+                .navigationBarBackButtonHidden(true)
         }
     }
 }
