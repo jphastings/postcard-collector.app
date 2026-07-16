@@ -311,7 +311,17 @@ struct LibraryView: View {
                                 CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
                             }
                             .contextMenu { cloudCollectionMenu(for: item) }
+                        } else if item.downloadState == .remote {
+                            // Undownloaded: tap the row to start the download (see CloudItemRow's
+                            // "Click/Tap to download" caption).
+                            Button {
+                                cloudLibrary.download(item)
+                            } label: {
+                                CloudItemRow(item: item, refreshToken: 0)
+                            }
+                            .buttonStyle(.plain)
                         } else {
+                            // Downloading — inert until it becomes current.
                             CloudItemRow(item: item, refreshToken: 0)
                         }
                     }
@@ -771,6 +781,15 @@ private struct CloudItemRow: View {
 
     @State private var title: String?
 
+    /// The call-to-action under an undownloaded iCloud item — the row is tappable to download it.
+    static let downloadPrompt: String = {
+        #if os(macOS)
+        "Click to download"
+        #else
+        "Tap to download"
+        #endif
+    }()
+
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
@@ -778,10 +797,10 @@ private struct CloudItemRow: View {
                 switch item.downloadState {
                 case .current:
                     EmptyView()
-                case .downloading(let percent):
-                    ProgressView(value: percent, total: 100)
+                case .downloading:
+                    Text("Downloading…").font(.caption).foregroundStyle(.secondary)
                 case .remote:
-                    Text("Not downloaded").font(.caption).foregroundStyle(.secondary)
+                    Text(Self.downloadPrompt).font(.caption).foregroundStyle(.secondary)
                 }
             }
         } icon: {

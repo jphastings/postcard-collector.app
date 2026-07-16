@@ -31,6 +31,10 @@ struct PostcardsApp: App {
             LibraryView(library: library, cloudLibrary: cloudLibrary)
                 .task {
                     cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
+                    // Click/tap-to-download: don't pull every iCloud item down automatically — the
+                    // sidebar's undownloaded rows download on tap. (iCloud may still fetch some on
+                    // its own; those show "Downloading…".)
+                    cloudLibrary.shouldAutoDownload = { _ in false }
                     await cloudLibrary.start()
                 }
         }

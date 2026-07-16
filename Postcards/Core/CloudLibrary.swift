@@ -232,6 +232,12 @@ final class CloudLibrary {
         try? FileManager.default.startDownloadingUbiquitousItem(at: URL(fileURLWithPath: item.path))
     }
 
+    /// Starts downloading an item on demand — the sidebar's click/tap-to-download action for
+    /// undownloaded iCloud rows. A no-op if it's already current.
+    func download(_ item: CloudItem) {
+        downloadIfNeeded(item)
+    }
+
     /// Collections and bare files can be replaced wholesale by iCloud sync at any time —
     /// if a path we already knew about picks up newer content, drop any cached Go core
     /// handle so the next access reopens against the new file instead of reading through
