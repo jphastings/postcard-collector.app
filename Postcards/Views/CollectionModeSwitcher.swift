@@ -41,19 +41,20 @@ struct CollectionModeSwitcher: View {
 
     private func segment(_ candidate: CollectionViewMode) -> some View {
         let selected = mode == candidate
-        return Button {
-            mode = candidate
-        } label: {
-            Image(systemName: candidate.systemImage)
-                .imageScale(.medium)
-                .frame(width: 34, height: 22)
-                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .background(selected ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.clear))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(candidate.label)
-        .disabled(candidate == .map && !isEnabled)
-        .accessibilityHint(candidate == .map && !isEnabled ? "No postcards in this collection have a location" : "")
+        let disabled = candidate == .map && !isEnabled
+        return Image(systemName: candidate.systemImage)
+            .imageScale(.medium)
+            .frame(width: 34, height: 22)
+            .foregroundStyle(disabled ? AnyShapeStyle(.tertiary)
+                : selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .background(selected ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.clear))
+            .contentShape(Rectangle())
+            // A tap gesture, not a `Button`: a `Button` nested in this titlebar toolbar item loses
+            // its first click to AppKit's tracking loop (needs a double-click); a tap gesture
+            // registers on the first click. See CLAUDE.md and the map pins.
+            .onTapGesture { if !disabled { mode = candidate } }
+            .accessibilityLabel(candidate.label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(disabled ? "No postcards in this collection have a location" : "")
     }
 }

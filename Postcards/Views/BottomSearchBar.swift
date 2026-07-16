@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// How far the sidebar's browsing region is shifted up (by `SidebarDestinationFill`) to bleed
-/// under the transparent titlebar. The bottom search bar counter-shifts by the same amount so it
-/// stays pinned to the sidebar's true bottom edge rather than floating this far above it.
-enum SidebarBleed {
-    static let inset: CGFloat = 52
-}
-
 /// macOS-only stand-in for `.searchable(text:tokens:suggestedTokens:...)`: docks a search
 /// field — with Mail-style token pills — to the bottom of a content pane instead of the
 /// toolbar (see call sites in `CollectionGridView`, `SinglePostcardsGridView`,
@@ -55,6 +48,11 @@ struct BottomSearchBar: View {
         .padding(.vertical, 6)
         .floatingGlassBackground(in: fieldShape)
         .overlay(fieldShape.strokeBorder(.quaternary, lineWidth: 1))
+        // A click anywhere on the capsule — the magnifying-glass icon, the padding, the empty
+        // field area — focuses the text field, not just a direct hit on the TextField. The clear
+        // button keeps its own tap (it sits above this in the HStack and handles the click first).
+        .contentShape(fieldShape)
+        .onTapGesture { isFocused.wrappedValue = true }
         .frame(maxWidth: 360)
         // Floats the field as its own glass capsule above the grid rather than a full-width
         // bar: no `.background` on this outer container, so the safeAreaInset it sits in
@@ -197,9 +195,6 @@ private struct BottomSearchBarModifier: ViewModifier {
                     isFocused: $isFocused,
                     focusRequest: $focusRequest
                 )
-                // Counter the browsing region's upward bleed offset (`SidebarDestinationFill`)
-                // so the bar sits at the sidebar's true bottom edge, not floating above it.
-                .offset(y: SidebarBleed.inset)
                 .background(
                     GeometryReader { proxy in
                         Color.clear.preference(key: FieldHeightPreferenceKey.self, value: proxy.size.height)

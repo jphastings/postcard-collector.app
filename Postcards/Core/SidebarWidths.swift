@@ -40,7 +40,10 @@ enum SidebarWidths {
 
     static func bounds(for mode: CollectionViewMode) -> Bounds {
         switch mode {
-        case .grid: return Bounds(min: 230, ideal: 300, max: 400)
+        // The grid min is held wide enough that the window toolbar (traffic lights + sidebar
+        // toggle + back + Add + the grid/map switcher) always fits without collapsing items into
+        // the ">>" overflow menu.
+        case .grid: return Bounds(min: 320, ideal: 340, max: 440)
         case .map: return Bounds(min: 400, ideal: 500, max: 700)
         }
     }
