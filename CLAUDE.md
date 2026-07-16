@@ -67,7 +67,19 @@ times**. The lessons, which the architecture now encodes:
   the sidebar toolbar rely on the transparent band.
 - Buttons whose AppKit tracking loop competes with another hit-test participant (stacked
   map annotations; anything near the titlebar) lose the first click — a `.onTapGesture`
-  doesn't. See the map pins.
+  doesn't. See the map pins, and the grid/map segmented switcher (`CollectionModeSwitcher`)
+  whose segments are `.onTapGesture`, not `Button`, for exactly this reason.
+- **Full-bleed sidebar browser**: the pushed grid/map destination fills its column with
+  `.containerRelativeFrame(.vertical)` and nothing else (`SidebarDestinationFill`). That one
+  modifier fixes the NavigationStack-in-sidebar collapse-to-ideal-height bug *and* keeps
+  SwiftUI's native scroll-under-toolbar behaviour — content bleeds up under the transparent
+  titlebar and traffic lights, real toolbar items stay clickable, the bottom sits flush above
+  the search bar (the Music/Photos/Flighty pattern). It replaced a measured-column-height +
+  `.offset` + `.ignoresSafeArea` stack (`WindowHeightReader`/`columnHeight`/`navBandHeight`)
+  that was clicks-dead, bottom-gapped, overshooting, or watchdog-crashing by turns. Don't
+  reintroduce a measured fixed frame + offset here: measuring the destination's *own*
+  placement is the self-reference that caused the constraint-watchdog crash, and it severs
+  the native scroll-under.
 
 ## MapKit annotation hosting — hard-won rules
 
@@ -113,6 +125,10 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - Single-tap actions must not wait out double-tap disambiguation windows — a flip that
   waits feels broken. If two tap counts are needed on one surface, accept discrete
   semantics; on iOS/macOS we removed double-tap zoom instead.
+- `ToolbarPlacement.navigationBar` is `@available(macOS, unavailable)` — `.toolbar(.hidden,
+  for: .navigationBar)` won't compile on macOS. To strip a pushed destination's inline
+  back/title band there, use `.navigationBarBackButtonHidden(true)` + `.toolbar(removing:
+  .title)` (macOS 15+, guarded). See `HideInlineNavBar`.
 - iOS ignores `.searchable`'s `suggestedTokens:` binding in this configuration; use
   `.searchSuggestions {}` rows with `.searchCompletion(token)` (the Mail pattern).
   `searchFocused` needs iOS 18 — gate it, don't raise the floor for a nicety.
@@ -169,8 +185,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   no SwiftUI imports; views stay thin. Follow that split — it's why the suite runs in
   milliseconds, and it's the repo convention for anything worth asserting (fit regimes,
   cluster decisions, search parsing, cache layouts).
-- The macOS UI tests (`PostcardsUITests-macOS`) run in CI and locally; don't run the iOS
-  `PostcardsUITests` target from headless automation — it stalls.
+- The macOS UI tests (`PostcardsUITests-macOS`) can't run with `CODE_SIGNING_ALLOWED=NO` —
+  the test runner fails to attach to an unsigned host. Run them with development signing (drop
+  that flag, add `-allowProvisioningUpdates`); even signed, a local run can hit "Timed out
+  while enabling automation mode," so treat them as CI/Xcode-run rather than headless-CLI.
+  Don't run the iOS `PostcardsUITests` target from headless automation — it stalls.
 - CI's app job must run on a macOS image whose SDK contains the Liquid Glass APIs the
   code uses — runtime `#available` guards don't help the *compiler* against an old SDK.
 - Release flow spans two repos, in order: dotpostcard main push auto-releases via
