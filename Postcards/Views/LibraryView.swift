@@ -446,11 +446,10 @@ struct LibraryView: View {
             }
         }
         revealInFinderButton(path: source.path)
-        // "Remove from Library" reads as a non-destructive "just forget it", but an
-        // imported collection's only copy lives in the app's own container — there's
-        // nothing else to "remove" it from, so this does delete that copy. "Delete…"
-        // below reaches the same end state, just behind an explicit confirmation.
-        Button("Remove from Library") {
+        // "Remove from Local" forgets the reference. On macOS the file was opened in place, so it
+        // stays on disk untouched; "Delete…" below is the destructive option. (On iOS the source
+        // is a container copy, so removing it does delete that copy — see `removeFromLibrary`.)
+        Button("Remove from Local") {
             Task { await removeFromLibrary(source) }
         }
         Divider()
@@ -505,7 +504,11 @@ struct LibraryView: View {
 
     private func removeFromLibrary(_ source: LibrarySource) async {
         await GoCore.shared.invalidateSource(at: source.path)
+        #if !os(macOS)
+        // iOS references a copy in the app container, so deleting it IS the "forget". macOS opened
+        // the file in place — `library.remove` just drops the reference, leaving the file alone.
         try? FileManager.default.removeItem(atPath: source.path)
+        #endif
         library.remove(path: source.path)
         if sidebarPath.last == source { sidebarPath.removeLast() }
     }
@@ -569,7 +572,11 @@ struct LibraryView: View {
         if cloudLibrary.containerState == .available, let documents = cloudLibrary.documentsURL {
             directory = documents
         } else {
+            #if os(macOS)
+            directory = LibraryModel.localCollectionsDirectory
+            #else
             directory = LibraryModel.defaultImportDirectory
+            #endif
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 

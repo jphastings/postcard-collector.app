@@ -1,28 +1,37 @@
 import XCTest
 
-/// Integration tests for the import pipeline (the bugs-2/3 regression area): a collection
-/// picked from OUTSIDE the app bundle must stay fully usable — list, thumbnails, full
-/// images — because it's copied into the app container at import, not read in place
-/// through a security-scoped URL whose grant can lapse.
+/// Integration tests for the macOS open-in-place library: a collection picked from outside the
+/// app is referenced where it lies (not copied), remembered by a bookmark that follows the file
+/// if it moves and is dropped if it disappears.
 @MainActor
 final class LibraryModelImportTests: XCTestCase {
-    private var importDirectory: URL!
     private var pickedDirectory: URL!
+    private var suiteName: String!
+    private var defaults: UserDefaults!
 
     override func setUpWithError() throws {
-        let base = FileManager.default.temporaryDirectory
+        pickedDirectory = FileManager.default.temporaryDirectory
             .appending(path: "LibraryModelImportTests-\(UUID().uuidString)")
-        importDirectory = base.appending(path: "imported")
-        pickedDirectory = base.appending(path: "picked")
         try FileManager.default.createDirectory(at: pickedDirectory, withIntermediateDirectories: true)
+        // Isolated defaults per test so persisted bookmarks don't leak between runs.
+        suiteName = "LibraryModelImportTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
     }
 
     override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: importDirectory.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: pickedDirectory)
+        defaults.removePersistentDomain(forName: suiteName)
     }
 
-    /// Stages the bundled fixture db in a directory outside the app bundle/import dir,
-    /// standing in for a file-importer/open-panel URL.
+    /// Canonicalises a path for comparison — bookmark resolution returns `/private/var/…` where a
+    /// freshly-built temp URL is `/var/…` (the same file via a symlink).
+    private func resolved(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    /// Stages the bundled fixture db in a directory outside the app bundle, standing in for a
+    /// file-importer/open-panel URL.
+    @discardableResult
     private func stagePickedCollection(named filename: String = "my-cards.postcards") throws -> URL {
         let fixture = try XCTUnwrap(
             Bundle(for: LibraryModelImportTests.self).url(forResource: "fixture", withExtension: "postcards"),
@@ -33,50 +42,65 @@ final class LibraryModelImportTests: XCTestCase {
         return picked
     }
 
-    func testImportedCollectionIsCopiedIntoContainerAndFullyUsable() async throws {
+    func testOpenedCollectionIsReferencedInPlaceAndUsable() async throws {
         let picked = try stagePickedCollection()
-        let model = LibraryModel(importDirectory: importDirectory)
-        let preexistingSources = model.sources.count
+        let model = LibraryModel(defaults: defaults)
 
         await model.importSources(from: [picked])
 
         XCTAssertNil(model.importError)
-        XCTAssertEqual(model.sources.count, preexistingSources + 1)
         let source = try XCTUnwrap(model.sources.last)
         XCTAssertEqual(source.displayName, "my-cards")
         XCTAssertTrue(source.isCollection)
-        XCTAssertTrue(source.path.hasPrefix(importDirectory.path), "must open the container copy, not the picked file")
+        XCTAssertEqual(source.path, picked.path, "must reference the picked file in place, not a copy")
 
-        // Delete the original — the app must keep working from its own copy (this is
-        // exactly what a lapsed security-scope grant looked like to the Go core).
-        try FileManager.default.removeItem(at: picked)
-
+        // Fully usable at its real location: list, thumbnail, and full image.
         let cards = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
         XCTAssertEqual(cards.count, 5)
-
         let thumbnail = try await GoCore.shared.thumbnail(forCard: cards[0].name, inCollectionAt: source.path)
         XCTAssertFalse(thumbnail.isEmpty)
-
         let image = try await GoCore.shared.image(forCard: cards[0].name, inCollectionAt: source.path)
         XCTAssertFalse(image.isEmpty)
     }
 
-    func testImportedSourcesAreRestoredOnRelaunch() async throws {
+    func testOpenedSourcesPersistAcrossRelaunch() async throws {
         let picked = try stagePickedCollection()
-        let first = LibraryModel(importDirectory: importDirectory)
+        let first = LibraryModel(defaults: defaults)
         await first.importSources(from: [picked])
         XCTAssertNil(first.importError)
 
-        // A brand-new model over the same container dir = app relaunch. (The test bundle
-        // has no bundled fixtures, so restored imports are the only sources; avoid path
-        // prefix checks — /var vs /private/var symlinks differ between APIs.)
-        let relaunched = LibraryModel(importDirectory: importDirectory)
+        // A brand-new model over the same defaults = app relaunch.
+        let relaunched = LibraryModel(defaults: defaults)
         XCTAssertEqual(relaunched.sources.map(\.displayName), ["my-cards"])
+        XCTAssertEqual(relaunched.sources.first.map { resolved($0.path) }, resolved(picked.path))
     }
 
-    func testReimportingTheSameFilenameReplacesRatherThanDuplicates() async throws {
+    func testMovedFileFollowsToNewLocationOnRelaunch() async throws {
         let picked = try stagePickedCollection()
-        let model = LibraryModel(importDirectory: importDirectory)
+        await LibraryModel(defaults: defaults).importSources(from: [picked])
+
+        // Move the file elsewhere, then relaunch — the bookmark should resolve to its new home.
+        let moved = pickedDirectory.appending(path: "moved-cards.postcards")
+        try FileManager.default.moveItem(at: picked, to: moved)
+
+        let relaunched = LibraryModel(defaults: defaults)
+        XCTAssertEqual(relaunched.sources.map { resolved($0.path) }, [resolved(moved.path)], "the reference must follow the moved file")
+    }
+
+    func testMissingFileIsDroppedOnRelaunch() async throws {
+        let picked = try stagePickedCollection()
+        await LibraryModel(defaults: defaults).importSources(from: [picked])
+
+        // Delete the original — open-in-place can't recover it, so relaunch must drop the row.
+        try FileManager.default.removeItem(at: picked)
+
+        let relaunched = LibraryModel(defaults: defaults)
+        XCTAssertTrue(relaunched.sources.isEmpty, "a file that can't be found must be dropped, not shown broken")
+    }
+
+    func testReopeningTheSameFileDoesNotDuplicate() async throws {
+        let picked = try stagePickedCollection()
+        let model = LibraryModel(defaults: defaults)
 
         await model.importSources(from: [picked])
         let countAfterFirst = model.sources.count
@@ -89,27 +113,25 @@ final class LibraryModelImportTests: XCTestCase {
     func testNonPostcardFileIsRejectedWithAVisibleError() async throws {
         let junk = pickedDirectory.appending(path: "notes.txt")
         try Data("hello".utf8).write(to: junk)
-        let model = LibraryModel(importDirectory: importDirectory)
-        let preexistingSources = model.sources.count
+        let model = LibraryModel(defaults: defaults)
 
         await model.importSources(from: [junk])
 
         XCTAssertNotNil(model.importError, "unusable picks must surface an error, never a silent dead grid")
-        XCTAssertEqual(model.sources.count, preexistingSources)
+        XCTAssertTrue(model.sources.isEmpty)
     }
 
     func testCorruptCollectionIsRejectedAtImportTime() async throws {
         let corrupt = pickedDirectory.appending(path: "broken.postcards")
         try Data("not a sqlite file".utf8).write(to: corrupt)
-        let model = LibraryModel(importDirectory: importDirectory)
-        let preexistingSources = model.sources.count
+        let model = LibraryModel(defaults: defaults)
 
         await model.importSources(from: [corrupt])
 
         XCTAssertNotNil(model.importError)
-        XCTAssertEqual(model.sources.count, preexistingSources)
-        // The failed copy must not linger to be "restored" as a broken source next launch.
-        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: importDirectory.path)) ?? []
-        XCTAssertFalse(leftovers.contains("broken.postcards"))
+        XCTAssertTrue(model.sources.isEmpty)
+        // A rejected file must not be remembered as a source for the next launch.
+        let relaunched = LibraryModel(defaults: defaults)
+        XCTAssertTrue(relaunched.sources.isEmpty)
     }
 }
