@@ -3,7 +3,7 @@ import XCTest
 final class SidebarWidthsTests: XCTestCase {
     func testGridModeUsesTheNarrowBounds() {
         let bounds = SidebarWidths.bounds(for: .grid)
-        XCTAssertEqual(bounds, SidebarWidths.Bounds(min: 230, ideal: 300, max: 400))
+        XCTAssertEqual(bounds, SidebarWidths.Bounds(min: 320, ideal: 340, max: 400))
     }
 
     func testMapModeUsesTheWideBounds() {
