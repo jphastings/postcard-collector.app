@@ -89,7 +89,7 @@ struct SinglePostcardsGridView: View {
                         MasonryGrid(
                             items: displayedCards,
                             aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) },
-                            header: { ScrollingCollectionTitle(title: "Single postcards") }
+                            header: { ScrollingCollectionTitle(title: "Individual postcards") }
                         ) { entry in
                             Button {
                                 selection = entry.reference
@@ -116,7 +116,7 @@ struct SinglePostcardsGridView: View {
                 ProgressView()
             }
         }
-        .navigationTitle("Single postcards")
+        .navigationTitle("Individual postcards")
         #if os(macOS)
         .bottomSearchBar(
             text: $searchText,
@@ -165,7 +165,7 @@ struct SinglePostcardsGridView: View {
     @ViewBuilder
     private var emptyState: some View {
         if searchText.isEmpty, searchTokens.isEmpty {
-            ContentUnavailableView("No Single Postcards", systemImage: "photo.on.rectangle.angled")
+            ContentUnavailableView("No Individual Postcards", systemImage: "photo.on.rectangle.angled")
         } else {
             ContentUnavailableView.search
         }

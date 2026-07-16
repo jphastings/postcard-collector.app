@@ -1,15 +1,24 @@
 import Foundation
 
+/// Where a "Individual postcards" aggregate's bare files live: the local machine, or iCloud.
+/// The two are separate sidebar rows (one at the bottom of each section) so each aggregates only
+/// the bare files stored in that place.
+enum SinglePostcardsScope: String, Hashable {
+    case local
+    case cloud
+}
+
 /// One thing the library can show: either an opened `.postcards` collection, a bare
-/// `.postcard.*` file opened outside of any collection, or the synthetic "Single postcards"
-/// aggregate row (see `SinglePostcardsGridView`) standing in for every bare file at once.
+/// `.postcard.*` file opened outside of any collection, or a synthetic "Individual postcards"
+/// aggregate row (see `SinglePostcardsGridView`) standing in for every bare file in one place
+/// (local or iCloud) at once.
 enum LibrarySource: Identifiable, Hashable {
     case collection(path: String, displayName: String)
     case cardFile(path: String, displayName: String)
     /// Not a real file — `LibraryView` never puts this in `LibraryModel.sources` or
-    /// `CloudLibrary.items`; it only ever appears as the sidebar's pinned last row, so it
-    /// can be `List(selection:)`'s tag like any other source.
-    case singlePostcards
+    /// `CloudLibrary.items`; it only ever appears as a pinned last row of the Local or iCloud
+    /// section, so it can be `List(selection:)`'s tag like any other source.
+    case singlePostcards(SinglePostcardsScope)
     /// Also synthetic: the sidebar's pinned FIRST row, showing the union of every card
     /// from every known source at once (see `AllCollectionsView`).
     case allCollections
@@ -20,7 +29,7 @@ enum LibrarySource: Identifiable, Hashable {
         switch self {
         case .collection(let path, _): return path
         case .cardFile(let path, _): return path
-        case .singlePostcards: return "single-postcards://aggregate"
+        case .singlePostcards(let scope): return "single-postcards://\(scope.rawValue)"
         case .allCollections: return "all-collections://aggregate"
         }
     }
@@ -29,7 +38,7 @@ enum LibrarySource: Identifiable, Hashable {
         switch self {
         case .collection(_, let name): return name
         case .cardFile(_, let name): return name
-        case .singlePostcards: return "Single postcards"
+        case .singlePostcards: return "Individual postcards"
         case .allCollections: return "All collections"
         }
     }

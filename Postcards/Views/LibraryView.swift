@@ -124,7 +124,7 @@ struct LibraryView: View {
                         onFileConsumed: { library.remove(path: $0) },
                         onImport: { isImporting = true },
                         collectionPaths: writableCollections.map(\.path),
-                        barePaths: singlePostcardPaths
+                        barePaths: barePaths(for: source)
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
@@ -293,7 +293,7 @@ struct LibraryView: View {
                 }
                 .accessibilityIdentifier("All collections")
             }
-            if !importedCollectionSources.isEmpty {
+            if !importedCollectionSources.isEmpty || !localBarePaths.isEmpty {
                 Section(header: sectionHeader("Local")) {
                     ForEach(importedCollectionSources) { source in
                         NavigationLink(value: source) {
@@ -301,9 +301,14 @@ struct LibraryView: View {
                         }
                         .contextMenu { importedCollectionMenu(for: source) }
                     }
+                    // Bare local files aggregate into an "Individual postcards" row at the bottom
+                    // of the section they're stored in.
+                    if !localBarePaths.isEmpty {
+                        individualPostcardsRow(scope: .local)
+                    }
                 }
             }
-            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty {
+            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty || !cloudBarePaths.isEmpty {
                 Section(header: sectionHeader("iCloud")) {
                     ForEach(cloudSidebarItems) { item in
                         if item.downloadState == .current {
@@ -325,17 +330,19 @@ struct LibraryView: View {
                             CloudItemRow(item: item, refreshToken: 0)
                         }
                     }
-                }
-            }
-            if hasAnyBareCard {
-                Section {
-                    NavigationLink(value: LibrarySource.singlePostcards) {
-                        Label("Single postcards", systemImage: "photo.on.rectangle.angled")
+                    if !cloudBarePaths.isEmpty {
+                        individualPostcardsRow(scope: .cloud)
                     }
-                    .accessibilityIdentifier("Single postcards")
                 }
             }
         }
+    }
+
+    private func individualPostcardsRow(scope: SinglePostcardsScope) -> some View {
+        NavigationLink(value: LibrarySource.singlePostcards(scope)) {
+            Label("Individual postcards", systemImage: "photo.on.rectangle.angled")
+        }
+        .accessibilityIdentifier("Individual postcards (\(scope.rawValue))")
     }
 
     /// A section subheading a little larger than SwiftUI's default sidebar header, sitting below
@@ -379,20 +386,34 @@ struct LibraryView: View {
         cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }
     }
 
-    /// Every bare `.postcard.*` file the app currently knows about, imported or synced —
-    /// only fully-downloaded iCloud ones (see `sourceList`'s comment on the iCloud section).
-    private var singlePostcardPaths: [String] {
-        var paths = library.sources.compactMap { source -> String? in
+    /// Bare `.postcard.*` files opened locally (imported) — the Local "Individual postcards" row.
+    private var localBarePaths: [String] {
+        library.sources.compactMap { source -> String? in
             if case .cardFile(let path, _) = source { return path }
             return nil
         }
-        paths += cloudLibrary.items
-            .filter { !$0.isCollection && $0.downloadState == .current }
-            .map(\.path)
-        return paths
     }
 
-    private var hasAnyBareCard: Bool { !singlePostcardPaths.isEmpty }
+    /// Bare `.postcard.*` files synced from iCloud, only the fully-downloaded ones (see the iCloud
+    /// section comment) — the iCloud "Individual postcards" row.
+    private var cloudBarePaths: [String] {
+        cloudLibrary.items
+            .filter { !$0.isCollection && $0.downloadState == .current }
+            .map(\.path)
+    }
+
+    /// Every bare file the app knows about, local + iCloud — the union "All collections" searches.
+    private var allBarePaths: [String] { localBarePaths + cloudBarePaths }
+
+    /// The bare-file subset a pushed destination should show: the local or iCloud aggregate for an
+    /// "Individual postcards" row, the full union for "All collections".
+    private func barePaths(for source: LibrarySource) -> [String] {
+        switch source {
+        case .singlePostcards(.local): return localBarePaths
+        case .singlePostcards(.cloud): return cloudBarePaths
+        default: return allBarePaths
+        }
+    }
 
     /// Every collection the app currently knows about — imported plus fully-downloaded
     /// iCloud ones — for the grid cells' "Move to Collection…"/"Copy to Collection…" menus.
