@@ -17,6 +17,9 @@ core / format tooling has its own list in the dotpostcard repo's `TODO.md`.
       Persist opened local files across restarts, tracking each via filesystem metadata:
       update the reference if a file has moved and can still be found, drop it if it can't be
       found on boot. iPad/iOS stays iCloud-only (no Local section).
+- [ ] Detail view zoom/pan: show the "Reset zoom" button when the zoom is non-zero OR the
+      postcard isn't centred. Clamp panning so a postcard edge can't move past the middle of the
+      screen (no more than halfway off-screen).
 
 ## Done
 
