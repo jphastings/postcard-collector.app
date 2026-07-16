@@ -62,10 +62,24 @@ struct LibraryView: View {
     /// `CollectionModeSwitcher`. Written by whichever pane `CollectionBrowser` hosts.
     @State private var hasAnyLocation = false
 
+    /// The split view's column visibility, tracked so the back/switcher toolbar items can hide
+    /// when the sidebar is collapsed (they act on a sidebar that isn't on screen).
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+
+    /// Whether the sidebar's own toolbar buttons (back, grid/map switcher) should show: hidden on
+    /// macOS while the sidebar is collapsed; always shown elsewhere.
+    private var sidebarButtonsVisible: Bool {
+        #if os(macOS)
+        columnVisibility != .detailOnly
+        #else
+        true
+        #endif
+    }
+
     private var selectedSource: LibrarySource? { sidebarPath.last }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             NavigationStack(path: $sidebarPath) {
                 VStack(spacing: 0) {
                     if hasAnySources {
@@ -102,6 +116,7 @@ struct LibraryView: View {
                         viewMode: $viewMode,
                         hasAnyLocation: $hasAnyLocation,
                         isCompact: horizontalSizeClass == .compact,
+                        sidebarVisible: sidebarButtonsVisible,
                         writableCollections: writableCollections,
                         cloudLibrary: cloudLibrary,
                         searchRequest: searchRequest,
@@ -584,6 +599,8 @@ private struct CollectionBrowser: View {
     @Binding var viewMode: CollectionViewMode
     @Binding var hasAnyLocation: Bool
     let isCompact: Bool
+    /// Hides the back / grid-map switcher toolbar items while the sidebar is collapsed (macOS).
+    var sidebarVisible = true
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
     let searchRequest: SearchRequest
@@ -673,11 +690,17 @@ private struct CollectionBrowser: View {
                 // Back lives here, as a real toolbar item, because it's the only reliably
                 // clickable control in the titlebar band (see CLAUDE.md) — the framework's own
                 // inline back button is hidden. Popping the sidebar stack via `dismiss()`.
-                Button("Back", systemImage: "chevron.backward") { dismiss() }
-                    .accessibilityIdentifier("SidebarBack")
+                // Hidden while the sidebar is collapsed (nothing to go back within).
+                if sidebarVisible {
+                    Button("Back", systemImage: "chevron.backward") { dismiss() }
+                        .accessibilityIdentifier("SidebarBack")
+                }
                 #endif
                 Button("Add…", systemImage: "plus", action: onImport)
-                CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
+                // The grid/map switcher acts on the sidebar's browser, so it hides with the sidebar.
+                if sidebarVisible {
+                    CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
+                }
             }
         }
         #if os(macOS)
