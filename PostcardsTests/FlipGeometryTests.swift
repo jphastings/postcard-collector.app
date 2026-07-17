@@ -82,4 +82,62 @@ final class FlipGeometryTests: XCTestCase {
         XCTAssertEqual(FlipGeometry.boundingSize(forFrontSize: front, flip: .calendar), front)
         XCTAssertEqual(FlipGeometry.boundingSize(forFrontSize: front, flip: .none), front)
     }
+
+    // MARK: - The stage's flip-axis demo
+
+    func testContinuousAngleDegreesIsZeroAtTheStartOfEachRevolution() {
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 0, period: 5), 0)
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 5, period: 5), 0, accuracy: 0.0001)
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 15, period: 5), 0, accuracy: 0.0001)
+    }
+
+    func testContinuousAngleDegreesIsHalfwayAtHalfThePeriod() {
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 2.5, period: 5), 180, accuracy: 0.0001)
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 7.5, period: 5), 180, accuracy: 0.0001)
+    }
+
+    func testContinuousAngleDegreesNeverPausesOrGoesBackwardsWithinARevolution() {
+        // Sampling forward in time within one period must keep producing a strictly
+        // increasing angle — the "never pausing" requirement.
+        let period = 5.0
+        var previous = -1.0
+        for tenth in stride(from: 0.0, to: period, by: 0.3) {
+            let angle = FlipGeometry.continuousAngleDegrees(elapsedSeconds: tenth, period: period)
+            XCTAssertGreaterThan(angle, previous)
+            previous = angle
+        }
+    }
+
+    func testContinuousAngleDegreesIsZeroForANonPositivePeriod() {
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 3, period: 0), 0)
+        XCTAssertEqual(FlipGeometry.continuousAngleDegrees(elapsedSeconds: 3, period: -1), 0)
+    }
+
+    func testAxisLineEndpointsIsAVerticalLineForBook() {
+        let (start, end) = FlipGeometry.axisLineEndpoints(axis: FlipAxis(x: 0, y: 1, z: 0), boxSide: 100)
+        XCTAssertEqual(start, CGPoint(x: 50, y: 0))
+        XCTAssertEqual(end, CGPoint(x: 50, y: 100))
+    }
+
+    func testAxisLineEndpointsIsAHorizontalLineForCalendar() {
+        let (start, end) = FlipGeometry.axisLineEndpoints(axis: FlipAxis(x: 1, y: 0, z: 0), boxSide: 100)
+        XCTAssertEqual(start, CGPoint(x: 0, y: 50))
+        XCTAssertEqual(end, CGPoint(x: 100, y: 50))
+    }
+
+    func testAxisLineEndpointsIsACornerToCornerDiagonalForHandFlips() {
+        let right = FlipGeometry.axisLineEndpoints(axis: FlipAxis(x: 1, y: 1, z: 0), boxSide: 100)
+        XCTAssertEqual(Set([right.start, right.end]), Set([CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 100)]))
+
+        let left = FlipGeometry.axisLineEndpoints(axis: FlipAxis(x: -1, y: 1, z: 0), boxSide: 100)
+        XCTAssertEqual(Set([left.start, left.end]), Set([CGPoint(x: 100, y: 0), CGPoint(x: 0, y: 100)]))
+    }
+
+    func testAxisLineEndpointsAlwaysPassThroughTheBoxCentre() {
+        for axis in [FlipAxis(x: 0, y: 1, z: 0), FlipAxis(x: 1, y: 0, z: 0), FlipAxis(x: 1, y: 1, z: 0), FlipAxis(x: -1, y: 1, z: 0)] {
+            let (start, end) = FlipGeometry.axisLineEndpoints(axis: axis, boxSide: 100)
+            let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+            XCTAssertEqual(midpoint, CGPoint(x: 50, y: 50), "axis line for \(axis) must be centred in the box")
+        }
+    }
 }

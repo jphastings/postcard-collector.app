@@ -1,6 +1,8 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 
 /// The app's root: a 2-column `NavigationSplitView`. The sidebar column hosts its own
@@ -37,6 +39,12 @@ struct LibraryView: View {
     @State private var sidebarPath: [LibrarySource] = []
     @State private var selectedCard: CardReference?
     @State private var isImporting = false
+    /// iPad's "Create Postcard…" presentation (macOS opens a real `Window` scene instead —
+    /// see `presentCreatePostcard()`); always `false` on iPhone, which has no entry point.
+    @State private var isPresentingCreateForm = false
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     /// Search presets submitted from a person's context menu in `CardInfoPanel` — see
     /// `SearchRequest`'s doc comment for why panes key off a bumped `generation`, not the
     /// `token` alone, when picking up a new preset.
@@ -106,7 +114,7 @@ struct LibraryView: View {
                     // root-level item disappears the moment a collection is opened unless it's
                     // repeated there too.
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Add…", systemImage: "plus") { isImporting = true }
+                        AddMenu(onCreate: presentCreatePostcard, onOpen: { isImporting = true })
                     }
                 }
                 .navigationDestination(for: LibrarySource.self) { source in
@@ -120,9 +128,11 @@ struct LibraryView: View {
                         writableCollections: writableCollections,
                         cloudLibrary: cloudLibrary,
                         searchRequest: searchRequest,
+                        contentGeneration: library.contentGeneration,
                         onCreateCollection: { try await createCollection(titled: $0) },
                         onFileConsumed: { library.remove(path: $0) },
                         onImport: { isImporting = true },
+                        onCreate: presentCreatePostcard,
                         collectionPaths: writableCollections.map(\.path),
                         barePaths: barePaths(for: source)
                     )
@@ -235,6 +245,13 @@ struct LibraryView: View {
         .onOpenURL { url in
             Task { await library.importSources(from: [url]) }
         }
+        #if os(iOS)
+        // iPad only in practice: `AddMenu` never sets this on iPhone, which keeps the plain
+        // import button. macOS opens a real `Window` scene instead — see `presentCreatePostcard()`.
+        .fullScreenCover(isPresented: $isPresentingCreateForm) {
+            CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
+        }
+        #endif
         .task { await runAutomationHookIfRequested() }
         .onChange(of: sidebarPath) { _, newPath in
             // Every push starts fresh in grid mode, ungated, until the newly pushed pane's
@@ -242,6 +259,12 @@ struct LibraryView: View {
             // their declarations above), so they must be reset explicitly here.
             viewMode = .grid
             hasAnyLocation = false
+            // Tracked purely so "Create a Postcard" can preselect the collection the user was
+            // just browsing — only a real writable collection counts, not the synthetic
+            // "Single postcards"/"All collections" rows.
+            if case .collection(let path, _) = newPath.last {
+                library.lastSelectedCollectionPath = path
+            }
             // A cloud-backed source is only reachable once it's tagged as `.current`, but the
             // path underneath it can still be mid-write from a concurrent iCloud sync; prime
             // it with a short coordinated read before `CollectionBrowser` hands the path to
@@ -420,16 +443,10 @@ struct LibraryView: View {
     /// Deduplicated by path: a just-created iCloud collection can briefly be in both
     /// `library.sources` (registered for instant visibility) and `cloudLibrary.items`.
     private var writableCollections: [WritableCollection] {
-        var collections = library.sources.compactMap { source -> WritableCollection? in
-            guard case .collection(let path, let name) = source else { return nil }
-            return WritableCollection(path: path, displayName: name)
-        }
-        collections += cloudLibrary.items
+        let downloaded = cloudLibrary.items
             .filter { $0.isCollection && $0.downloadState == .current }
             .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
-
-        var seen = Set<String>()
-        return collections.filter { seen.insert($0.path).inserted }
+        return WritableCollection.known(sources: library.sources, downloaded: downloaded)
     }
 
     // MARK: - Sidebar row actions (Feature 3)
@@ -590,6 +607,19 @@ struct LibraryView: View {
         return WritableCollection(path: url.path, displayName: CollectionNaming.stem(forTitle: title))
     }
 
+    // MARK: - Create a Postcard
+
+    /// `AddMenu`'s "Create Postcard…" action: a real `Window` scene on macOS, a full-screen
+    /// cover here on iPad (`AddMenu` never offers this on iPhone, so this branch is dead
+    /// there in practice).
+    private func presentCreatePostcard() {
+        #if os(macOS)
+        openWindow(id: "create-postcard")
+        #else
+        isPresentingCreateForm = true
+        #endif
+    }
+
     /// DEBUG-only hook for UI tests: `-uitest-import <path>` runs the real import
     /// pipeline at launch, standing in for the un-automatable system file picker.
     private func runAutomationHookIfRequested() async {
@@ -642,9 +672,14 @@ private struct CollectionBrowser: View {
     var writableCollections: [WritableCollection] = []
     let cloudLibrary: CloudLibrary
     let searchRequest: SearchRequest
+    /// Bumped by a successful create-postcard flow (possibly from the separate macOS window/
+    /// iPad cover) — threaded into `CollectionGridView`/`AllCollectionsView` so their content
+    /// reload picks up the new card without the user reselecting the collection.
+    var contentGeneration = 0
     var onCreateCollection: ((String) async throws -> WritableCollection)?
     var onFileConsumed: (String) -> Void = { _ in }
     var onImport: () -> Void
+    var onCreate: () -> Void
     let collectionPaths: [String]
     let barePaths: [String]
 
@@ -664,6 +699,7 @@ private struct CollectionBrowser: View {
                     writableCollections: writableCollections,
                     cloudLibrary: cloudLibrary,
                     searchRequest: searchRequest,
+                    contentGeneration: contentGeneration,
                     onCreateCollection: onCreateCollection
                 )
             case .cardFile(let path, _):
@@ -702,7 +738,8 @@ private struct CollectionBrowser: View {
                     viewMode: $viewMode,
                     hasAnyLocation: $hasAnyLocation,
                     cloudLibrary: cloudLibrary,
-                    searchRequest: searchRequest
+                    searchRequest: searchRequest,
+                    contentGeneration: contentGeneration
                 )
             }
         }
@@ -734,7 +771,7 @@ private struct CollectionBrowser: View {
                         .accessibilityIdentifier("SidebarBack")
                 }
                 #endif
-                Button("Add…", systemImage: "plus", action: onImport)
+                AddMenu(onCreate: onCreate, onOpen: onImport)
                 // The grid/map switcher acts on the sidebar's browser, so it hides with the sidebar.
                 if sidebarVisible {
                     CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
@@ -748,6 +785,36 @@ private struct CollectionBrowser: View {
         // very top (see `SidebarDestinationFill`).
         .modifier(HideInlineNavBar())
         #endif
+    }
+}
+
+/// The toolbar's "Add…" (+) control, duplicated at both `LibraryView` levels alongside the
+/// plain `Button` it replaces (see the comments at each call site). "Create a Postcard" only
+/// has room to run on macOS/iPad (see the plan's judgment calls) — iPhone keeps the original
+/// plain import button exactly as it was, untouched by this menu at all.
+private struct AddMenu: View {
+    let onCreate: () -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        #if os(macOS)
+        menu
+        #else
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            menu
+        } else {
+            Button("Add…", systemImage: "plus", action: onOpen)
+        }
+        #endif
+    }
+
+    private var menu: some View {
+        Menu {
+            Button("Create Postcard…", action: onCreate)
+            Button("Open Postcard…", action: onOpen)
+        } label: {
+            Label("Add…", systemImage: "plus")
+        }
     }
 }
 

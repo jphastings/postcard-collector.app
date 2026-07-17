@@ -10,4 +10,14 @@ final class CountryFlagsTests: XCTestCase {
     func testUnknownCodeReturnsNil() {
         XCTAssertNil(CountryFlags.flag(forAlpha3: "ZZZ"))
     }
+
+    func testKnownAlpha2CodesConvertToAlpha3() {
+        XCTAssertEqual(CountryFlags.alpha3(forAlpha2: "US"), "USA")
+        XCTAssertEqual(CountryFlags.alpha3(forAlpha2: "gb"), "GBR", "lookup should be case-insensitive")
+        XCTAssertEqual(CountryFlags.alpha3(forAlpha2: "IT"), "ITA")
+    }
+
+    func testUnknownAlpha2CodeReturnsNil() {
+        XCTAssertNil(CountryFlags.alpha3(forAlpha2: "ZZ"))
+    }
 }

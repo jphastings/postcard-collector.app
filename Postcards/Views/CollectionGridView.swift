@@ -40,6 +40,11 @@ struct CollectionGridView: View {
     /// `CardInfoPanel`) land here — see `applySearchPreset()`, hung off
     /// `.onChange(of: searchRequest.generation)` below.
     let searchRequest: SearchRequest
+    /// Bumped whenever a card is added to a collection from outside this grid (e.g. the
+    /// create-postcard flow's separate window/cover) — see `LibraryModel.contentGeneration`.
+    /// Folded into `loadCards()`'s `.task(id:)` below so a new card appears without the user
+    /// reselecting the collection.
+    var contentGeneration = 0
     /// Creates a new, empty collection for the context menus' "New collection…" action
     /// and returns it as a move/copy target — supplied by `LibraryView`, which owns where
     /// new collections live (iCloud vs local) and source registration.
@@ -149,7 +154,7 @@ struct CollectionGridView: View {
         }
         .modifier(SearchFocusedIfAvailable(binding: $isSearchFieldFocused))
         #endif
-        .task(id: source.id) { await loadCards() }
+        .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadCards() }
         .task(id: source.id) { await loadTitle() }
         .task(id: source.id) { await loadPeople() }
         .task(id: SearchInputKey(text: searchText, tokens: searchTokens)) { await search() }
@@ -350,6 +355,13 @@ struct CollectionGridView: View {
 private struct SearchInputKey: Equatable {
     var text: String
     var tokens: [SearchToken]
+}
+
+/// `.task(id:)` key for reloading the grid when EITHER the browsed source or
+/// `contentGeneration` changes.
+private struct SourceLoadKey: Equatable {
+    var sourceID: String
+    var generation: Int
 }
 
 /// The pending "New collection…" context-menu action: which card to transfer, and how,

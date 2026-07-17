@@ -14,6 +14,22 @@ enum CountryFlags {
         return flag(forAlpha2: alpha2)
     }
 
+    /// Converts an ISO 3166-1 alpha-2 code (e.g. what `MKLocalSearch`/`CLPlacemark` return)
+    /// into the alpha-3 form stored in postcard metadata (`Location.countryCode`), or `nil`
+    /// if unrecognized. Built once, lazily, by inverting `alpha3ToAlpha2` — still the only
+    /// place country-code data lives.
+    static func alpha3(forAlpha2 code: String) -> String? {
+        alpha2ToAlpha3[code.uppercased()]
+    }
+
+    private static let alpha2ToAlpha3: [String: String] = {
+        var inverted: [String: String] = [:]
+        for (alpha3, alpha2) in alpha3ToAlpha2 {
+            inverted[alpha2] = alpha3
+        }
+        return inverted
+    }()
+
     /// Builds a flag emoji from an ISO 3166-1 alpha-2 code by combining two Regional
     /// Indicator Symbols (e.g. "IT" -> 🇮🇹), which is how flag emoji are composed.
     static func flag(forAlpha2 code: String) -> String? {

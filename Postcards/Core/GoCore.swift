@@ -189,6 +189,29 @@ actor GoCore {
     /// `CloudLibrary.primeForGoCoreWrite(path:)` beforehand — this actor knows nothing
     /// about iCloud).
 
+    /// Compiles raw front/back scan bytes plus metadata JSON into an encoded web-format
+    /// postcard file — the Go core's `formats/component` → `formats/web` pipeline (resolution
+    /// detection, forced-size application, flip/orientation validation, border removal,
+    /// secret hiding, XMP, encode). This is the sanctioned exception to "Go never decodes
+    /// pixels at runtime" (see CLAUDE.md): a rare, user-initiated compile, with precedent in
+    /// `addCard`'s own decode-on-write for thumbnailing. A slow compile briefly serializes
+    /// behind every other call on this actor while it runs — acceptable for a one-off op the
+    /// user is actively waiting on. Doesn't touch a collection or invalidate any cached
+    /// handle; the caller passes the result straight to `addCard(filename:data:toCollectionAt:)`.
+    func compilePostcard(
+        name: String, metadataJSON: String, front: Data, back: Data?, removeBorder: Bool, archival: Bool
+    ) throws -> (filename: String, data: Data) {
+        guard let compiled = try Self.call({
+            AppcoreCompilePostcard(name, metadataJSON, front, back, removeBorder, archival, $0)
+        }) else {
+            throw GoCoreError.missingData(name)
+        }
+        guard let data = compiled.data() else {
+            throw GoCoreError.missingData(name)
+        }
+        return (filename: compiled.filename(), data: data)
+    }
+
     /// Sets a collection's stored title.
     func setTitle(_ title: String, ofCollectionAt path: String) throws {
         try Self.call { AppcoreSetCollectionTitle(path, title, $0) }

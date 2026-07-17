@@ -24,6 +24,16 @@ final class LibraryModel {
     /// grid: anything that stops a picked file from opening ends up here.
     var importError: String?
 
+    /// The most recently selected sidebar collection's path, tracked purely so the
+    /// "Create a Postcard" destination picker can preselect it.
+    var lastSelectedCollectionPath: String?
+
+    /// Bumped whenever a card is added to a collection from outside its own grid view (e.g.
+    /// the create-postcard flow's separate window/cover) — `CollectionGridView` keys its
+    /// content-loading `.task(id:)` on this alongside the source, so the new card appears
+    /// without the user having to reselect the collection.
+    var contentGeneration = 0
+
     private static let collectionSuffix = ".postcards"
     private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png", ".postcard"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes
@@ -34,6 +44,10 @@ final class LibraryModel {
 
     #if os(macOS)
     private let defaults: UserDefaults
+    /// Where `addBareCard` writes — defaults to `localBareCardsDirectory`, injectable so tests
+    /// don't write into the real Application Support directory (mirrors iOS's `importDirectory`
+    /// injection below).
+    private let bareCardsDirectory: URL
     private static let bookmarksKey = "localSourceBookmarks"
 
     /// Where "New collection…" writes a brand-new local collection when iCloud isn't available.
@@ -42,8 +56,16 @@ final class LibraryModel {
         URL.applicationSupportDirectory.appending(path: "Collections", directoryHint: .isDirectory)
     }
 
-    init(defaults: UserDefaults = .standard) {
+    /// Sibling of `localCollectionsDirectory`: where `addBareCard` writes a freshly compiled
+    /// card when the create-postcard flow's destination is "Individual postcards" rather than
+    /// a collection. Also app-authored, also bookmarked (see `addBareCard`).
+    nonisolated static var localBareCardsDirectory: URL {
+        URL.applicationSupportDirectory.appending(path: "Individual Postcards", directoryHint: .isDirectory)
+    }
+
+    init(defaults: UserDefaults = .standard, bareCardsDirectory: URL = LibraryModel.localBareCardsDirectory) {
         self.defaults = defaults
+        self.bareCardsDirectory = bareCardsDirectory
         restoreBookmarkedSources()
     }
     #else
@@ -119,6 +141,45 @@ final class LibraryModel {
 
     private func isCollectionFile(_ url: URL) -> Bool {
         url.lastPathComponent.lowercased().hasSuffix(Self.collectionSuffix)
+    }
+
+    /// Writes a freshly compiled bare postcard file — the "Create a Postcard" flow's default
+    /// destination when no collection is chosen (`CreatePostcardModel.destinationCollectionPath
+    /// == nil`, "Individual postcards") — to this platform's app-owned bare-card location, and
+    /// registers it as a source so it shows up immediately (`SinglePostcardsGridView` refreshes
+    /// off `sources`, which this mutates via `addSource(for:)`). Returns the path actually
+    /// written to, which may differ from `filename` if it collided (see `uniqueURL(for:in:)`).
+    func addBareCard(filename: String, data: Data) throws -> String {
+        #if os(macOS)
+        let directory = bareCardsDirectory
+        #else
+        let directory = importDirectory
+        #endif
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let url = Self.uniqueURL(for: filename, in: directory)
+        try data.write(to: url)
+
+        #if os(macOS)
+        rememberBookmark(for: url)
+        #endif
+        addSource(for: url)
+        return url.path
+    }
+
+    /// Appends " 2", " 3", … before the known `.postcard.*` suffix until `directory` has no
+    /// file at that name — e.g. `"card.postcard.jpg"` colliding becomes `"card 2.postcard.jpg"`,
+    /// not `"card.postcard 2.jpg"`.
+    private static func uniqueURL(for filename: String, in directory: URL) -> URL {
+        let suffix = cardSuffixes.first { filename.lowercased().hasSuffix($0) } ?? ""
+        let stem = String(filename.dropLast(suffix.count))
+        var candidate = filename
+        var attempt = 1
+        while FileManager.default.fileExists(atPath: directory.appending(path: candidate).path) {
+            attempt += 1
+            candidate = "\(stem) \(attempt)\(suffix)"
+        }
+        return directory.appending(path: candidate)
     }
 
     private func addSource(for url: URL) {

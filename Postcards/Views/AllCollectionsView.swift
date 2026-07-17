@@ -25,6 +25,11 @@ struct AllCollectionsView: View {
     /// `CardInfoPanel`) land here — see `applySearchPreset()`, hung off
     /// `.onChange(of: searchRequest.generation)` below.
     let searchRequest: SearchRequest
+    /// Bumped whenever a card is added to a collection from outside this pane (e.g. the
+    /// create-postcard flow's separate window/cover) — see `LibraryModel.contentGeneration`.
+    /// Folded into `loadUnion()`'s `.task(id:)` below so a new card appears without the user
+    /// reselecting "All collections".
+    var contentGeneration = 0
 
     /// The full union; `nil` until the first load completes.
     @State private var entries: [MapCardEntry]?
@@ -49,6 +54,11 @@ struct AllCollectionsView: View {
     private struct SourcesKey: Equatable {
         var collections: [String]
         var bare: [String]
+        var generation: Int
+    }
+
+    private var sourcesKey: SourcesKey {
+        SourcesKey(collections: collectionPaths, bare: barePaths, generation: contentGeneration)
     }
 
     /// What both the grid and the map show: search hits while a query is active, the full
@@ -130,8 +140,8 @@ struct AllCollectionsView: View {
         }
         .modifier(SearchFocusedIfAvailable(binding: $isSearchFieldFocused))
         #endif
-        .task(id: SourcesKey(collections: collectionPaths, bare: barePaths)) { await loadUnion() }
-        .task(id: SourcesKey(collections: collectionPaths, bare: barePaths)) { await loadPeople() }
+        .task(id: sourcesKey) { await loadUnion() }
+        .task(id: sourcesKey) { await loadPeople() }
         .task(id: SearchInputKey(text: searchText, tokens: searchTokens)) { await search() }
         .onChange(of: searchText) { _, newValue in promoteTypedTokens(from: newValue) }
         .onChange(of: searchRequest.generation) { _, _ in applySearchPreset() }

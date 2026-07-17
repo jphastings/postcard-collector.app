@@ -58,6 +58,29 @@ struct WritableCollection: Identifiable, Hashable {
     var displayName: String
 
     var id: String { path }
+
+    /// Every collection the app currently knows about — imported `LibrarySource`s plus
+    /// `downloaded` (already-downloaded collections from elsewhere, e.g. iCloud) —
+    /// deduplicated by path. Shared by `LibraryView`'s "Move to Collection…"/"Copy to
+    /// Collection…" menus and the create-postcard flow's destination picker, so both build
+    /// the identical list from the identical rule. A just-created iCloud collection can
+    /// briefly appear in both `sources` (registered for instant visibility) and `downloaded`,
+    /// hence the dedup.
+    ///
+    /// Takes `downloaded` as plain `WritableCollection`s — already filtered/mapped by the
+    /// caller (see `LibraryView.writableCollections`) — rather than `CloudItem` directly, so
+    /// this stays usable from targets that don't compile `CloudLibrary.swift` (watchOS, the
+    /// QuickLook extensions both list `LibrarySource.swift` as an explicit source).
+    static func known(sources: [LibrarySource], downloaded: [WritableCollection]) -> [WritableCollection] {
+        var collections = sources.compactMap { source -> WritableCollection? in
+            guard case .collection(let path, let name) = source else { return nil }
+            return WritableCollection(path: path, displayName: name)
+        }
+        collections += downloaded
+
+        var seen = Set<String>()
+        return collections.filter { seen.insert($0.path).inserted }
+    }
 }
 
 /// Which of the two card-transfer context-menu actions a "New collection…" prompt should

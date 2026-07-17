@@ -14,7 +14,11 @@ they need must be added to their lists by hand (and one they can't compile must 
 - Go never decodes image pixels at app runtime (its codecs would be interpreter-slow on
   iOS). It serves raw file bytes, pre-generated thumbnails, and JSON; Swift decodes via
   ImageIO and splits/rotates per `ImageSplitter` (mirrors dotpostcard's
-  `formats/web/decode.go`).
+  `formats/web/decode.go`). Sanctioned exception: `GoCore.compilePostcard`, wrapping
+  `AppcoreCompilePostcard` — a rare, user-initiated "Create a Postcard" compile (resolution
+  detection, flip/size validation, border removal, secret hiding, encode), with precedent in
+  `addCard`'s own decode-on-write for thumbnailing. Everything else still holds: no other
+  runtime path decodes pixels in Go.
 - All Appcore calls are blocking — only call through the `GoCore` actor, never on main.
 - JSON contract: list/search results are always arrays, never `null` (enforced Go-side;
   a `null` here once broke search with "data couldn't be read because it is missing").

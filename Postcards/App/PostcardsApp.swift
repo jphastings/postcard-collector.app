@@ -41,9 +41,20 @@ struct PostcardsApp: App {
         #if os(macOS)
         .commands {
             CommandGroup(replacing: .newItem) {
+                NewPostcardCommand()
                 Button("Open…") { presentOpenPanel() }
                     .keyboardShortcut("o", modifiers: .command)
             }
+        }
+        #endif
+
+        #if os(macOS)
+        // macOS-only: "Create a Postcard" needs real window/menu real estate (iPad presents
+        // it as a full-screen cover from `LibraryView` instead; iPhone has no entry point at
+        // all — see the plan's judgment calls). A single `Window` scene, not a `WindowGroup`:
+        // there's only ever one create-postcard session at a time.
+        Window("Create a Postcard", id: "create-postcard") {
+            CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
         }
         #endif
     }
@@ -75,3 +86,17 @@ struct PostcardsApp: App {
     }
     #endif
 }
+
+#if os(macOS)
+/// "New Postcard…" needs `@Environment(\.openWindow)`, which — unlike inside a plain view's
+/// body — isn't available directly inside a `CommandGroup` closure attached to `App`; wrapping
+/// it in this small `View` gives the environment somewhere to resolve.
+private struct NewPostcardCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("New Postcard…") { openWindow(id: "create-postcard") }
+            .keyboardShortcut("n", modifiers: .command)
+    }
+}
+#endif

@@ -69,4 +69,35 @@ enum FlipGeometry {
         let side = max(size.width, size.height)
         return CGSize(width: side, height: side)
     }
+
+    // MARK: - The stage's flip-axis demo
+
+    /// The flip angle for `FlipAxisDemo`'s never-pausing rotation: 360° every `period`
+    /// seconds, as a pure function of elapsed time so `TimelineView(.animation)` never needs
+    /// to store or animate any state itself — each tick just re-evaluates this. Periodic and
+    /// well-defined for any `elapsedSeconds` (negative included), matching
+    /// `showsFront(atDegrees:)`'s own tolerance for angles outside one revolution.
+    static func continuousAngleDegrees(elapsedSeconds: TimeInterval, period: TimeInterval) -> Double {
+        guard period > 0 else { return 0 }
+        let phase = elapsedSeconds.truncatingRemainder(dividingBy: period) / period
+        return phase * 360
+    }
+
+    /// The two endpoints of the dotted axis line drawn behind `FlipAxisDemo`, in a
+    /// `boxSide`×`boxSide` square (origin top-left): the hinge direction (`axis.x`, `axis.y`)
+    /// extended out from the centre until it meets the square's edge — a vertical line for
+    /// book, horizontal for calendar, and a corner-to-corner diagonal for either hand flip.
+    static func axisLineEndpoints(axis: FlipAxis, boxSide: CGFloat) -> (start: CGPoint, end: CGPoint) {
+        let half = boxSide / 2
+        let center = CGPoint(x: half, y: half)
+        let dx = CGFloat(axis.x)
+        let dy = CGFloat(axis.y)
+        guard dx != 0 || dy != 0 else { return (center, center) }
+        let scale = half / max(abs(dx), abs(dy))
+        let offset = CGPoint(x: dx * scale, y: dy * scale)
+        return (
+            CGPoint(x: half - offset.x, y: half - offset.y),
+            CGPoint(x: half + offset.x, y: half + offset.y)
+        )
+    }
 }
