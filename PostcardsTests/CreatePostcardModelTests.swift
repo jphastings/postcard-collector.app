@@ -606,4 +606,117 @@ final class CreatePostcardModelTests: XCTestCase {
         XCTAssertEqual(model.front?.pixelWidth, 200)
         XCTAssertNil(model.back)
     }
+
+    // MARK: - reset()
+
+    /// Mutates every corner of the model — images, secrets, all text fields, skip flags (and
+    /// their touched-tracking), dimensions, name, thickness/color, destination, spotlight —
+    /// so `testResetMatchesAFreshModel` below actually exercises `reset()` rather than
+    /// trivially passing on an already-pristine model.
+    private func heavilyMutatedModel() throws -> CreatePostcardModel {
+        let model = CreatePostcardModel()
+        try model.setFront(data: makeImageData(width: 200, height: 100, dpi: 100), filename: "front.jpg")
+        try model.setBack(data: makeImageData(width: 90, height: 180, dpi: 100), filename: "back.jpg")
+
+        model.name = "My Trip"
+        model.cmWidthText = "12.3"
+        model.flip = model.allowedFlips.first ?? .none
+
+        model.locale = "fr-FR"
+        model.sentOn = Date()
+        model.senderName = "Alice"
+        model.senderURI = "urn:person:alice"
+        model.recipientName = "Bob"
+        model.recipientURI = "urn:person:bob"
+        model.locationName = "Paris"
+        model.locationLatitude = 48.8
+        model.locationLongitude = 2.3
+        model.locationCountryCode = "FRA"
+        model.frontDescription = "A view"
+        model.frontTranscription = "Dear Bob,"
+        model.backDescription = "Another view"
+        model.backTranscription = "Love, Alice"
+        model.contextAuthorName = "Collector"
+        model.contextAuthorURI = "urn:person:collector"
+        model.contextDescription = "Found at a market"
+
+        model.frontDescriptionSkipped = true
+        model.frontTranscriptionSkipped = false
+        model.backTranscriptionSkipped = true
+        model.backDescriptionSkipped = false
+
+        model.thicknessMM = 0.8
+        model.cardColorHex = "#FFFFFF"
+        model.removeBorder = true
+        model.archival = true
+
+        model.frontSecrets = [SecretRegion(rect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2))]
+        model.backSecrets = [SecretRegion(rect: CGRect(x: 0.3, y: 0.3, width: 0.1, height: 0.1), prehidden: true)]
+
+        model.destinationCollectionPath = "/tmp/somewhere.postcards"
+        model.spotlightSide = .front
+
+        return model
+    }
+
+    func testResetMatchesAFreshModel() throws {
+        let model = try heavilyMutatedModel()
+        let fresh = CreatePostcardModel()
+
+        model.reset()
+
+        XCTAssertNil(model.front)
+        XCTAssertNil(model.back)
+        XCTAssertEqual(model.name, fresh.name)
+        XCTAssertEqual(model.cmWidthText, fresh.cmWidthText)
+        XCTAssertEqual(model.cmHeightText, fresh.cmHeightText)
+        XCTAssertEqual(model.dimensionsEdited, fresh.dimensionsEdited)
+        XCTAssertEqual(model.flip, fresh.flip)
+        XCTAssertEqual(model.locale, fresh.locale)
+        XCTAssertEqual(model.sentOn, fresh.sentOn)
+        XCTAssertEqual(model.senderName, fresh.senderName)
+        XCTAssertEqual(model.senderURI, fresh.senderURI)
+        XCTAssertEqual(model.recipientName, fresh.recipientName)
+        XCTAssertEqual(model.recipientURI, fresh.recipientURI)
+        XCTAssertEqual(model.locationName, fresh.locationName)
+        XCTAssertEqual(model.locationLatitude, fresh.locationLatitude)
+        XCTAssertEqual(model.locationLongitude, fresh.locationLongitude)
+        XCTAssertEqual(model.locationCountryCode, fresh.locationCountryCode)
+        XCTAssertEqual(model.frontDescription, fresh.frontDescription)
+        XCTAssertEqual(model.frontTranscription, fresh.frontTranscription)
+        XCTAssertEqual(model.backDescription, fresh.backDescription)
+        XCTAssertEqual(model.backTranscription, fresh.backTranscription)
+        XCTAssertEqual(model.contextAuthorName, fresh.contextAuthorName)
+        XCTAssertEqual(model.contextAuthorURI, fresh.contextAuthorURI)
+        XCTAssertEqual(model.contextDescription, fresh.contextDescription)
+        XCTAssertEqual(model.frontDescriptionSkipped, fresh.frontDescriptionSkipped)
+        XCTAssertEqual(model.frontTranscriptionSkipped, fresh.frontTranscriptionSkipped)
+        XCTAssertEqual(model.backTranscriptionSkipped, fresh.backTranscriptionSkipped)
+        XCTAssertEqual(model.backDescriptionSkipped, fresh.backDescriptionSkipped)
+        XCTAssertEqual(model.thicknessMM, fresh.thicknessMM)
+        XCTAssertEqual(model.thicknessEdited, fresh.thicknessEdited)
+        XCTAssertEqual(model.cardColorHex, fresh.cardColorHex)
+        XCTAssertEqual(model.cardColorEdited, fresh.cardColorEdited)
+        XCTAssertEqual(model.removeBorder, fresh.removeBorder)
+        XCTAssertEqual(model.archival, fresh.archival)
+        XCTAssertEqual(model.frontSecrets, fresh.frontSecrets)
+        XCTAssertEqual(model.backSecrets, fresh.backSecrets)
+        XCTAssertEqual(model.destinationCollectionPath, fresh.destinationCollectionPath)
+        XCTAssertEqual(model.spotlightSide, fresh.spotlightSide)
+        XCTAssertEqual(model.canCreate, fresh.canCreate)
+
+        XCTAssertEqual(try model.metadataJSON(), try fresh.metadataJSON())
+    }
+
+    /// After a reset, re-touching a field must behave exactly like it would on a genuinely
+    /// fresh model — proof that `reset()` clears the touched-tracking flags, not just the
+    /// visible values they gate (see the skip flags' and `nameEdited`'s doc comments).
+    func testResetClearsTouchedTrackingNotJustValues() throws {
+        let model = try heavilyMutatedModel()
+
+        model.reset()
+        try model.setFront(data: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), filename: "scan-front.tiff")
+
+        XCTAssertEqual(model.name, "scan", "name derivation must work again post-reset, proving nameEdited was cleared")
+    }
 }

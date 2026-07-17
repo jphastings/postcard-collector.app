@@ -134,17 +134,26 @@ struct FlipAxisPicker: View {
         CGSize(width: model.front?.pixelWidth ?? 1, height: model.front?.pixelHeight ?? 1)
     }
 
+    /// The title is a plain `Text` above the picker (rather than the picker's own label) and
+    /// the picker itself `.labelsHidden()` — feeding "Flip axis:" as the `Picker`'s label instead
+    /// makes macOS lay the label and its `.radioGroup` options out in one horizontal row; this
+    /// is what actually stacks the title over a vertical column of options.
     private var flipPicker: some View {
-        Picker("Flip axis:", selection: $model.flip) {
-            ForEach(model.allowedFlips, id: \.self) { flip in
-                Text(flip.axisPickerLabel).tag(flip)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Flip axis:")
+                .foregroundStyle(.secondary)
+            Picker("Flip axis:", selection: $model.flip) {
+                ForEach(model.allowedFlips, id: \.self) { flip in
+                    Text(flip.axisPickerLabel).tag(flip)
+                }
             }
+            .labelsHidden()
+            #if os(macOS)
+            .pickerStyle(.radioGroup)
+            #else
+            .pickerStyle(.inline)
+            #endif
         }
-        #if os(macOS)
-        .pickerStyle(.radioGroup)
-        #else
-        .pickerStyle(.inline)
-        #endif
     }
 
     private struct DecodeKey: Equatable {

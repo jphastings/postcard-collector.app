@@ -4,10 +4,11 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The visual heart of "Create a Postcard": one drop zone covering the whole pane that becomes
-/// a front/back pair of postcard-like cards stacked vertically, a swap control between them,
-/// and a dimensions chip on the front. Thin over `CreatePostcardModel`: every piece of state
-/// (which image is which side, secrets, the cm fields, the wizard's `spotlightSide`) is
+/// The visual heart of "Create a Postcard": a front/back pair of postcard-like cards stacked
+/// vertically, a swap control between them, and a dimensions chip on the front. The actual drop
+/// zone is the whole window (see `CreatePostcardForm`) — this view only renders its own inviting
+/// empty-state copy and a file-picker button. Thin over `CreatePostcardModel`: every piece of
+/// state (which image is which side, secrets, the cm fields, the wizard's `spotlightSide`) is
 /// read/written through it; this file only decodes display thumbnails and wires gestures. The
 /// flip-axis picker and its rotating demo live in the fields pane instead (`FlipAxisDemo.swift`).
 struct PostcardStage: View {
@@ -16,14 +17,28 @@ struct PostcardStage: View {
     /// would fix it, on the dimensions chip. A failed flip now surfaces next to
     /// `FlipAxisPicker` in the fields pane instead, since that's where the picker itself lives.
     let dimensionsError: String?
+    /// Whether `CreatePostcardForm`'s window-root drop zone is currently tracking a drag over
+    /// the window — the stage no longer owns the drop handler itself (one handler at the root
+    /// avoids double-firing `model.addImage`), but still renders the same highlight.
+    let isTargeted: Bool
+    /// Shared with the root's own drop handler, so a failure either way (a bad drop, or a bad
+    /// pick from this view's own file importer) surfaces in the same place.
+    @Binding var importError: String?
+    /// The available height of the pane hosting this stage — caps any single side's displayed
+    /// height at a fraction of it (see `maxSideHeight`), so a portrait front can't push the
+    /// back slot (or the "Add the back" target) out of view.
+    let paneHeight: CGFloat
 
     @State private var isImporting = false
-    @State private var isTargeted = false
-    @State private var importError: String?
 
     @Namespace private var swapNamespace
 
     private static let allowedTypes: [UTType] = [.tiff, .png, .jpeg, .webP]
+    private static let maxSideHeightFraction: CGFloat = 0.75
+
+    private var maxSideHeight: CGFloat {
+        paneHeight * Self.maxSideHeightFraction
+    }
 
     /// `model.spotlightSide`, but defused if it names a side that doesn't actually exist —
     /// defensive against the wizard's focus/model updates racing a clear/swap.
@@ -63,12 +78,6 @@ struct PostcardStage: View {
                 .strokeBorder(isTargeted ? Color.accentColor : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
-        // The whole pane is the drop target — filled or empty, dropping anywhere adds/replaces
-        // via `model.addImage`, not just an inner widget.
-        .dropDestination(for: URL.self) { urls, _ in
-            importURLs(urls)
-            return true
-        } isTargeted: { isTargeted = $0 }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: Self.allowedTypes,
@@ -101,6 +110,9 @@ struct PostcardStage: View {
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        // The one blocking issue this stage itself can be about — see `AttentionHighlight`,
+        // shared with the toast naming the same issue.
+        .attentionHighlight(active: model.blockingIssues.contains(.missingFrontImage))
     }
 
     // MARK: - Filled state
@@ -115,7 +127,7 @@ struct PostcardStage: View {
             if let front = model.front, effectiveSpotlight != .back {
                 SideCard(
                     title: "Front", probed: front, secrets: $model.frontSecrets,
-                    namespace: swapNamespace, isZoomed: effectiveSpotlight == .front
+                    namespace: swapNamespace, maxHeight: maxSideHeight, isZoomed: effectiveSpotlight == .front
                 ) {
                     model.clearFront()
                 }
@@ -135,7 +147,7 @@ struct PostcardStage: View {
                 if let back = model.back {
                     SideCard(
                         title: "Back", probed: back, secrets: $model.backSecrets,
-                        namespace: swapNamespace, isZoomed: effectiveSpotlight == .back
+                        namespace: swapNamespace, maxHeight: maxSideHeight, isZoomed: effectiveSpotlight == .back
                     ) {
                         model.clearBack()
                     }
@@ -175,7 +187,7 @@ struct PostcardStage: View {
                 model.swapSides()
             }
         } label: {
-            Image(systemName: "arrow.left.arrow.right")
+            Image(systemName: "arrow.up.arrow.down")
                 .font(.body.weight(.semibold))
                 .frame(width: 30, height: 30)
                 .background(.thinMaterial, in: Circle())
@@ -186,44 +198,19 @@ struct PostcardStage: View {
 
     // MARK: - Import
 
+    /// Handles this view's own file-picker button — the window-root drop zone
+    /// (`CreatePostcardForm.importURLs`) is the other caller of `model.importURLs`, sharing
+    /// this same `importError` binding so either path surfaces failures identically.
     private func importURLs(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         importError = nil
         Task {
-            for url in urls.prefix(2) {
-                do {
-                    let data = try await Task.detached(priority: .userInitiated) {
-                        try Self.readSecurityScopedData(at: url)
-                    }.value
-                    try model.addImage(data: data, filename: url.lastPathComponent)
-                } catch {
-                    importError = error.localizedDescription
-                    return
-                }
-            }
-        }
-    }
-
-    /// Reads a picked/dropped file's bytes immediately, retaining nothing scoped — mirrors
-    /// `LibraryModel.copyIntoContainer`'s security-scope + coordinated-read bracketing, minus
-    /// the copy (the stage only ever needs the bytes in memory).
-    private nonisolated static func readSecurityScopedData(at url: URL) throws -> Data {
-        let hasScope = url.startAccessingSecurityScopedResource()
-        defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
-
-        var coordinationError: NSError?
-        var data: Data?
-        var readError: Error?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
             do {
-                data = try Data(contentsOf: readableURL)
+                try await model.importURLs(urls)
             } catch {
-                readError = error
+                importError = error.localizedDescription
             }
         }
-        if let error = coordinationError ?? readError { throw error }
-        guard let data else { throw CocoaError(.fileReadUnknown) }
-        return data
     }
 
     // MARK: - Shared
@@ -237,9 +224,10 @@ struct PostcardStage: View {
 
 // MARK: - Side card
 
-/// One filled side: a rounded, shadowed, correctly-aspected card with hover-revealed (macOS) /
-/// always-subtle (touch) controls to clear it or mark secrets, and an outline of any secrets
-/// already drawn. `matchedGeometryEffect(id: probed.id, …)` is what makes `swapSides()` read as
+/// One filled side: a rounded, correctly-aspected card — no border or shadow of its own, since
+/// the postcard's own edge is enough — with hover-revealed (macOS) / always-subtle (touch)
+/// controls to clear it or mark secrets, and an outline of any secrets already drawn.
+/// `matchedGeometryEffect(id: probed.id, …)` is what makes `swapSides()` read as
 /// the two cards crossing rather than their content just cutting over — `probed.id` travels
 /// with the picture across the swap (see `ProbedImage.id`'s doc comment), so the same id
 /// reappearing at the other slot is exactly the "this view moved" signal the effect needs.
@@ -248,6 +236,9 @@ private struct SideCard: View {
     let probed: ProbedImage
     @Binding var secrets: [SecretRegion]
     let namespace: Namespace.ID
+    /// Caps this side's displayed height when not zoomed — see `PostcardStage.maxSideHeight`.
+    /// Front and back both receive the same value, so neither displays larger than the other.
+    let maxHeight: CGFloat
     /// Set while the wizard has this side spotlighted (`PostcardStage.effectiveSpotlight`):
     /// grows the card to fill its container and hides the clear/secrets controls, which have
     /// nothing useful to do while the user's attention is on describing, not editing.
@@ -284,9 +275,8 @@ private struct SideCard: View {
             }
         }
         .aspectRatio(CGFloat(probed.pixelWidth) / CGFloat(max(probed.pixelHeight, 1)), contentMode: .fit)
-        .frame(maxHeight: isZoomed ? .infinity : nil)
+        .frame(maxHeight: isZoomed ? .infinity : maxHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 6)
         .matchedGeometryEffect(id: probed.id, in: namespace)
         .overlay(alignment: .topTrailing) { clearButton }
         .overlay(alignment: .bottomTrailing) { markSecretsButton }
@@ -439,7 +429,7 @@ private struct DimensionsChip: View {
 
 #if DEBUG
 #Preview("Empty") {
-    PostcardStage(model: CreatePostcardModel(), dimensionsError: nil)
+    PostcardStage(model: CreatePostcardModel(), dimensionsError: nil, isTargeted: false, importError: .constant(nil), paneHeight: 640)
         .padding()
         .frame(width: 380, height: 640)
 }
@@ -475,7 +465,7 @@ private func stagePreview(
         try? model.setBack(data: stagePreviewImageData(tint: (0.85, 0.88, 0.93), dpi: dpi), filename: "back.png")
     }
     model.spotlightSide = spotlight
-    return PostcardStage(model: model, dimensionsError: dimensionsError)
+    return PostcardStage(model: model, dimensionsError: dimensionsError, isTargeted: false, importError: .constant(nil), paneHeight: 640)
         .padding()
         .frame(width: 380, height: 640)
 }

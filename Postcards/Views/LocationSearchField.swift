@@ -15,6 +15,10 @@ struct LocationSearchField: View {
     @Binding var latitude: Double?
     @Binding var longitude: Double?
     @Binding var countryCode: String
+    /// Bumped whenever `apply(_:fallbackTitle:)` overwrites the coordinate — see
+    /// `LocationPickerMap.recenterTrigger`'s doc comment for why this can't just be
+    /// `latitude`/`longitude` changing.
+    @Binding var recenterTrigger: Int
 
     @State private var completer = LocationSearchCompleterModel()
     @State private var queryText = ""
@@ -110,6 +114,7 @@ struct LocationSearchField: View {
         latitude = placemark.coordinate.latitude
         longitude = placemark.coordinate.longitude
         countryCode = placemark.isoCountryCode.flatMap(CountryFlags.alpha3(forAlpha2:)) ?? ""
+        recenterTrigger += 1
     }
 }
 

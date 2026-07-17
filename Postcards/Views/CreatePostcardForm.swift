@@ -1,11 +1,13 @@
+import Foundation
 import SwiftUI
 
-/// "Create a Postcard": `PostcardStage` (the drop-zone/preview hero) beside or above a
-/// `Form` of metadata fields, compiling straight into a collection. Thin over
-/// `CreatePostcardModel`, which owns every piece of state and the create-gating/JSON-building
-/// logic — this view is layout (the adaptive stage/fields split), `Section`/`LabeledContent`
-/// scaffolding for the fields (following `CardInfoPanel`'s `Form` idiom), and the create flow's
-/// two Go core calls (`GoCore.compilePostcard` → `GoCore.addCard`).
+/// "Create a Postcard": `PostcardStage` (the preview hero) beside or above a `Form` of metadata
+/// fields, compiling straight into a collection. Thin over `CreatePostcardModel`, which owns
+/// every piece of state and the create-gating/JSON-building logic — this view is layout (the
+/// adaptive stage/fields split), `Section`/`LabeledContent` scaffolding for the fields
+/// (following `CardInfoPanel`'s `Form` idiom), the window-root drop zone (dropping scans
+/// anywhere in the window adds them — see `importURLs`), the Reset confirmation, and the create
+/// flow's two Go core calls (`GoCore.compilePostcard` → `GoCore.addCard`).
 ///
 /// Hosted from two places (see `PostcardsApp`/`LibraryView`): a macOS `Window` scene, and an
 /// iPad `fullScreenCover` — both pass the same `library`/`cloudLibrary` so either presentation
@@ -19,13 +21,24 @@ struct CreatePostcardForm: View {
     @State private var dimensionsError: String?
     @State private var flipError: String?
     @State private var alertMessage: String?
-    /// Autocomplete corpus for the From/To/Catalogued-by rows — loaded once on appear,
-    /// quietly empty when the call fails or the library knows no one: just no suggestions.
-    @State private var people: [PersonRef] = []
+    @State private var showsResetConfirmation = false
+    /// Whether a drag is currently over the window — the drop zone is the whole window, not
+    /// just the stage pane, so `PostcardStage` only reads this to render its highlight.
+    @State private var isTargeted = false
+    /// Shared between the window-root drop handler and `PostcardStage`'s own file-picker
+    /// button, so a bad image surfaces identically regardless of which path added it.
+    @State private var importError: String?
+    /// Autocomplete corpus for the From/To/Catalogued-by rows — refreshed once on appear,
+    /// quietly serving whatever it last cached when that refresh fails: just no new
+    /// suggestions, never a blocked or broken form (see `PeopleDirectory.refresh`).
+    @State private var peopleDirectory = PeopleDirectory()
     /// Whether the Location section shows its manual fields — search-first, so they're
     /// revealed by the "Enter manually" button or automatically (already filled) once a
     /// search result is chosen.
     @State private var showsManualLocation = false
+    /// Bumped by `LocationSearchField` whenever a search result overwrites the coordinate, so
+    /// `LocationPickerMap` knows to recenter — see that binding's doc comment.
+    @State private var locationRecenterTrigger = 0
     @Environment(\.dismiss) private var dismiss
 
     /// Below this width the stage sits above a scrolling fields column instead of beside it —
@@ -40,7 +53,7 @@ struct CreatePostcardForm: View {
                 if proxy.size.width >= Self.wideLayoutMinWidth {
                     HStack(spacing: 0) {
                         ScrollView {
-                            stage.padding()
+                            stage(paneHeight: proxy.size.height).padding()
                         }
                         .frame(width: min(max(proxy.size.width * Self.stageWidthFraction, 320), 480))
                         Divider()
@@ -52,10 +65,10 @@ struct CreatePostcardForm: View {
                 } else {
                     Form {
                         // Strips the Form's default row chrome (inset background, separator)
-                        // so the stage's own cards/shadows render edge-to-edge above the
-                        // fields, rather than looking like just another grouped row.
+                        // so the stage's own cards render edge-to-edge above the fields,
+                        // rather than looking like just another grouped row.
                         Section {
-                            stage
+                            stage(paneHeight: proxy.size.height)
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 4)
                                 .listRowInsets(EdgeInsets())
@@ -69,10 +82,22 @@ struct CreatePostcardForm: View {
                     .animation(.default, value: model.canCreate)
                 }
             }
+            // The whole window is the drop target — filled or empty, dropping scans anywhere
+            // adds them as front/back via `model.addImage`. A single handler here (rather than
+            // one on the stage too) means a drop can't double-fire.
+            .dropDestination(for: URL.self) { urls, _ in
+                importURLs(urls)
+                return true
+            } isTargeted: { isTargeted = $0 }
             .navigationTitle("Create a Postcard")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+                // Destructive-action placement, opposite Create Postcard — apart enough that
+                // the two can't be fat-fingered for each other.
+                ToolbarItem(placement: .destructiveAction) {
+                    Button("Reset", role: .destructive) { showsResetConfirmation = true }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create Postcard") { Task { await create() } }
@@ -87,6 +112,14 @@ struct CreatePostcardForm: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
+            .confirmationDialog(
+                "Reset this postcard?",
+                isPresented: $showsResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Reset", role: .destructive) { performReset() }
+                Button("Cancel", role: .cancel) {}
+            }
             .alert(
                 "Couldn't create postcard",
                 isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })
@@ -95,15 +128,41 @@ struct CreatePostcardForm: View {
             } message: {
                 Text(alertMessage ?? "")
             }
-            .task { people = (try? await GoCore.shared.libraryPeople()) ?? [] }
+            .task { await peopleDirectory.refresh(cloudItems: cloudLibrary.items) }
         }
         #if os(macOS)
         .frame(minWidth: 860, minHeight: 640)
         #endif
     }
 
-    private var stage: some View {
-        PostcardStage(model: model, dimensionsError: dimensionsError)
+    private func stage(paneHeight: CGFloat) -> some View {
+        PostcardStage(
+            model: model, dimensionsError: dimensionsError,
+            isTargeted: isTargeted, importError: $importError, paneHeight: paneHeight
+        )
+    }
+
+    // MARK: - Reset
+
+    private func performReset() {
+        model.reset()
+        dimensionsError = nil
+        flipError = nil
+        alertMessage = nil
+    }
+
+    // MARK: - Import (window-root drop)
+
+    private func importURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        importError = nil
+        Task {
+            do {
+                try await model.importURLs(urls)
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
     }
 
     /// Every remaining `Form` section, in order — factored out so both the wide (beside the
@@ -130,9 +189,36 @@ struct CreatePostcardForm: View {
     private var cardSection: some View {
         Section("Card") {
             TextField("Name", text: $model.name)
-            Toggle("Sent on a known date", isOn: sentOnKnownBinding)
+                .attentionHighlight(active: model.blockingIssues.contains(.invalidName))
+            sentOnRow
+        }
+    }
+
+    /// A single "Sent on" row standing in for a toggle + `DatePicker` pair: "Set date…" in the
+    /// field position while `sentOn` is nil, a compact `DatePicker` plus a small clear button
+    /// once it's set — so there's never a `DatePicker` showing a meaningless default date for a
+    /// card whose sent date is simply unknown.
+    private var sentOnRow: some View {
+        LabeledContent("Sent on") {
             if model.sentOn != nil {
-                DatePicker("Date", selection: sentOnDateBinding, displayedComponents: .date)
+                HStack(spacing: 6) {
+                    DatePicker("Date", selection: sentOnDateBinding, displayedComponents: .date)
+                        .labelsHidden()
+                    Button {
+                        model.sentOn = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear sent date")
+                }
+            } else {
+                Button("Set date…") {
+                    model.sentOn = Date()
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             }
         }
     }
@@ -144,6 +230,7 @@ struct CreatePostcardForm: View {
     private var flipAxisSection: some View {
         Section("Flip axis") {
             FlipAxisPicker(model: model, flipError: flipError)
+                .attentionHighlight(active: model.blockingIssues.contains(.illegalFlip))
         }
     }
 
@@ -151,17 +238,10 @@ struct CreatePostcardForm: View {
 
     private var peopleSection: some View {
         Section {
-            PersonFieldRow(label: "From", name: $model.senderName, uri: $model.senderURI, people: people, preferredRole: "from")
-            PersonFieldRow(label: "To", name: $model.recipientName, uri: $model.recipientURI, people: people, preferredRole: "to")
-            PersonFieldRow(label: "Catalogued by", name: $model.contextAuthorName, uri: $model.contextAuthorURI, people: people, preferredRole: "collector")
+            PersonFieldRow(label: "From", name: $model.senderName, uri: $model.senderURI, directory: peopleDirectory, preferredRole: "from")
+            PersonFieldRow(label: "To", name: $model.recipientName, uri: $model.recipientURI, directory: peopleDirectory, preferredRole: "to")
+            PersonFieldRow(label: "Catalogued by", name: $model.contextAuthorName, uri: $model.contextAuthorURI, directory: peopleDirectory, preferredRole: "collector")
         }
-    }
-
-    private var sentOnKnownBinding: Binding<Bool> {
-        Binding(
-            get: { model.sentOn != nil },
-            set: { isKnown in model.sentOn = isKnown ? (model.sentOn ?? Date()) : nil }
-        )
     }
 
     private var sentOnDateBinding: Binding<Date> {
@@ -176,7 +256,8 @@ struct CreatePostcardForm: View {
                 name: $model.locationName,
                 latitude: $model.locationLatitude,
                 longitude: $model.locationLongitude,
-                countryCode: $model.locationCountryCode
+                countryCode: $model.locationCountryCode,
+                recenterTrigger: $locationRecenterTrigger
             )
             // A chosen search result always writes a coordinate, so this is the "a result
             // was picked" signal that reveals the (now filled) manual fields.
@@ -187,16 +268,14 @@ struct CreatePostcardForm: View {
 
             if showsManualLocation {
                 TextField("Place name", text: $model.locationName)
-                TextField("Latitude", text: latitudeTextBinding)
-                TextField("Longitude", text: longitudeTextBinding)
-                HStack {
-                    TextField("Country code (alpha-3)", text: countryCodeBinding)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.characters)
-                        #endif
-                        .autocorrectionDisabled()
-                    if let flag = CountryFlags.flag(forAlpha3: model.locationCountryCode) {
-                        Text(flag)
+                LocationPickerMap(latitude: $model.locationLatitude, longitude: $model.locationLongitude, recenterTrigger: locationRecenterTrigger)
+                    .listRowInsets(EdgeInsets())
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                Picker("Country", selection: countryPickerBinding) {
+                    Text("None").tag("")
+                    ForEach(CountryDirectory.all, id: \.alpha3) { country in
+                        Text(countryPickerLabel(country)).tag(country.alpha3)
                     }
                 }
             } else {
@@ -210,24 +289,15 @@ struct CreatePostcardForm: View {
     }
 
     /// Stored uppercase — `Location.countryCode` is always the uppercase alpha-3 form
-    /// (`CountryFlags`' table keys, e.g. "ITA"), so this normalizes on entry rather than
-    /// leaving a lowercase mistype to silently fail the flag lookup and round-trip oddly.
-    private var countryCodeBinding: Binding<String> {
+    /// (`CountryFlags`' table keys, e.g. "ITA") — same normalization `LocationSearchField`'s
+    /// search-selection path already produces, so both paths land on an identical value.
+    private var countryPickerBinding: Binding<String> {
         Binding(get: { model.locationCountryCode }, set: { model.locationCountryCode = $0.uppercased() })
     }
 
-    private var latitudeTextBinding: Binding<String> {
-        Binding(
-            get: { model.locationLatitude.map { String($0) } ?? "" },
-            set: { model.locationLatitude = Double($0) }
-        )
-    }
-
-    private var longitudeTextBinding: Binding<String> {
-        Binding(
-            get: { model.locationLongitude.map { String($0) } ?? "" },
-            set: { model.locationLongitude = Double($0) }
-        )
+    private func countryPickerLabel(_ country: CountryDirectory.Entry) -> String {
+        guard let flag = country.flag else { return country.displayName }
+        return "\(flag) \(country.displayName)"
     }
 
     // MARK: - Describe & transcribe
@@ -313,7 +383,11 @@ struct CreatePostcardForm: View {
     @ViewBuilder
     private var blockingIssueToast: some View {
         if let issue = model.blockingIssues.first {
-            Label(issue.message, systemImage: "exclamationmark.circle.fill")
+            // Same icon + tint as `.attentionHighlight` (see `AttentionHighlight`), applied to
+            // whichever field this issue is about, so the toast and the field it names read as
+            // one linked signal rather than two independent warnings.
+            Label(issue.message, systemImage: AttentionHighlight.icon)
+                .foregroundStyle(AttentionHighlight.tint)
                 .font(.footnote)
                 .lineLimit(1)
                 .padding(.horizontal, 12)

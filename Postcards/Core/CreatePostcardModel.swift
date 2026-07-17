@@ -290,6 +290,78 @@ final class CreatePostcardModel {
 
     init() {}
 
+    // MARK: - Reset
+
+    /// Restores every piece of state to a freshly-initialized model's values. Built by
+    /// constructing a fresh instance and copying its properties across — routed through the
+    /// same suppression flags `setFront()`/`swapSides()` use so their `didSet` observers don't
+    /// mistake the reset for a user edit — rather than resetting each field by hand, so state
+    /// added to `init()` later is picked up here automatically instead of silently drifting
+    /// out of sync with it.
+    func reset() {
+        let fresh = CreatePostcardModel()
+
+        front = fresh.front
+        back = fresh.back
+
+        isApplyingDerivedName = true
+        name = fresh.name
+        isApplyingDerivedName = false
+        nameEdited = fresh.nameEdited
+
+        isSyncingDimensions = true
+        cmWidthText = fresh.cmWidthText
+        cmHeightText = fresh.cmHeightText
+        isSyncingDimensions = false
+        dimensionsEdited = fresh.dimensionsEdited
+
+        flip = fresh.flip
+
+        locale = fresh.locale
+        sentOn = fresh.sentOn
+        senderName = fresh.senderName
+        senderURI = fresh.senderURI
+        recipientName = fresh.recipientName
+        recipientURI = fresh.recipientURI
+        locationName = fresh.locationName
+        locationLatitude = fresh.locationLatitude
+        locationLongitude = fresh.locationLongitude
+        locationCountryCode = fresh.locationCountryCode
+        frontDescription = fresh.frontDescription
+        frontTranscription = fresh.frontTranscription
+        backDescription = fresh.backDescription
+        backTranscription = fresh.backTranscription
+        contextAuthorName = fresh.contextAuthorName
+        contextAuthorURI = fresh.contextAuthorURI
+        contextDescription = fresh.contextDescription
+
+        isApplyingSkipDefault = true
+        frontDescriptionSkipped = fresh.frontDescriptionSkipped
+        frontTranscriptionSkipped = fresh.frontTranscriptionSkipped
+        backTranscriptionSkipped = fresh.backTranscriptionSkipped
+        backDescriptionSkipped = fresh.backDescriptionSkipped
+        isApplyingSkipDefault = false
+        frontDescriptionSkippedTouched = fresh.frontDescriptionSkippedTouched
+        frontTranscriptionSkippedTouched = fresh.frontTranscriptionSkippedTouched
+        backTranscriptionSkippedTouched = fresh.backTranscriptionSkippedTouched
+        backDescriptionSkippedTouched = fresh.backDescriptionSkippedTouched
+
+        thicknessMM = fresh.thicknessMM
+        thicknessEdited = fresh.thicknessEdited
+        cardColorHex = fresh.cardColorHex
+        cardColorEdited = fresh.cardColorEdited
+
+        removeBorder = fresh.removeBorder
+        archival = fresh.archival
+
+        frontSecrets = fresh.frontSecrets
+        backSecrets = fresh.backSecrets
+
+        destinationCollectionPath = fresh.destinationCollectionPath
+
+        spotlightSide = fresh.spotlightSide
+    }
+
     // MARK: - Setting images
 
     /// The single-drop-zone entry point: fills whichever slot is next (front, then back),
@@ -306,6 +378,42 @@ final class CreatePostcardModel {
             backSecrets = []
             try setBack(data: data, filename: filename)
         }
+    }
+
+    /// Reads up to the first two dropped/picked file URLs and adds each via `addImage` —
+    /// the shared landing point for both the window-root drop zone (`CreatePostcardForm`) and
+    /// the stage's own file-picker button (`PostcardStage`), so neither duplicates the
+    /// security-scoped-read dance. Stops at the first unreadable file, leaving any images
+    /// already added in place.
+    func importURLs(_ urls: [URL]) async throws {
+        for url in urls.prefix(2) {
+            let data = try await Task.detached(priority: .userInitiated) {
+                try Self.readSecurityScopedData(at: url)
+            }.value
+            try addImage(data: data, filename: url.lastPathComponent)
+        }
+    }
+
+    /// Reads a picked/dropped file's bytes immediately, retaining nothing scoped — mirrors
+    /// `LibraryModel.copyIntoContainer`'s security-scope + coordinated-read bracketing, minus
+    /// the copy (only the bytes are needed in memory).
+    private nonisolated static func readSecurityScopedData(at url: URL) throws -> Data {
+        let hasScope = url.startAccessingSecurityScopedResource()
+        defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
+
+        var coordinationError: NSError?
+        var data: Data?
+        var readError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
+            do {
+                data = try Data(contentsOf: readableURL)
+            } catch {
+                readError = error
+            }
+        }
+        if let error = coordinationError ?? readError { throw error }
+        guard let data else { throw CocoaError(.fileReadUnknown) }
+        return data
     }
 
     /// Clears the front slot only — leaves `back` untouched. To promote a remaining back
