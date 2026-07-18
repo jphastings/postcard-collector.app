@@ -141,6 +141,16 @@ targets:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
+    # macOS-only entitlements file (template properties deep-merge in): the Go core's
+    # jpegli JPEG encoder runs as WebAssembly via wazero, whose compiler mprotects
+    # plain-mmap'd memory to r-x (no MAP_JIT). Under the hardened runtime that's a
+    # SIGKILL (Code Signature Invalid) the moment a postcard is encoded, unless this
+    # entitlement allows it. iOS must not inherit it (unknown entitlement there, and
+    # wazero already falls back to its interpreter on GOOS=ios).
+    entitlements:
+      path: Postcards/Support/Postcards-macOS.entitlements
+      properties:
+        com.apple.security.cs.allow-unsigned-executable-memory: true
     sources:
       - path: Postcards
         excludes:
