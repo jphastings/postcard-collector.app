@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 import SwiftUI
 
 /// "Create a Postcard": `PostcardStage` (the preview hero) beside or above a `Form` of metadata
@@ -39,6 +40,9 @@ struct CreatePostcardForm: View {
     /// Bumped by `LocationSearchField` whenever a search result overwrites the coordinate, so
     /// `LocationPickerMap` knows to recenter — see that binding's doc comment.
     @State private var locationRecenterTrigger = 0
+    /// The zoom region written alongside `locationRecenterTrigger` — see
+    /// `LocationPickerMap.recenterRegion`'s doc comment.
+    @State private var locationRecenterRegion: MKCoordinateRegion?
     @Environment(\.dismiss) private var dismiss
 
     /// Below this width the stage sits above a scrolling fields column instead of beside it —
@@ -257,7 +261,8 @@ struct CreatePostcardForm: View {
                 latitude: $model.locationLatitude,
                 longitude: $model.locationLongitude,
                 countryCode: $model.locationCountryCode,
-                recenterTrigger: $locationRecenterTrigger
+                recenterTrigger: $locationRecenterTrigger,
+                recenterRegion: $locationRecenterRegion
             )
             // A chosen search result always writes a coordinate, so this is the "a result
             // was picked" signal that reveals the (now filled) manual fields.
@@ -268,7 +273,12 @@ struct CreatePostcardForm: View {
 
             if showsManualLocation {
                 TextField("Place name", text: $model.locationName)
-                LocationPickerMap(latitude: $model.locationLatitude, longitude: $model.locationLongitude, recenterTrigger: locationRecenterTrigger)
+                LocationPickerMap(
+                    latitude: $model.locationLatitude,
+                    longitude: $model.locationLongitude,
+                    recenterTrigger: locationRecenterTrigger,
+                    recenterRegion: locationRecenterRegion
+                )
                     .listRowInsets(EdgeInsets())
                     .padding(.horizontal)
                     .padding(.bottom, 8)

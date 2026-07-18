@@ -15,10 +15,18 @@ struct LocationPickerMap: View {
     /// directly, because a manual map tap writes those same two fields too and must NOT
     /// trigger a camera jump — see `.task(id:)` below.
     let recenterTrigger: Int
+    /// The region to recenter on when `recenterTrigger` fires — sized to the search result's
+    /// granularity (street vs. city vs. region vs. country) by `LocationSearchField`, either
+    /// straight from MapKit's own `boundingRegion` or a `LocationZoom` heuristic. Read only at
+    /// the moment the trigger fires, same as `recenterTrigger` itself being a plain (not
+    /// `@Binding`) value here.
+    let recenterRegion: MKCoordinateRegion?
 
     @State private var cameraPosition: MapCameraPosition = .automatic
 
-    private static let pinSpan = MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
+    /// Only used if a search result's coordinate somehow arrives with no `recenterRegion` —
+    /// belt-and-braces, since `LocationSearchField` always sets both together.
+    private static let fallbackSpan = MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
 
     private var coordinate: CLLocationCoordinate2D? {
         guard let latitude, let longitude else { return nil }
@@ -56,8 +64,9 @@ struct LocationPickerMap: View {
 
     private func recenter() {
         guard let coordinate else { return }
+        let region = recenterRegion ?? MKCoordinateRegion(center: coordinate, span: Self.fallbackSpan)
         withAnimation(.easeInOut) {
-            cameraPosition = .region(MKCoordinateRegion(center: coordinate, span: Self.pinSpan))
+            cameraPosition = .region(region)
         }
     }
 }

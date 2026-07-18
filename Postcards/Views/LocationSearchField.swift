@@ -3,9 +3,10 @@ import SwiftUI
 
 /// Search-as-you-type location autofill for the top of "Create a Postcard"'s Location
 /// section: an `MKLocalSearchCompleter`-backed suggestions list that, on selection, resolves
-/// the full placemark via `MKLocalSearch` and overwrites the four bound fields. Purely an
-/// autofill — the fields it writes stay freely editable afterward — and knows nothing about
-/// `CreatePostcardModel`; these four bindings are its entire contract with the caller.
+/// the full placemark via `MKLocalSearch` and overwrites the four bound location fields (plus
+/// the recenter signal below). Purely an autofill — the fields it writes stay freely editable
+/// afterward — and knows nothing about `CreatePostcardModel`; these bindings are its entire
+/// contract with the caller.
 ///
 /// Needs no location permission: it never touches `CLLocationManager` or the device's actual
 /// location, so no `NSLocationWhenInUseUsageDescription` or entitlement applies (see
@@ -15,21 +16,32 @@ struct LocationSearchField: View {
     @Binding var latitude: Double?
     @Binding var longitude: Double?
     @Binding var countryCode: String
-    /// Bumped whenever `apply(_:fallbackTitle:)` overwrites the coordinate — see
-    /// `LocationPickerMap.recenterTrigger`'s doc comment for why this can't just be
+    /// Bumped whenever `apply(_:boundingRegion:fallbackTitle:)` overwrites the coordinate —
+    /// see `LocationPickerMap.recenterTrigger`'s doc comment for why this can't just be
     /// `latitude`/`longitude` changing.
     @Binding var recenterTrigger: Int
+    /// The zoom region to recenter on, written alongside `recenterTrigger` — see
+    /// `LocationPickerMap.recenterRegion`'s doc comment.
+    @Binding var recenterRegion: MKCoordinateRegion?
 
     @State private var completer = LocationSearchCompleterModel()
     @State private var queryText = ""
     @State private var highlightedIndex = 0
     @State private var isResolving = false
+    /// Set right before `select(_:)` writes `completion.title` into `queryText` so the
+    /// resulting `onChange` doesn't treat that programmatic write as fresh typing and
+    /// re-summon the suggestions list it just dismissed. Cleared by that same `onChange` fire.
+    @State private var isApplyingSelection = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 TextField("Search for a place…", text: $queryText)
                     .onChange(of: queryText) { _, newValue in
+                        guard !isApplyingSelection else {
+                            isApplyingSelection = false
+                            return
+                        }
                         highlightedIndex = 0
                         completer.search(for: newValue)
                     }
@@ -89,21 +101,29 @@ struct LocationSearchField: View {
     }
 
     private func select(_ completion: MKLocalSearchCompletion) {
+        // Only the write actually changes `queryText` (SwiftUI's `onChange` fires exactly
+        // when the value differs) — if the completion's title already matches, there'll be no
+        // `onChange` to consume this flag, so don't set it and risk swallowing the next real
+        // keystroke's search instead.
+        if queryText != completion.title {
+            isApplyingSelection = true
+        }
         queryText = completion.title
         completer.clearResults()
         isResolving = true
         Task {
             defer { isResolving = false }
-            guard let mapItem = try? await MKLocalSearch(request: MKLocalSearch.Request(completion: completion)).start().mapItems.first else {
+            guard let response = try? await MKLocalSearch(request: MKLocalSearch.Request(completion: completion)).start(),
+                  let mapItem = response.mapItems.first else {
                 return
             }
-            apply(mapItem, fallbackTitle: completion.title)
+            apply(mapItem, boundingRegion: response.boundingRegion, fallbackTitle: completion.title)
         }
     }
 
     /// Overwrites all four fields at once — selecting a suggestion is meant to replace
     /// whatever was there, not merge with it.
-    private func apply(_ mapItem: MKMapItem, fallbackTitle: String) {
+    private func apply(_ mapItem: MKMapItem, boundingRegion: MKCoordinateRegion, fallbackTitle: String) {
         let placemark = mapItem.placemark
         name = LocationSearchNaming.displayName(
             locality: placemark.locality,
@@ -114,7 +134,24 @@ struct LocationSearchField: View {
         latitude = placemark.coordinate.latitude
         longitude = placemark.coordinate.longitude
         countryCode = placemark.isoCountryCode.flatMap(CountryFlags.alpha3(forAlpha2:)) ?? ""
+        recenterRegion = zoomRegion(coordinate: placemark.coordinate, boundingRegion: boundingRegion, placemark: placemark)
         recenterTrigger += 1
+    }
+
+    /// MapKit's own `boundingRegion` is already sized to the match, so it's preferred whenever
+    /// it's not the degenerate whole-world/zero-span fallback MapKit uses when it can't compute
+    /// one (`LocationZoom.isSaneBoundingSpan`); otherwise `LocationZoom.spanMeters` estimates a
+    /// span from which placemark fields resolved.
+    private func zoomRegion(coordinate: CLLocationCoordinate2D, boundingRegion: MKCoordinateRegion, placemark: CLPlacemark) -> MKCoordinateRegion {
+        if LocationZoom.isSaneBoundingSpan(boundingRegion.span) {
+            return boundingRegion
+        }
+        let span = LocationZoom.spanMeters(
+            hasThoroughfare: placemark.thoroughfare != nil,
+            hasLocality: placemark.locality != nil,
+            hasAdministrativeArea: placemark.administrativeArea != nil
+        )
+        return MKCoordinateRegion(center: coordinate, latitudinalMeters: span, longitudinalMeters: span)
     }
 }
 
@@ -129,6 +166,12 @@ final class LocationSearchCompleterModel: NSObject, MKLocalSearchCompleterDelega
 
     private let completer = MKLocalSearchCompleter()
     private var debounceTask: Task<Void, Never>?
+    /// Guards `completerDidUpdateResults` against a request that was already in flight when
+    /// `clearResults()` ran (a selection was made, or the field was emptied): cancelling the
+    /// debounce task and resetting `queryFragment` doesn't retract a lookup the completer had
+    /// already dispatched, so its delegate callback can still land afterwards with stale
+    /// results. `search(for:)` is the only place this turns back on.
+    private var acceptsResults = false
 
     override init() {
         super.init()
@@ -142,10 +185,12 @@ final class LocationSearchCompleterModel: NSObject, MKLocalSearchCompleterDelega
     func search(for fragment: String) {
         debounceTask?.cancel()
         guard !fragment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            acceptsResults = false
             completer.queryFragment = ""
             results = []
             return
         }
+        acceptsResults = true
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
@@ -155,6 +200,7 @@ final class LocationSearchCompleterModel: NSObject, MKLocalSearchCompleterDelega
 
     func clearResults() {
         debounceTask?.cancel()
+        acceptsResults = false
         completer.queryFragment = ""
         results = []
     }
@@ -164,7 +210,7 @@ final class LocationSearchCompleterModel: NSObject, MKLocalSearchCompleterDelega
     /// own `completer`.
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, self.acceptsResults else { return }
             self.results = self.completer.results
         }
     }
