@@ -19,7 +19,9 @@ struct PostcardStage: View {
     let dimensionsError: String?
     /// Whether `CreatePostcardForm`'s window-root drop zone is currently tracking a drag over
     /// the window — the stage no longer owns the drop handler itself (one handler at the root
-    /// avoids double-firing `model.addImage`), but still renders the same highlight.
+    /// avoids double-firing `model.addImage`), but still renders feedback for it: a border
+    /// around the filled stage, a gentle scale on the empty-state prompt (no block to outline
+    /// there — see `dropZone`).
     let isTargeted: Bool
     /// Shared with the root's own drop handler, so a failure either way (a bad drop, or a bad
     /// pick from this view's own file importer) surfaces in the same place.
@@ -74,9 +76,13 @@ struct PostcardStage: View {
         .animation(.easeInOut(duration: 0.3), value: effectiveSpotlight)
         .contentShape(Rectangle())
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(isTargeted ? Color.accentColor : .clear, lineWidth: 2)
-                .allowsHitTesting(false)
+            // Only the filled stage gets a border for drop feedback — the empty state has no
+            // block to outline (see `dropZone`), so it renders its own subtler scale instead.
+            if model.front != nil {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(isTargeted ? Color.accentColor : .clear, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -92,6 +98,13 @@ struct PostcardStage: View {
 
     // MARK: - Empty state
 
+    /// No block — no background shape, rounded rect, or border — just the prompt itself,
+    /// filling and centered in `paneHeight` so it reads as the pane's own empty state rather
+    /// than a bounded control (the whole pane is the drop target — see `isTargeted`'s doc
+    /// comment). The leading `(!)` reuses `AttentionHighlight`'s icon/tint so this required
+    /// step still reads as linked to the same "needs attention" language as everywhere else in
+    /// the form, without the outline treatment `.attentionHighlight` would otherwise draw
+    /// around a shape that no longer exists here.
     private var dropZone: some View {
         Button {
             isImporting = true
@@ -99,20 +112,22 @@ struct PostcardStage: View {
             VStack(spacing: 10) {
                 Image(systemName: "photo.badge.plus")
                     .font(.system(size: 40, weight: .light))
-                Text("Drop scans of your postcard here")
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Image(systemName: AttentionHighlight.icon)
+                        .foregroundStyle(AttentionHighlight.tint)
+                    Text("Drop scans of your postcard here")
+                        .font(.headline)
+                }
                 Text("or browse files…")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, minHeight: 220)
             .foregroundStyle(.secondary)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .scaleEffect(isTargeted ? 1.04 : 1)
+            .animation(.easeInOut(duration: 0.15), value: isTargeted)
         }
         .buttonStyle(.plain)
-        // The one blocking issue this stage itself can be about — see `AttentionHighlight`,
-        // shared with the toast naming the same issue.
-        .attentionHighlight(active: model.blockingIssues.contains(.missingFrontImage))
+        .frame(maxWidth: .infinity, minHeight: paneHeight, alignment: .center)
     }
 
     // MARK: - Filled state
@@ -428,10 +443,24 @@ private struct DimensionsChip: View {
 // MARK: - Previews
 
 #if DEBUG
+/// Wrapped in the same `ScrollView { stage.padding() }` the wide layout of `CreatePostcardForm`
+/// actually hosts the stage in — the empty state centers itself using `paneHeight`, so previewing
+/// it bare (without the surrounding scroll view) wouldn't show whether that centering holds up in
+/// the real host.
 #Preview("Empty") {
-    PostcardStage(model: CreatePostcardModel(), dimensionsError: nil, isTargeted: false, importError: .constant(nil), paneHeight: 640)
-        .padding()
-        .frame(width: 380, height: 640)
+    ScrollView {
+        PostcardStage(model: CreatePostcardModel(), dimensionsError: nil, isTargeted: false, importError: .constant(nil), paneHeight: 640)
+            .padding()
+    }
+    .frame(width: 380, height: 640)
+}
+
+#Preview("Empty (drag targeted)") {
+    ScrollView {
+        PostcardStage(model: CreatePostcardModel(), dimensionsError: nil, isTargeted: true, importError: .constant(nil), paneHeight: 640)
+            .padding()
+    }
+    .frame(width: 380, height: 640)
 }
 
 #Preview("Front only") {
