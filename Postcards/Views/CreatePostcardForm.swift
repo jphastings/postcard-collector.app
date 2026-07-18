@@ -98,12 +98,20 @@ struct CreatePostcardForm: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                // Destructive-action placement, opposite Create Postcard — apart enough that
-                // the two can't be fat-fingered for each other.
-                ToolbarItem(placement: .destructiveAction) {
-                    Button("Reset", role: .destructive) { showsResetConfirmation = true }
-                }
-                ToolbarItem(placement: .confirmationAction) {
+                // Reset lives in the confirmation cluster, ahead of Create Postcard, so the
+                // toolbar reads Cancel · Reset · Create Postcard (cancellation renders before
+                // the confirmation cluster on macOS). Previously `.destructiveAction`, which on
+                // macOS has no real titlebar slot and changed the window's toolbar composition
+                // enough to drag `blockingIssueToast`'s `safeAreaInset` into the toolbar's
+                // scroll-edge band instead of floating over the form — see that property's doc
+                // comment.
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    Button(role: .destructive) { showsResetConfirmation = true } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                    }
+                    .help("Reset")
+                    .accessibilityLabel("Reset")
+
                     Button("Create Postcard") { Task { await create() } }
                         .disabled(!model.canCreate || isCreating)
                 }
