@@ -260,4 +260,111 @@ final class CreatePostcardIntegrationTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Test 4: dropping a compiled postcard prefills the whole form, through the real Go core
+
+    /// The full "Create a Postcard" prefill loop: compile a rich card (metadata, a forced
+    /// size, and a secret region) with the REAL Go core, write it to disk as a bare
+    /// `.postcard.png` file exactly as a user would drop one, resolve + prefill a brand new
+    /// model from it (`CreatePostcardModel.resolveImport(urls:)` -> `prefill(_:)`, both going
+    /// through `AppcoreMetaJSONFromCardBytes`), and prove the result is itself a valid input to
+    /// `compilePostcard` again — the round trip this whole feature exists to make possible.
+    func testDroppingACompiledPostcardPrefillsAndReCompilesThroughRealGoCore() async throws {
+        let sourceModel = try makeFullModel(name: "harbor-postcard")
+        sourceModel.cmWidthText = "20.0" // a forced size, not just the scans' embedded DPI
+
+        let compiled = try await GoCore.shared.compilePostcard(
+            name: sourceModel.name,
+            metadataJSON: try sourceModel.metadataJSON(),
+            front: try XCTUnwrap(sourceModel.front?.data),
+            back: sourceModel.back?.data,
+            removeBorder: false,
+            archival: false
+        )
+
+        let fileURL = try makeTempDirectory().appending(path: compiled.filename)
+        try compiled.data.write(to: fileURL)
+
+        guard case .bundle(let bundle) = try await CreatePostcardModel.resolveImport(urls: [fileURL]) else {
+            return XCTFail("a compiled postcard file must resolve to a prefill bundle")
+        }
+        XCTAssertNotNil(bundle.metadata, "a compiled card's embedded XMP must decode as metadata")
+
+        let importedModel = CreatePostcardModel()
+        try importedModel.prefill(bundle)
+
+        XCTAssertEqual(importedModel.name, "harbor-postcard")
+        XCTAssertEqual(importedModel.senderName, "Alice")
+        XCTAssertEqual(importedModel.recipientName, "Bob")
+        XCTAssertEqual(importedModel.locationName, "Turin, Italy")
+        XCTAssertEqual(importedModel.locationCountryCode, "ITA")
+        XCTAssertEqual(importedModel.sentOn, Self.isoDate(year: 2024, month: 5, day: 1))
+        XCTAssertEqual(importedModel.flip, sourceModel.flip)
+
+        XCTAssertEqual(importedModel.front?.pixelWidth, 600, "the split front must match the original scan's pixels")
+        XCTAssertEqual(importedModel.front?.pixelHeight, 400)
+        XCTAssertEqual(importedModel.back?.pixelWidth, 600)
+        XCTAssertEqual(importedModel.back?.pixelHeight, 400)
+
+        XCTAssertTrue(importedModel.dimensionsEdited, "the re-encoded split images carry no DPI, so the imported cm size must be forced")
+        XCTAssertEqual(Double(importedModel.cmWidthText) ?? 0, 20.0, accuracy: 0.1)
+
+        let frontSecret = try XCTUnwrap(importedModel.frontSecrets.first)
+        XCTAssertTrue(frontSecret.prehidden, "the secret's pixels were already painted over by the first compile")
+
+        // The imported model's own `metadataJSON()` must itself be a valid `compilePostcard`
+        // input — the round trip this feature exists to make possible.
+        _ = try await GoCore.shared.compilePostcard(
+            name: importedModel.name,
+            metadataJSON: try importedModel.metadataJSON(),
+            front: try XCTUnwrap(importedModel.front?.data),
+            back: importedModel.back?.data,
+            removeBorder: false,
+            archival: false
+        )
+    }
+
+    // MARK: - Test 5: dropping component pieces + a YAML meta sidecar prefills the form
+
+    /// A `{name}-front.png` + `{name}-meta.yaml` pair, dropped as just the front image URL —
+    /// proves macOS sibling discovery (`ComponentBundleDiscovery`) finds the sidecar on disk
+    /// and `AppcoreMetaJSONFromComponentYAML` decodes it into the same prefill path a compiled
+    /// card uses.
+    func testDroppingAFrontImageWithAYAMLSidecarPrefillsViaSiblingDiscovery() async throws {
+        let directory = try makeTempDirectory()
+        let frontURL = directory.appending(path: "yaml-trip-front.png")
+        try makeScanData(width: 300, height: 200).write(to: frontURL)
+
+        let yaml = """
+        locale: en-GB
+        flip: none
+        sender:
+          name: Anon Ymous
+          link: https://example.com
+        front:
+          description: A blue sky with fluffy white clouds
+        physical:
+          front_size: 12.33cm x 7.89cm
+        """
+        try yaml.write(to: directory.appending(path: "yaml-trip-meta.yaml"), atomically: true, encoding: .utf8)
+
+        guard case .bundle(let bundle) = try await CreatePostcardModel.resolveImport(urls: [frontURL]) else {
+            return XCTFail("a component front image must resolve to a prefill bundle")
+        }
+        XCTAssertNotNil(bundle.metadata, "the sibling meta.yaml must be discovered and decoded")
+        XCTAssertNil(bundle.backData, "no -back sibling exists")
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        XCTAssertEqual(model.name, "yaml-trip")
+        XCTAssertEqual(model.locale, "en-GB")
+        XCTAssertEqual(model.senderName, "Anon Ymous")
+        XCTAssertEqual(model.senderURI, "https://example.com")
+        XCTAssertEqual(model.frontDescription, "A blue sky with fluffy white clouds")
+        XCTAssertFalse(model.frontDescriptionSkipped)
+        XCTAssertTrue(model.dimensionsEdited)
+        XCTAssertEqual(Double(model.cmWidthText) ?? 0, 12.33, accuracy: 0.05)
+        XCTAssertEqual(Double(model.cmHeightText) ?? 0, 7.89, accuracy: 0.05)
+    }
 }

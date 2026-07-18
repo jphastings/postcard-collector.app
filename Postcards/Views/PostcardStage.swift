@@ -213,9 +213,11 @@ struct PostcardStage: View {
 
     // MARK: - Import
 
-    /// Handles this view's own file-picker button — the window-root drop zone
-    /// (`CreatePostcardForm.importURLs`) is the other caller of `model.importURLs`, sharing
-    /// this same `importError` binding so either path surfaces failures identically.
+    /// Handles this view's own file-picker button, sharing the same `importError` binding the
+    /// window-root drop zone uses so either path surfaces failures identically. Unlike that
+    /// drop zone (`CreatePostcardForm.importURLs`), this file picker's `allowedContentTypes`
+    /// are plain image types only, so it never sees a compiled postcard or component bundle to
+    /// classify — it always goes straight through `model.importURLs(_:)`, today's behavior.
     private func importURLs(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         importError = nil
@@ -278,7 +280,7 @@ private struct SideCard: View {
 
     private var imageCard: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            Rectangle()
                 .fill(.background)
             if let previewImage {
                 Image(platformImage: previewImage)
@@ -291,7 +293,6 @@ private struct SideCard: View {
         }
         .aspectRatio(CGFloat(probed.pixelWidth) / CGFloat(max(probed.pixelHeight, 1)), contentMode: .fit)
         .frame(maxHeight: isZoomed ? .infinity : maxHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .matchedGeometryEffect(id: probed.id, in: namespace)
         .overlay(alignment: .topTrailing) { clearButton }
         .overlay(alignment: .bottomTrailing) { markSecretsButton }

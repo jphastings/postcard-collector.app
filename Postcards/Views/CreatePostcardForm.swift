@@ -23,6 +23,11 @@ struct CreatePostcardForm: View {
     @State private var flipError: String?
     @State private var alertMessage: String?
     @State private var showsResetConfirmation = false
+    /// Set (alongside `showsReplaceConfirmation`) when a dropped/picked compiled postcard or
+    /// component bundle carries metadata and the model isn't `isPristine` — held until the
+    /// user confirms or cancels the replace dialog (see `importURLs(_:)`/`confirmReplace()`).
+    @State private var pendingImportBundle: PostcardImportBundle?
+    @State private var showsReplaceConfirmation = false
     /// Whether a drag is currently over the window — the drop zone is the whole window, not
     /// just the stage pane, so `PostcardStage` only reads this to render its highlight.
     @State private var isTargeted = false
@@ -132,6 +137,14 @@ struct CreatePostcardForm: View {
                 Button("Reset", role: .destructive) { performReset() }
                 Button("Cancel", role: .cancel) {}
             }
+            .confirmationDialog(
+                "Replace the current postcard?",
+                isPresented: $showsReplaceConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Replace", role: .destructive) { confirmReplace() }
+                Button("Cancel", role: .cancel) { pendingImportBundle = nil }
+            }
             .alert(
                 "Couldn't create postcard",
                 isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })
@@ -165,15 +178,41 @@ struct CreatePostcardForm: View {
 
     // MARK: - Import (window-root drop)
 
+    /// Classifies every drop/pick (see `PostcardImport.swift`): a plain image goes straight
+    /// through `model.importURLs(_:)`, unchanged; a compiled postcard or component bundle
+    /// resolves to a `PostcardImportBundle` that either prefills immediately (a pristine model,
+    /// or a bundle with no metadata to replace anything with) or — replacing real content —
+    /// waits for `showsReplaceConfirmation` first, mirroring the Reset confirmation.
     private func importURLs(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         importError = nil
         Task {
             do {
-                try await model.importURLs(urls)
+                switch try await CreatePostcardModel.resolveImport(urls: urls) {
+                case .plainImages(let urls):
+                    try await model.importURLs(urls)
+                case .bundle(let bundle):
+                    if bundle.metadata != nil, !model.isPristine {
+                        pendingImportBundle = bundle
+                        showsReplaceConfirmation = true
+                    } else {
+                        try model.prefill(bundle)
+                    }
+                }
             } catch {
                 importError = error.localizedDescription
             }
+        }
+    }
+
+    private func confirmReplace() {
+        guard let bundle = pendingImportBundle else { return }
+        pendingImportBundle = nil
+        model.reset()
+        do {
+            try model.prefill(bundle)
+        } catch {
+            importError = error.localizedDescription
         }
     }
 

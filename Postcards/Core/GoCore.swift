@@ -212,6 +212,23 @@ actor GoCore {
         return (filename: compiled.filename(), data: data)
     }
 
+    /// Extracts a compiled postcard's embedded XMP metadata straight from its raw bytes
+    /// (webp/jpeg/png — a `.postcard`/`.postcard.*` file, or a collection card's stored image)
+    /// as canonical metadata JSON, without ever decoding pixel data — the "Create a Postcard"
+    /// prefill flow's entry point for a dropped compiled card (see
+    /// `CreatePostcardModel.resolveImport(urls:)`). `filename` is only used for error context;
+    /// it need not be a real filesystem path.
+    func metadataJSON(fromCompiledCardBytes data: Data, filename: String) throws -> String {
+        try Self.call { AppcoreMetaJSONFromCardBytes(filename, data, $0) }
+    }
+
+    /// Decodes a `{name}-meta.yaml`/`.yml` component sidecar's bytes into the same canonical
+    /// metadata JSON shape `metadataJSON(fromCompiledCardBytes:filename:)` returns — the
+    /// prefill flow's entry point for a dropped component-convention meta sidecar.
+    func metadataJSON(fromComponentYAML data: Data) throws -> String {
+        try Self.call { AppcoreMetaJSONFromComponentYAML(data, $0) }
+    }
+
     /// Sets a collection's stored title.
     func setTitle(_ title: String, ofCollectionAt path: String) throws {
         try Self.call { AppcoreSetCollectionTitle(path, title, $0) }

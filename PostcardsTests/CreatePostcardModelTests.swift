@@ -30,6 +30,16 @@ final class CreatePostcardModelTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
+    /// Component-wise `CGRect` comparison — a bounding box built from summed/subtracted
+    /// doubles (see `ImportedSecret.boundingBox(ofPoints:)`) won't hit `CGRect.==`'s exact
+    /// equality, e.g. `0.4 - 0.1` lands on `0.30000000000000004`.
+    private func assertRect(_ actual: CGRect, _ expected: CGRect, accuracy: CGFloat = 0.0001, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.minX, expected.minX, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.minY, expected.minY, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.width, expected.width, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, accuracy: accuracy, file: file, line: line)
+    }
+
     // MARK: - DPI -> cm math
 
     func testSuggestedCmSizeComputesFromPixelsAndDPI() {
@@ -718,5 +728,199 @@ final class CreatePostcardModelTests: XCTestCase {
         try model.setFront(data: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), filename: "scan-front.tiff")
 
         XCTAssertEqual(model.name, "scan", "name derivation must work again post-reset, proving nameEdited was cleared")
+    }
+
+    // MARK: - isPristine
+
+    func testFreshModelIsPristine() {
+        XCTAssertTrue(CreatePostcardModel().isPristine)
+    }
+
+    func testModelWithAFrontImageIsNotPristine() throws {
+        let model = CreatePostcardModel()
+        try model.setFront(data: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), filename: "front.png")
+        XCTAssertFalse(model.isPristine)
+    }
+
+    func testModelWithAnyTouchedTextFieldIsNotPristine() {
+        let model = CreatePostcardModel()
+        model.senderName = "Alice"
+        XCTAssertFalse(model.isPristine)
+    }
+
+    func testPreselectedDestinationAloneDoesNotBreakPristine() {
+        let model = CreatePostcardModel()
+        model.destinationCollectionPath = "/tmp/some.postcards"
+        XCTAssertTrue(model.isPristine, "a form-preselected destination isn't postcard content")
+    }
+
+    func testSpotlightSideAloneDoesNotBreakPristine() {
+        let model = CreatePostcardModel()
+        model.spotlightSide = .front
+        XCTAssertTrue(model.isPristine, "ephemeral wizard focus isn't postcard content")
+    }
+
+    // MARK: - prefill
+
+    private func makeImportedMetadata(_ json: String) throws -> ImportedMetadata {
+        try ImportedMetadata(json: Data(json.utf8))
+    }
+
+    func testPrefillSetsImagesNameAndMetadataFields() throws {
+        let imported = try makeImportedMetadata(#"""
+        {
+            "locale": "fr-FR", "location": { "name": "Turin", "latitude": 45.07, "longitude": 7.68, "countrycode": "ITA" },
+            "flip": "book", "sentOn": "2024-05-01",
+            "sender": { "name": "Alice", "uri": "https://example.com/alice" },
+            "recipient": { "name": "Bob" },
+            "front": {}, "back": {},
+            "context": { "author": { "name": "Collector" }, "description": "Found at a market" }
+        }
+        """#)
+        let bundle = PostcardImportBundle(
+            name: "harbor-postcard",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "harbor-postcard-front.png",
+            backData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), backFilename: "harbor-postcard-back.png",
+            metadata: imported
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        XCTAssertEqual(model.name, "harbor-postcard")
+        XCTAssertNotNil(model.front)
+        XCTAssertNotNil(model.back)
+        XCTAssertEqual(model.locale, "fr-FR")
+        XCTAssertEqual(model.flip, .book)
+        XCTAssertEqual(model.sentOn.map { Calendar(identifier: .iso8601).component(.year, from: $0) }, 2024)
+        XCTAssertEqual(model.senderName, "Alice")
+        XCTAssertEqual(model.senderURI, "https://example.com/alice")
+        XCTAssertEqual(model.recipientName, "Bob")
+        XCTAssertEqual(model.locationName, "Turin")
+        XCTAssertEqual(model.locationLatitude ?? 0, 45.07, accuracy: 0.0001)
+        XCTAssertEqual(model.locationCountryCode, "ITA")
+        XCTAssertEqual(model.contextAuthorName, "Collector")
+        XCTAssertEqual(model.contextDescription, "Found at a market")
+    }
+
+    /// One JSON fixture exercising all four skip flags' "present -> unskipped; absent ->
+    /// that side's own default" rule (see `prefill`'s doc comment) — including two cases
+    /// (`backTranscriptionSkipped`'s absent-default of `false`, `backDescriptionSkipped`'s
+    /// present-override of a `true` default) that a naive "absent -> always skipped" rule
+    /// would get wrong.
+    func testPrefillDerivesSkipFlagsFromSideContent() throws {
+        let imported = try makeImportedMetadata(#"""
+        {
+            "location": {}, "flip": "none", "sender": {}, "recipient": {},
+            "front": { "description": "A sunny harbor", "transcription": { "text": "" } },
+            "back": { "description": "A handwritten note", "transcription": { "text": "" } },
+            "context": { "author": {} }
+        }
+        """#)
+        let bundle = PostcardImportBundle(
+            name: "card",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "card-front.png",
+            backData: nil, backFilename: nil,
+            metadata: imported
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        XCTAssertFalse(model.frontDescriptionSkipped, "text present -> unskipped")
+        XCTAssertTrue(model.frontTranscriptionSkipped, "text absent -> that side's own default (skipped)")
+        XCTAssertFalse(model.backTranscriptionSkipped, "text absent -> that side's own default (unskipped)")
+        XCTAssertFalse(model.backDescriptionSkipped, "text present -> unskipped, overriding a skipped-by-default side")
+    }
+
+    func testPrefillMapsPolygonAndBoxSecretsToNormalizedBoundingBoxes() throws {
+        let imported = try makeImportedMetadata(#"""
+        {
+            "location": {}, "flip": "none", "sender": {}, "recipient": {},
+            "front": { "secrets": [{ "type": "polygon", "prehidden": true, "points": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.5], [0.1, 0.5]] }] },
+            "back": { "secrets": [{ "type": "box", "prehidden": false, "left": 0.05, "top": 0.05, "width": 0.2, "height": 0.1 }] },
+            "context": { "author": {} }
+        }
+        """#)
+        let bundle = PostcardImportBundle(
+            name: "card",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "card-front.png",
+            backData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), backFilename: "card-back.png",
+            metadata: imported
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        let frontSecret = try XCTUnwrap(model.frontSecrets.first)
+        assertRect(frontSecret.rect, CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.3))
+        XCTAssertTrue(frontSecret.prehidden)
+
+        let backSecret = try XCTUnwrap(model.backSecrets.first)
+        assertRect(backSecret.rect, CGRect(x: 0.05, y: 0.05, width: 0.2, height: 0.1))
+        XCTAssertFalse(backSecret.prehidden)
+    }
+
+    func testPrefillForcesDimensionsAndMarksThicknessAndColorTouchedWhenPhysicalPresent() throws {
+        let imported = try makeImportedMetadata(#"""
+        {
+            "location": {}, "flip": "none", "sender": {}, "recipient": {},
+            "front": {}, "back": {}, "context": { "author": {} },
+            "physical": { "frontSize": { "cmW": "74/5", "cmH": "15", "pxW": 600, "pxH": 400 }, "thicknessMM": 0.6, "cardColor": "#112233" }
+        }
+        """#)
+        let bundle = PostcardImportBundle(
+            name: "card",
+            frontData: makeImageData(width: 600, height: 400, dpi: nil, utType: "public.png"), frontFilename: "card-front.png",
+            backData: nil, backFilename: nil,
+            metadata: imported
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        XCTAssertEqual(model.cmWidthText, "14.8")
+        XCTAssertEqual(model.cmHeightText, "15.0")
+        XCTAssertTrue(model.dimensionsEdited)
+        XCTAssertEqual(model.thicknessMM, 0.6)
+        XCTAssertTrue(model.thicknessEdited)
+        XCTAssertEqual(model.cardColorHex, "#112233")
+        XCTAssertTrue(model.cardColorEdited)
+    }
+
+    func testPrefillWithoutMetadataOnlySetsImagesAndName() throws {
+        let bundle = PostcardImportBundle(
+            name: "trip",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "trip-front.png",
+            backData: nil, backFilename: nil,
+            metadata: nil
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        XCTAssertEqual(model.name, "trip")
+        XCTAssertNotNil(model.front)
+        XCTAssertNil(model.back)
+        let fresh = CreatePostcardModel()
+        XCTAssertEqual(model.senderName, fresh.senderName)
+        XCTAssertEqual(model.locationName, fresh.locationName)
+        XCTAssertFalse(model.dimensionsEdited)
+    }
+
+    func testPrefillWithNoBackDataClearsAnyExistingBack() throws {
+        let model = CreatePostcardModel()
+        try model.setFront(data: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), filename: "old-front.png")
+        try model.setBack(data: makeImageData(width: 90, height: 70, dpi: nil, utType: "public.png"), filename: "old-back.png")
+
+        let bundle = PostcardImportBundle(
+            name: "only-card",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "only-card-only.png",
+            backData: nil, backFilename: nil,
+            metadata: nil
+        )
+        try model.prefill(bundle)
+
+        XCTAssertNil(model.back, "\"-only\" (or a compiled front-only card) means front with no back")
     }
 }

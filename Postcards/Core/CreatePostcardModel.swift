@@ -362,6 +362,130 @@ final class CreatePostcardModel {
         spotlightSide = fresh.spotlightSide
     }
 
+    // MARK: - Pristine check
+
+    /// Whether every user-enterable field still holds a fresh model's value — the gate for
+    /// whether importing a compiled postcard/component bundle (see `PostcardImport.swift`)
+    /// can prefill silently or needs a "replace the current postcard?" confirmation first
+    /// (mirroring the Reset confirmation — see `CreatePostcardForm`). Deliberately excludes
+    /// `destinationCollectionPath` (preselected by the form before the user has touched
+    /// anything — see that property's doc comment) and `spotlightSide` (ephemeral wizard-focus
+    /// UI state): neither represents postcard content, so neither should force a confirmation
+    /// on its own. Compares the same fields `CreatePostcardModelTests`' reset tests exercise.
+    var isPristine: Bool {
+        let fresh = CreatePostcardModel()
+        return front == nil
+            && back == nil
+            && name == fresh.name
+            && cmWidthText == fresh.cmWidthText
+            && cmHeightText == fresh.cmHeightText
+            && flip == fresh.flip
+            && locale == fresh.locale
+            && sentOn == fresh.sentOn
+            && senderName == fresh.senderName
+            && senderURI == fresh.senderURI
+            && recipientName == fresh.recipientName
+            && recipientURI == fresh.recipientURI
+            && locationName == fresh.locationName
+            && locationLatitude == fresh.locationLatitude
+            && locationLongitude == fresh.locationLongitude
+            && locationCountryCode == fresh.locationCountryCode
+            && frontDescription == fresh.frontDescription
+            && frontTranscription == fresh.frontTranscription
+            && backDescription == fresh.backDescription
+            && backTranscription == fresh.backTranscription
+            && contextAuthorName == fresh.contextAuthorName
+            && contextAuthorURI == fresh.contextAuthorURI
+            && contextDescription == fresh.contextDescription
+            && frontDescriptionSkipped == fresh.frontDescriptionSkipped
+            && frontTranscriptionSkipped == fresh.frontTranscriptionSkipped
+            && backTranscriptionSkipped == fresh.backTranscriptionSkipped
+            && backDescriptionSkipped == fresh.backDescriptionSkipped
+            && thicknessMM == fresh.thicknessMM
+            && cardColorHex == fresh.cardColorHex
+            && removeBorder == fresh.removeBorder
+            && archival == fresh.archival
+            && frontSecrets == fresh.frontSecrets
+            && backSecrets == fresh.backSecrets
+    }
+
+    // MARK: - Prefill (compiled postcard / component bundle import)
+
+    /// Applies a resolved import (see `PostcardImport.resolveImport(urls:)`) onto this model:
+    /// front/back images, name, and — when a compiled card's XMP or a component meta sidecar
+    /// was found — every metadata field this form exposes. Always overwrites unconditionally
+    /// rather than merging; callers gate whether that's appropriate via `isPristine` and a
+    /// replace confirmation (`CreatePostcardForm`), so by the time this runs the model is
+    /// assumed to already be either freshly `reset()` or itself pristine — there's nothing
+    /// stale left over that this doesn't already set.
+    func prefill(_ bundle: PostcardImportBundle) throws {
+        try setFront(data: bundle.frontData, filename: bundle.frontFilename)
+        if let backData = bundle.backData {
+            try setBack(data: backData, filename: bundle.backFilename ?? "\(bundle.name)-back")
+        } else {
+            clearBack()
+        }
+
+        isApplyingDerivedName = true
+        name = bundle.name
+        isApplyingDerivedName = false
+        nameEdited = true
+
+        guard let imported = bundle.metadata else { return }
+        let meta = imported.metadata
+
+        if let locale = meta.locale { self.locale = locale }
+        flip = meta.flip
+        sentOn = meta.sentOn?.date
+        senderName = meta.sender.name ?? ""
+        senderURI = meta.sender.uri ?? ""
+        recipientName = meta.recipient.name ?? ""
+        recipientURI = meta.recipient.uri ?? ""
+        locationName = meta.location.name ?? ""
+        locationLatitude = meta.location.latitude
+        locationLongitude = meta.location.longitude
+        locationCountryCode = meta.location.countryCode ?? ""
+        contextAuthorName = meta.context.author.name ?? ""
+        contextAuthorURI = meta.context.author.uri ?? ""
+        contextDescription = meta.context.description ?? ""
+
+        frontDescription = meta.front.description ?? ""
+        frontTranscription = meta.front.transcription.text
+        backDescription = meta.back.description ?? ""
+        backTranscription = meta.back.transcription.text
+
+        // A skip flag derives from content, not from touching it: text present -> unskipped;
+        // absent -> falls back to that side's own fresh default (see the skip flags' doc
+        // comment above), exactly like `reset()`/`swapSides()`'s own `isApplyingSkipDefault`
+        // suppression — so un-skipping later still behaves like a first, genuine user choice.
+        let fresh = CreatePostcardModel()
+        isApplyingSkipDefault = true
+        frontDescriptionSkipped = frontDescription.isEmpty ? fresh.frontDescriptionSkipped : false
+        frontTranscriptionSkipped = frontTranscription.isEmpty ? fresh.frontTranscriptionSkipped : false
+        backTranscriptionSkipped = backTranscription.isEmpty ? fresh.backTranscriptionSkipped : false
+        backDescriptionSkipped = backDescription.isEmpty ? fresh.backDescriptionSkipped : false
+        isApplyingSkipDefault = false
+
+        frontSecrets = imported.frontSecrets.map { SecretRegion(rect: $0.rect, prehidden: $0.prehidden) }
+        backSecrets = imported.backSecrets.map { SecretRegion(rect: $0.rect, prehidden: $0.prehidden) }
+
+        if let physical = imported.physical {
+            if let cmWidth = physical.cmWidth, let cmHeight = physical.cmHeight, cmWidth > 0, cmHeight > 0 {
+                isSyncingDimensions = true
+                cmWidthText = Self.formattedCm(cmWidth)
+                cmHeightText = Self.formattedCm(cmHeight)
+                isSyncingDimensions = false
+                dimensionsEdited = true
+            }
+            if let thicknessMM = physical.thicknessMM {
+                self.thicknessMM = thicknessMM
+            }
+            if let cardColor = physical.cardColor {
+                cardColorHex = cardColor
+            }
+        }
+    }
+
     // MARK: - Setting images
 
     /// The single-drop-zone entry point: fills whichever slot is next (front, then back),
@@ -396,8 +520,10 @@ final class CreatePostcardModel {
 
     /// Reads a picked/dropped file's bytes immediately, retaining nothing scoped — mirrors
     /// `LibraryModel.copyIntoContainer`'s security-scope + coordinated-read bracketing, minus
-    /// the copy (only the bytes are needed in memory).
-    private nonisolated static func readSecurityScopedData(at url: URL) throws -> Data {
+    /// the copy (only the bytes are needed in memory). Not `private`: `PostcardImport.swift`'s
+    /// `resolveImport(urls:)` reuses this same dance to read a compiled card/component piece's
+    /// bytes before classification decides what to do with them.
+    nonisolated static func readSecurityScopedData(at url: URL) throws -> Data {
         let hasScope = url.startAccessingSecurityScopedResource()
         defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
 
