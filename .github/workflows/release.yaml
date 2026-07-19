@@ -75,6 +75,7 @@ jobs:
       NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
       NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY_BASE64 }}
+      SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -182,6 +183,59 @@ jobs:
         with:
           name: Postcards-macOS
           path: dist/Postcards-macOS.zip
+
+      - name: Generate & upload appcast
+        # Sparkle auto-updates need SPARKLE_ED_PRIVATE_KEY (see docs/RELEASING.md); skips
+        # gracefully when absent, same secret-optional pattern as the signing/notarizing steps
+        # above. Signing here is orthogonal to Developer ID/notarization above: generate_appcast
+        # only needs the archived app's *embedded* SUPublicEDKey (see project.yml) to match this
+        # private key — it doesn't require or check Apple code signing at all. Uploading this as
+        # a build artifact (rather than calling the GitHub Releases API directly) lets it ride
+        # the same `dist/*` glob the `release` job below already publishes — the artifact name
+        # just needs to match that job's "Postcards-*" download pattern.
+        if: ${{ env.SPARKLE_ED_PRIVATE_KEY != '' }}
+        run: |
+          SPARKLE_VERSION=2.8.0
+          SPARKLE_URL="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          # Pinned checksum of that exact release asset (supply-chain hygiene: these are
+          # unsigned CLI tools with disk/keychain access, downloaded and run in CI as-is).
+          # Re-verify at https://github.com/sparkle-project/Sparkle/releases/tag/${SPARKLE_VERSION}
+          # and re-pin both values together if bumping SPARKLE_VERSION.
+          SPARKLE_SHA256=fd5681ee92bf238aaac2d08214ceaf0cc8976e452d7f882d80bac1e61581f3b1
+
+          curl -sL -o "$RUNNER_TEMP/sparkle-tools.tar.xz" "$SPARKLE_URL"
+          echo "$SPARKLE_SHA256  $RUNNER_TEMP/sparkle-tools.tar.xz" | shasum -a 256 -c -
+
+          mkdir -p "$RUNNER_TEMP/sparkle-tools"
+          tar -xzf "$RUNNER_TEMP/sparkle-tools.tar.xz" -C "$RUNNER_TEMP/sparkle-tools" bin/generate_appcast
+
+          # generate_appcast reads every archive in this directory as a candidate update, so it
+          # must contain ONLY this release's zip — never the whole dist/ output (that would also
+          # pull in Postcards-iOS-simulator.zip, which isn't a Sparkle-updatable macOS archive).
+          APPCAST_SRC="$RUNNER_TEMP/appcast-src"
+          mkdir -p "$APPCAST_SRC"
+          cp dist/Postcards-macOS.zip "$APPCAST_SRC/"
+
+          KEY_PATH="$RUNNER_TEMP/sparkle_ed_key"
+          echo -n "$SPARKLE_ED_PRIVATE_KEY" > "$KEY_PATH"
+
+          "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" \
+            --ed-key-file "$KEY_PATH" \
+            --download-url-prefix "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/" \
+            --link "${{ github.server_url }}/${{ github.repository }}/releases" \
+            "$APPCAST_SRC"
+
+          rm -f "$KEY_PATH"
+
+          mkdir -p dist-appcast
+          cp "$APPCAST_SRC/appcast.xml" dist-appcast/appcast.xml
+
+      - name: Upload appcast artifact
+        if: ${{ env.SPARKLE_ED_PRIVATE_KEY != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Postcards-appcast
+          path: dist-appcast/appcast.xml
 
       - name: Delete temporary keychain
         if: always()

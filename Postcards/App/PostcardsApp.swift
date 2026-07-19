@@ -2,6 +2,7 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 import UniformTypeIdentifiers
+import Sparkle
 #endif
 
 @main
@@ -10,6 +11,15 @@ struct PostcardsApp: App {
     @State private var cloudLibrary: CloudLibrary
     #if os(iOS)
     @State private var watchConnectivityProvider: WatchConnectivityProvider?
+    #endif
+    #if os(macOS)
+    // Owned at app scope so the process has exactly one updater for its lifetime.
+    // `startingUpdater: true` begins the automatic-check schedule immediately; no
+    // delegate customization is needed beyond the Info.plist keys (SUFeedURL etc, see
+    // project.yml).
+    @State private var updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+    )
     #endif
 
     init() {
@@ -44,6 +54,10 @@ struct PostcardsApp: App {
                 NewPostcardCommand()
                 Button("Open…") { presentOpenPanel() }
                     .keyboardShortcut("o", modifiers: .command)
+            }
+            // Sparkle's conventional placement: directly below "About Postcard Collector".
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand(updater: updaterController.updater)
             }
         }
         #endif
@@ -97,6 +111,32 @@ private struct NewPostcardCommand: View {
     var body: some View {
         Button("New Postcard…") { openWindow(id: "create-postcard") }
             .keyboardShortcut("n", modifiers: .command)
+    }
+}
+
+/// Bridges `SPUUpdater`'s KVO-observable `canCheckForUpdates` into a `@Published` property —
+/// Sparkle's documented pattern for driving a SwiftUI menu item's enabled state.
+private final class CheckForUpdatesViewModel: ObservableObject {
+    @Published var canCheckForUpdates = false
+
+    init(updater: SPUUpdater) {
+        updater.publisher(for: \.canCheckForUpdates)
+            .assign(to: &$canCheckForUpdates)
+    }
+}
+
+private struct CheckForUpdatesCommand: View {
+    @ObservedObject private var viewModel: CheckForUpdatesViewModel
+    private let updater: SPUUpdater
+
+    init(updater: SPUUpdater) {
+        self.updater = updater
+        self.viewModel = CheckForUpdatesViewModel(updater: updater)
+    }
+
+    var body: some View {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+            .disabled(!viewModel.canCheckForUpdates)
     }
 }
 #endif

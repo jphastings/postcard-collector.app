@@ -132,6 +132,50 @@ Before the first upload can succeed, the app must exist in App Store Connect: go
 `org.dotpostcard.collector` if you haven't already (the bundle ID must already exist under
 [Certificates, Identifiers & Profiles → Identifiers](https://developer.apple.com/account/resources/identifiers/list)).
 
+### Sparkle auto-updates (macOS)
+
+| Secret | What it is |
+| --- | --- |
+| `SPARKLE_ED_PRIVATE_KEY` | The private half of the EdDSA (ed25519) keypair Sparkle uses to sign update archives. |
+
+The macOS app embeds the matching **public** key (`SUPublicEDKey`) directly in its Info.plist
+via `project.yml`, so the private key is the only piece that needs to reach CI. Generate it with
+Sparkle's own `generate_keys` tool (ships in the
+[Sparkle release archive](https://github.com/sparkle-project/Sparkle/releases), under `bin/`):
+
+```sh
+./generate_keys
+```
+
+This stores the private key in the maintainer's **login Keychain**, under the item Sparkle's own
+tooling creates and expects (`generate_keys`'s default account, `ed25519` — don't rename it, or
+future `generate_keys`/`sign_update` runs on this machine won't find it), and prints the public
+key to paste into `SUPublicEDKey` if it ever needs rotating. Export the private key for the
+`SPARKLE_ED_PRIVATE_KEY` secret with:
+
+```sh
+./generate_keys -x /tmp/sparkle_private_key
+cat /tmp/sparkle_private_key | pbcopy
+rm /tmp/sparkle_private_key
+```
+
+Without this secret, the release workflow skips appcast generation entirely — macOS artifacts
+still build and publish as before, they just won't be discoverable as updates by Sparkle. Once
+the secret is present, every tagged release additionally gets an `appcast.xml` asset generated
+from that release's `Postcards-macOS.zip` and uploaded to the same GitHub Release (this doesn't
+require the Developer ID/notarization secrets above — Sparkle's own signature check only needs
+the archived app's embedded `SUPublicEDKey` to match, independent of Apple code signing — though
+in practice you'll want both, since Gatekeeper blocks launching an unsigned auto-downloaded
+update regardless of Sparkle's own checks). **This is a hard invariant going forward: every
+release from now on must carry an `appcast.xml`**, because the app's `SUFeedURL` points at
+`releases/latest/download/appcast.xml` — a release that skips it (secret missing, or the appcast
+step failing) leaves existing installs unable to see any update past it, including ones published
+later, until a subsequent release restores the file at `/latest/`.
+
+The first version able to check for and apply updates via Sparkle is the one built from the
+release immediately after this Sparkle integration lands — earlier installs have no updater and
+must be reinstalled manually.
+
 ## Cutting a release
 
 ```sh
