@@ -196,7 +196,66 @@ final class PostcardImportTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return directory
     }
+
+    // MARK: - ComponentProvenance capture during resolveImport (no meta, or a JSON meta — no
+    // Go core involved; see `CreatePostcardIntegrationTests` for the YAML-sidecar cases, which
+    // decode through the real Go core)
+
+    func testResolveImportCapturesComponentProvenanceWithoutASidecar() async throws {
+        let directory = try makeTempDirectory()
+        let frontURL = directory.appending(path: "trip-front.png")
+        try Data([0x01]).write(to: frontURL)
+        let backURL = directory.appending(path: "trip-back.png")
+        try Data([0x02]).write(to: backURL)
+
+        guard case .bundle(let bundle) = try await CreatePostcardModel.resolveImport(urls: [frontURL, backURL]) else {
+            return XCTFail("a component front+back drop must resolve to a bundle")
+        }
+        let provenance = try XCTUnwrap(bundle.componentProvenance)
+
+        // `deletingLastPathComponent()` returns a directory URL with a trailing slash, which
+        // `directory` itself (built via `appending(path:)`) doesn't have — `.path` normalizes
+        // that away for comparison.
+        XCTAssertEqual(provenance.directory.path, directory.path)
+        XCTAssertEqual(provenance.stem, "trip")
+        XCTAssertNil(provenance.existingYAMLMetaURL, "no sidecar was found")
+        XCTAssertEqual(provenance.sidecarURL, directory.appending(path: "trip-meta.yaml"), "defaults to a fresh .yaml sidecar")
+    }
+
+    func testResolveImportDefaultsToFreshYAMLWhenExistingSidecarIsJSON() async throws {
+        let directory = try makeTempDirectory()
+        let frontURL = directory.appending(path: "trip-front.png")
+        try Data([0x01]).write(to: frontURL)
+        let jsonMetaURL = directory.appending(path: "trip-meta.json")
+        let json = #"{"location":{},"flip":"none","sender":{},"recipient":{},"front":{},"back":{},"context":{"author":{}}}"#
+        try json.write(to: jsonMetaURL, atomically: true, encoding: .utf8)
+
+        guard case .bundle(let bundle) = try await CreatePostcardModel.resolveImport(urls: [frontURL, jsonMetaURL]) else {
+            return XCTFail("a component front + JSON meta drop must resolve to a bundle")
+        }
+        let provenance = try XCTUnwrap(bundle.componentProvenance)
+
+        XCTAssertNil(provenance.existingYAMLMetaURL, "the Go binding only emits YAML, so a JSON sidecar can't be overwritten in place")
+        XCTAssertEqual(provenance.sidecarURL, directory.appending(path: "trip-meta.yaml"))
+    }
     #endif
+
+    // MARK: - ComponentProvenance.sidecarURL (pure — no filesystem, no Go core)
+
+    func testSidecarURLUsesExistingYAMLMetaURLWhenPresent() {
+        let directory = URL(fileURLWithPath: "/tmp/somewhere")
+        let existing = directory.appending(path: "trip-meta.yml")
+        let provenance = ComponentProvenance(directory: directory, stem: "trip", existingYAMLMetaURL: existing)
+
+        XCTAssertEqual(provenance.sidecarURL, existing, "an existing .yml sidecar's exact path is reused, not switched to .yaml")
+    }
+
+    func testSidecarURLDefaultsToStemMetaYAMLWhenNoExistingSidecar() {
+        let directory = URL(fileURLWithPath: "/tmp/somewhere")
+        let provenance = ComponentProvenance(directory: directory, stem: "trip", existingYAMLMetaURL: nil)
+
+        XCTAssertEqual(provenance.sidecarURL, directory.appending(path: "trip-meta.yaml"))
+    }
 
     /// Component-wise `CGRect` comparison — a bounding box built from summed/subtracted
     /// doubles won't hit `CGRect.==`'s exact equality, e.g. `0.4 - 0.1` lands on

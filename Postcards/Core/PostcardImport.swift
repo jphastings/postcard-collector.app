@@ -271,6 +271,53 @@ struct PostcardImportBundle {
     var backData: Data?
     var backFilename: String?
     var metadata: ImportedMetadata?
+    /// Set only for a genuine component-file drop (never a compiled `.postcard`) — see
+    /// `ComponentProvenance`.
+    var componentProvenance: ComponentProvenance? = nil
+}
+
+/// Where a component-bundle import's source files live on disk — captured for any
+/// `{stem}-front/back/only` drop (with or without a meta sidecar already sitting beside it),
+/// never for a compiled `.postcard` file or a plain image. `CreatePostcardModel
+/// .componentProvenance` carries this forward so a successful create can write the
+/// (possibly edited) metadata back beside those source files — see `writeSidecar(metadataJSON:)`
+/// below and `CreatePostcardForm.create()`.
+struct ComponentProvenance: Equatable {
+    var directory: URL
+    var stem: String
+    /// The meta sidecar's own URL, when the import found one AND it was YAML (`.yaml` or
+    /// `.yml`) — write-back overwrites that exact path, preserving a `.yml` extension rather
+    /// than switching it to `.yaml`. `nil` when no sidecar existed yet, or the existing one was
+    /// JSON (the Go binding backing `writeSidecar` only ever emits YAML bytes, so a `.json`
+    /// sidecar can't be overwritten in place) — either way, write-back then defaults to
+    /// `<stem>-meta.yaml`.
+    var existingYAMLMetaURL: URL?
+
+    var sidecarURL: URL {
+        existingYAMLMetaURL ?? directory.appending(path: "\(stem)-meta.yaml")
+    }
+
+    /// Encodes `metadataJSON` (expected to be the SAME JSON just used to compile the card) into
+    /// YAML via the Go core and writes it to `sidecarURL`, overwriting anything already there —
+    /// that's the point: the fields the user just perfected in the form become the on-disk
+    /// source of truth. macOS only in practice (sibling paths only exist, and the app is only
+    /// unsandboxed, there — see CLAUDE.md); any failure (missing directory, permissions, or
+    /// simply running on iOS) is swallowed and reported only via the return value, never
+    /// thrown — a sidecar write must NEVER fail the create it's piggybacking on.
+    @discardableResult
+    func writeSidecar(metadataJSON: String) async -> Bool {
+        #if os(macOS)
+        do {
+            let yaml = try await GoCore.shared.componentYAML(fromMetadataJSON: metadataJSON)
+            try yaml.write(to: sidecarURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+        #else
+        return false
+        #endif
+    }
 }
 
 enum PostcardImportError: LocalizedError {
@@ -410,11 +457,18 @@ extension CreatePostcardModel {
             metadata = try ImportedMetadata(json: json)
         }
 
+        let provenance = ComponentProvenance(
+            directory: resolvedFrontURL.deletingLastPathComponent(),
+            stem: name,
+            existingYAMLMetaURL: metaMatch?.format == .yaml ? metaMatch?.url : nil
+        )
+
         return PostcardImportBundle(
             name: name,
             frontData: frontData, frontFilename: resolvedFrontURL.lastPathComponent,
             backData: backData, backFilename: backURL?.lastPathComponent,
-            metadata: metadata
+            metadata: metadata,
+            componentProvenance: provenance
         )
     }
 

@@ -289,6 +289,7 @@ final class CreatePostcardIntegrationTests: XCTestCase {
             return XCTFail("a compiled postcard file must resolve to a prefill bundle")
         }
         XCTAssertNotNil(bundle.metadata, "a compiled card's embedded XMP must decode as metadata")
+        XCTAssertNil(bundle.componentProvenance, "a compiled .postcard file never carries component provenance")
 
         let importedModel = CreatePostcardModel()
         try importedModel.prefill(bundle)
@@ -353,10 +354,23 @@ final class CreatePostcardIntegrationTests: XCTestCase {
         }
         XCTAssertNotNil(bundle.metadata, "the sibling meta.yaml must be discovered and decoded")
         XCTAssertNil(bundle.backData, "no -back sibling exists")
+        let provenance = try XCTUnwrap(bundle.componentProvenance, "a component-file drop must carry provenance")
+        // `.path` normalizes the trailing slash `deletingLastPathComponent()` adds; sibling
+        // discovery's `FileManager.contentsOfDirectory` resolves through `/private/var/…` where
+        // a freshly-built temp URL sits at the `/var/…` symlink, so the sidecar comparison also
+        // needs `resolvingSymlinksInPath()` (same fix `LibraryModelImportTests.resolved(_:)` uses).
+        XCTAssertEqual(provenance.directory.path, directory.path)
+        XCTAssertEqual(provenance.stem, "yaml-trip")
+        XCTAssertEqual(
+            provenance.sidecarURL.resolvingSymlinksInPath().path,
+            directory.appending(path: "yaml-trip-meta.yaml").resolvingSymlinksInPath().path,
+            "an existing .yaml sidecar's exact path is reused"
+        )
 
         let model = CreatePostcardModel()
         try model.prefill(bundle)
 
+        XCTAssertEqual(model.componentProvenance, provenance)
         XCTAssertEqual(model.name, "yaml-trip")
         XCTAssertEqual(model.locale, "en-GB")
         XCTAssertEqual(model.senderName, "Anon Ymous")
@@ -366,5 +380,86 @@ final class CreatePostcardIntegrationTests: XCTestCase {
         XCTAssertTrue(model.dimensionsEdited)
         XCTAssertEqual(Double(model.cmWidthText) ?? 0, 12.33, accuracy: 0.05)
         XCTAssertEqual(Double(model.cmHeightText) ?? 0, 7.89, accuracy: 0.05)
+    }
+
+    // MARK: - Test 6: component import -> edit -> sidecar write-back round trips
+
+    /// The write-back half of "Create a Postcard" for component-file imports (feature 1 of the
+    /// owner's two requests): drop `roundtrip-front.png` + an existing `roundtrip-meta.yml`
+    /// sidecar (proving the `.yml` extension survives write-back, not just `.yaml`), edit a
+    /// field, then call `ComponentProvenance.writeSidecar(metadataJSON:)` — the same helper
+    /// `CreatePostcardForm.create()` calls right after a successful compile, from the SAME
+    /// `metadataJSON` — directly against the REAL Go core (`AppcoreComponentYAMLFromMetaJSON`).
+    /// Asserts the written bytes land at the exact imported path, use the CLI's own YAML key
+    /// names, and decode back through `GoCore.metadataJSON(fromComponentYAML:)` with the edit
+    /// intact — mirroring dotpostcard's own `TestComponentYAMLFromMetaJSONRoundTripsThrough
+    /// MetaJSONFromComponentYAML` (pkg/appcore/import_test.go), which is why a box secret is
+    /// expected to come back as `type: polygon` (`types.Polygon.MarshalYAML` always emits
+    /// "polygon" — see that Go test's own comment).
+    func testComponentImportEditThenWriteBackSidecarRoundTripsThroughRealGoCore() async throws {
+        let directory = try makeTempDirectory()
+        let frontURL = directory.appending(path: "roundtrip-front.png")
+        try makeScanData(width: 400, height: 300, dpi: 300).write(to: frontURL)
+        let metaURL = directory.appending(path: "roundtrip-meta.yml")
+        let initialYAML = """
+        locale: en-GB
+        flip: none
+        sender:
+          name: Original Sender
+        front:
+          description: Original front description
+        """
+        try initialYAML.write(to: metaURL, atomically: true, encoding: .utf8)
+
+        guard case .bundle(let bundle) = try await CreatePostcardModel.resolveImport(urls: [frontURL, metaURL]) else {
+            return XCTFail("a component front image + meta.yml must resolve to a prefill bundle")
+        }
+        let provenance = try XCTUnwrap(bundle.componentProvenance)
+        XCTAssertEqual(
+            provenance.sidecarURL, metaURL,
+            "an existing .yml sidecar's exact path must be reused, not switched to .yaml"
+        )
+
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+        XCTAssertEqual(model.senderName, "Original Sender")
+
+        // The fields the user "just perfected" in the form — exactly what write-back exists to
+        // preserve.
+        model.senderName = "Updated Sender"
+        model.cmWidthText = "12.0" // forces physical.frontSize
+        model.sentOn = Self.isoDate(year: 2023, month: 6, day: 15)
+        model.frontSecrets = [SecretRegion(rect: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.2))]
+
+        let metadataJSON = try model.metadataJSON()
+        let outcome = await model.componentProvenance?.writeSidecar(metadataJSON: metadataJSON)
+        XCTAssertEqual(outcome, true, "the write-back must succeed against a writable temp directory")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: metaURL.path), "the sidecar must land beside the source images")
+        let writtenText = try String(contentsOf: metaURL, encoding: .utf8)
+        for expectedKey in ["front_size:", "sent_on:", "type: polygon"] {
+            XCTAssertTrue(writtenText.contains(expectedKey), "expected \"\(expectedKey)\" in the written YAML:\n\(writtenText)")
+        }
+
+        // Round-trips through the real Go core, same as re-importing this sidecar later would.
+        let roundTrippedJSON = try await GoCore.shared.metadataJSON(fromComponentYAML: Data(writtenText.utf8))
+        let imported = try ImportedMetadata(json: Data(roundTrippedJSON.utf8))
+        XCTAssertEqual(imported.metadata.sender.name, "Updated Sender")
+        XCTAssertEqual(imported.metadata.sentOn?.date, Self.isoDate(year: 2023, month: 6, day: 15))
+        XCTAssertEqual(imported.physical?.cmWidth ?? 0, 12.0, accuracy: 0.01)
+        XCTAssertEqual(imported.frontSecrets.count, 1, "the front secret must survive the write-back round trip")
+    }
+
+    // MARK: - Test 7: sidecar write-back is a no-op without componentProvenance
+
+    /// A card with no component-import origin (e.g. built from plain scans) has no
+    /// `componentProvenance`, so there's nothing to write back — proven directly against the
+    /// optional-chained call `CreatePostcardForm.create()` makes.
+    func testWriteSidecarIsSkippedWithoutComponentProvenance() async throws {
+        let model = try makeFullModel(name: "no-provenance")
+        XCTAssertNil(model.componentProvenance)
+
+        let outcome = await model.componentProvenance?.writeSidecar(metadataJSON: try model.metadataJSON())
+        XCTAssertNil(outcome, "nothing to write back, so the optional chain never calls into Go at all")
     }
 }

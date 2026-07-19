@@ -279,6 +279,19 @@ final class CreatePostcardModel {
     /// `LibraryModel.addBareCard`) — not an unset one, so it never blocks `canCreate`.
     var destinationCollectionPath: String?
 
+    // MARK: - Component provenance
+
+    /// Set only by `prefill(_:)`, when the imported bundle carried a `PostcardImportBundle
+    /// .componentProvenance` — i.e. this card's images came from an `{stem}-front/back/only`
+    /// drop, not a compiled `.postcard` or a plain image. Cleared by `reset()` and by every
+    /// image-identity mutation (`setFront`/`setBack`/`clearFront`/`clearBack`/`swapSides`):
+    /// after any of those, the model's front/back bytes can no longer be assumed to still be
+    /// the exact files at that path, and `create()`'s sidecar write-back
+    /// (`ComponentProvenance.writeSidecar`) would otherwise silently pair the wrong metadata
+    /// with whatever image actually sits at `{stem}-front.*`/`{stem}-back.*` on disk. Editing a
+    /// metadata field never touches this — that's the whole point of write-back.
+    private(set) var componentProvenance: ComponentProvenance?
+
     // MARK: - Ephemeral UI state
 
     /// Which side (if any) the describe/transcribe wizard's focused text editor is currently
@@ -359,7 +372,20 @@ final class CreatePostcardModel {
 
         destinationCollectionPath = fresh.destinationCollectionPath
 
+        componentProvenance = fresh.componentProvenance
+
         spotlightSide = fresh.spotlightSide
+    }
+
+    /// `reset()`, but re-seeds `destinationCollectionPath` afterward — for the "Create a
+    /// Postcard" form's clear-on-success flow (`CreatePostcardForm.create()`), where scanning a
+    /// whole stack into one collection is the core loop: the destination is UI state, not
+    /// postcard content (see that property's and `isPristine`'s doc comments), so a card's
+    /// success shouldn't reset it back to "Individual postcards" for the next one.
+    func resetKeepingDestination() {
+        let destination = destinationCollectionPath
+        reset()
+        destinationCollectionPath = destination
     }
 
     // MARK: - Pristine check
@@ -430,6 +456,11 @@ final class CreatePostcardModel {
         name = bundle.name
         isApplyingDerivedName = false
         nameEdited = true
+
+        // Set unconditionally, with or without an imported meta sidecar — it must land AFTER
+        // the setFront/setBack/clearBack calls above, which (as image-identity mutations) each
+        // clear it as a side effect; this is what actually establishes it for the import.
+        componentProvenance = bundle.componentProvenance
 
         guard let imported = bundle.metadata else { return }
         let meta = imported.metadata
@@ -548,6 +579,7 @@ final class CreatePostcardModel {
     func clearFront() {
         front = nil
         frontSecrets = []
+        componentProvenance = nil
         reconcileFlip()
     }
 
@@ -558,8 +590,14 @@ final class CreatePostcardModel {
     /// comment). A no-op when there's no back image, since a lone front already belongs in the
     /// front slot; when only a back image exists this promotes it to front, since the front
     /// slot must end non-nil whenever any image exists.
+    ///
+    /// Clears `componentProvenance`: a swap doesn't rewrite the source image FILES on disk, only
+    /// what's in memory, so after a swap the in-model "front" role no longer corresponds to
+    /// whatever `{stem}-front.*` actually holds — writing a sidecar back under that assumption
+    /// would silently mispair the metadata with the image.
     func swapSides() {
         guard back != nil else { return }
+        componentProvenance = nil
 
         swap(&front, &back)
         swap(&frontSecrets, &backSecrets)
@@ -612,6 +650,7 @@ final class CreatePostcardModel {
             throw ProbeError.unreadableImage(filename)
         }
         front = probed
+        componentProvenance = nil
         applyDerivedName(from: filename)
         reseedDimensions()
         reconcileFlip()
@@ -625,12 +664,14 @@ final class CreatePostcardModel {
             throw ProbeError.unreadableImage(filename)
         }
         back = probed
+        componentProvenance = nil
         reconcileFlip()
     }
 
     func clearBack() {
         back = nil
         backSecrets = []
+        componentProvenance = nil
         reconcileFlip()
     }
 

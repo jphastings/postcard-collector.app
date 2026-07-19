@@ -906,6 +906,7 @@ final class CreatePostcardModelTests: XCTestCase {
         XCTAssertEqual(model.senderName, fresh.senderName)
         XCTAssertEqual(model.locationName, fresh.locationName)
         XCTAssertFalse(model.dimensionsEdited)
+        XCTAssertNil(model.componentProvenance, "no componentProvenance on the bundle -> none on the model")
     }
 
     func testPrefillWithNoBackDataClearsAnyExistingBack() throws {
@@ -922,5 +923,148 @@ final class CreatePostcardModelTests: XCTestCase {
         try model.prefill(bundle)
 
         XCTAssertNil(model.back, "\"-only\" (or a compiled front-only card) means front with no back")
+    }
+
+    // MARK: - componentProvenance
+
+    private func makeProvenance(stem: String = "trip") -> ComponentProvenance {
+        ComponentProvenance(directory: URL(fileURLWithPath: "/tmp/wherever"), stem: stem, existingYAMLMetaURL: nil)
+    }
+
+    private func makeComponentBundle(provenance: ComponentProvenance?) -> PostcardImportBundle {
+        PostcardImportBundle(
+            name: "trip",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "trip-front.png",
+            backData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), backFilename: "trip-back.png",
+            metadata: nil,
+            componentProvenance: provenance
+        )
+    }
+
+    func testPrefillSetsComponentProvenanceFromBundle() throws {
+        let provenance = makeProvenance()
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: provenance))
+
+        XCTAssertEqual(model.componentProvenance, provenance)
+    }
+
+    func testComponentProvenanceSurvivesMetadataFieldEdits() throws {
+        let provenance = makeProvenance()
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: provenance))
+
+        model.senderName = "Alice"
+        model.frontDescription = "A view"
+        model.locationName = "Turin"
+        model.thicknessMM = 0.7
+        model.cmWidthText = "12.0"
+        model.frontSecrets = [SecretRegion(rect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2))]
+
+        XCTAssertEqual(model.componentProvenance, provenance, "editing metadata fields must never drop provenance")
+    }
+
+    func testComponentProvenanceClearedByReset() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+        XCTAssertNotNil(model.componentProvenance)
+
+        model.reset()
+
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    func testComponentProvenanceClearedBySettingFront() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+
+        try model.setFront(data: makeImageData(width: 50, height: 40, dpi: nil, utType: "public.png"), filename: "new-front.png")
+
+        XCTAssertNil(model.componentProvenance, "the front image no longer matches the imported {stem}-front file")
+    }
+
+    func testComponentProvenanceClearedBySettingBack() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+
+        try model.setBack(data: makeImageData(width: 50, height: 40, dpi: nil, utType: "public.png"), filename: "new-back.png")
+
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    func testComponentProvenanceClearedByClearingFront() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+
+        model.clearFront()
+
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    func testComponentProvenanceClearedByClearingBack() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+
+        model.clearBack()
+
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    /// A swap doesn't rewrite the source files on disk, so the in-model "front" role stops
+    /// corresponding to whatever `{stem}-front.*` actually holds — see `swapSides()`'s doc
+    /// comment on why this must drop provenance rather than carry it along with the swap.
+    func testComponentProvenanceClearedBySwapSides() throws {
+        let model = CreatePostcardModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+
+        model.swapSides()
+
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    /// `swapSides()` is a no-op without a back image (see its own doc comment) — provenance
+    /// must survive that no-op rather than being spuriously cleared.
+    func testComponentProvenanceSurvivesANoOpSwapWithOnlyAFront() throws {
+        let provenance = makeProvenance()
+        let bundle = PostcardImportBundle(
+            name: "trip",
+            frontData: makeImageData(width: 100, height: 80, dpi: nil, utType: "public.png"), frontFilename: "trip-only.png",
+            backData: nil, backFilename: nil,
+            metadata: nil,
+            componentProvenance: provenance
+        )
+        let model = CreatePostcardModel()
+        try model.prefill(bundle)
+
+        model.swapSides()
+
+        XCTAssertEqual(model.componentProvenance, provenance)
+    }
+
+    // MARK: - resetKeepingDestination
+
+    func testResetKeepingDestinationPreservesDestinationButClearsEverythingElse() throws {
+        let model = try heavilyMutatedModel()
+        try model.prefill(makeComponentBundle(provenance: makeProvenance()))
+        model.destinationCollectionPath = "/tmp/somewhere.postcards"
+
+        model.resetKeepingDestination()
+
+        XCTAssertEqual(model.destinationCollectionPath, "/tmp/somewhere.postcards")
+        let fresh = CreatePostcardModel()
+        XCTAssertNil(model.front)
+        XCTAssertNil(model.back)
+        XCTAssertEqual(model.name, fresh.name)
+        XCTAssertEqual(model.senderName, fresh.senderName)
+        XCTAssertNil(model.componentProvenance)
+    }
+
+    func testResetKeepingDestinationLeavesNilDestinationNil() throws {
+        let model = try heavilyMutatedModel()
+        model.destinationCollectionPath = nil
+
+        model.resetKeepingDestination()
+
+        XCTAssertNil(model.destinationCollectionPath)
     }
 }

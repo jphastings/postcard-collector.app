@@ -229,6 +229,17 @@ actor GoCore {
         try Self.call { AppcoreMetaJSONFromComponentYAML(data, $0) }
     }
 
+    /// `metadataJSON(fromComponentYAML:)`'s inverse: encodes canonical metadata JSON into the
+    /// exact YAML bytes the CLI would write for a `{name}-meta.yaml` component sidecar. Used
+    /// only by `ComponentProvenance.writeSidecar(metadataJSON:)`, to write a compiled card's
+    /// (possibly edited) metadata back beside the component source files it came from.
+    func componentYAML(fromMetadataJSON metadataJSON: String) throws -> Data {
+        guard let data = try Self.call({ AppcoreComponentYAMLFromMetaJSON(metadataJSON, $0) }) else {
+            throw GoCoreError.missingData("component metadata sidecar")
+        }
+        return data
+    }
+
     /// Sets a collection's stored title.
     func setTitle(_ title: String, ofCollectionAt path: String) throws {
         try Self.call { AppcoreSetCollectionTitle(path, title, $0) }

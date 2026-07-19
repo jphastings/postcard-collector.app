@@ -48,6 +48,17 @@ struct CreatePostcardForm: View {
     /// The zoom region written alongside `locationRecenterTrigger` — see
     /// `LocationPickerMap.recenterRegion`'s doc comment.
     @State private var locationRecenterRegion: MKCoordinateRegion?
+    /// Set right after a successful create, alongside clearing the form — "Added to <destination
+    /// name>" / "Saved to Individual postcards" — and cleared automatically ~2.5s later (see
+    /// `successToast`). The window no longer dismisses on success (scanning a stack into one
+    /// collection is the core loop), so this is what tells the user their card actually saved
+    /// rather than the form just having gone blank.
+    @State private var successMessage: String?
+    /// Set alongside `successMessage` when that same create's sidecar write-back
+    /// (`ComponentProvenance.writeSidecar`) failed — folded into the same toast as a quiet
+    /// second line rather than its own alert, since it must never block or overshadow the
+    /// create having otherwise fully succeeded.
+    @State private var sidecarWriteFailed = false
     @Environment(\.dismiss) private var dismiss
 
     /// Below this width the stage sits above a scrolling fields column instead of beside it —
@@ -68,8 +79,9 @@ struct CreatePostcardForm: View {
                         Divider()
                         Form { fieldsSections }
                             .formStyle(.grouped)
-                            .safeAreaInset(edge: .top) { blockingIssueToast }
+                            .safeAreaInset(edge: .top) { topToast }
                             .animation(.default, value: model.canCreate)
+                            .animation(.default, value: successMessage)
                     }
                 } else {
                     Form {
@@ -87,8 +99,9 @@ struct CreatePostcardForm: View {
                         fieldsSections
                     }
                     .formStyle(.grouped)
-                    .safeAreaInset(edge: .top) { blockingIssueToast }
+                    .safeAreaInset(edge: .top) { topToast }
                     .animation(.default, value: model.canCreate)
+                    .animation(.default, value: successMessage)
                 }
             }
             // The whole window is the drop target — filled or empty, dropping scans anywhere
@@ -107,9 +120,8 @@ struct CreatePostcardForm: View {
                 // toolbar reads Cancel · Reset · Create Postcard (cancellation renders before
                 // the confirmation cluster on macOS). Previously `.destructiveAction`, which on
                 // macOS has no real titlebar slot and changed the window's toolbar composition
-                // enough to drag `blockingIssueToast`'s `safeAreaInset` into the toolbar's
-                // scroll-edge band instead of floating over the form — see that property's doc
-                // comment.
+                // enough to drag `topToast`'s `safeAreaInset` into the toolbar's scroll-edge
+                // band instead of floating over the form — see that property's doc comment.
                 ToolbarItemGroup(placement: .confirmationAction) {
                     Button(role: .destructive) { showsResetConfirmation = true } label: {
                         Image(systemName: "arrow.counterclockwise")
@@ -169,8 +181,15 @@ struct CreatePostcardForm: View {
 
     // MARK: - Reset
 
-    private func performReset() {
-        model.reset()
+    /// `keepingDestination` is used by `create()`'s clear-on-success path — see
+    /// `CreatePostcardModel.resetKeepingDestination()`'s doc comment. The manual Reset button
+    /// (via `showsResetConfirmation`) always uses the default, full reset.
+    private func performReset(keepingDestination: Bool = false) {
+        if keepingDestination {
+            model.resetKeepingDestination()
+        } else {
+            model.reset()
+        }
         dimensionsError = nil
         flipError = nil
         alertMessage = nil
@@ -430,10 +449,23 @@ struct CreatePostcardForm: View {
         return WritableCollection.known(sources: library.sources, downloaded: downloaded)
     }
 
-    // MARK: - Blocking issues
+    // MARK: - Blocking issues / success
 
-    /// A compact, floating "next thing to do" banner pinned above the fields pane's scroll
-    /// content via `.safeAreaInset(edge: .top)` — content scrolls beneath it, never behind
+    /// Pinned above the fields pane's scroll content via `.safeAreaInset(edge: .top)` — content
+    /// scrolls beneath it, never behind it. Shows the success toast while one is active
+    /// (letting a just-created card's confirmation read as "saved," not as the form having gone
+    /// blank for no reason — see `successMessage`); otherwise falls back to the usual blocking
+    /// issue banner underneath it.
+    @ViewBuilder
+    private var topToast: some View {
+        if successMessage != nil {
+            successToast
+        } else {
+            blockingIssueToast
+        }
+    }
+
+    /// A compact, floating "next thing to do" banner — content scrolls beneath it, never behind
     /// it, and its reserved inset (plus the banner itself) disappears with a standard
     /// transition the instant `model.canCreate` goes true. Shows only the first blocking
     /// issue: one thing to fix at a time, not a growing list.
@@ -443,17 +475,50 @@ struct CreatePostcardForm: View {
             // Same icon + tint as `.attentionHighlight` (see `AttentionHighlight`), applied to
             // whichever field this issue is about, so the toast and the field it names read as
             // one linked signal rather than two independent warnings.
-            Label(issue.message, systemImage: AttentionHighlight.icon)
-                .foregroundStyle(AttentionHighlight.tint)
-                .font(.footnote)
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
+            toastLabel {
+                Label(issue.message, systemImage: AttentionHighlight.icon)
+                    .foregroundStyle(AttentionHighlight.tint)
+            }
         }
+    }
+
+    /// The post-create confirmation — a checkmark plus where the card landed, auto-fading via
+    /// its own `.task(id:)` (cancelled and restarted whenever a new create sets a new message,
+    /// so back-to-back creates each get their own full 2.5s). A failed sidecar write-back
+    /// (`sidecarWriteFailed`) rides along as a quiet second line rather than its own alert —
+    /// see that property's doc comment.
+    @ViewBuilder
+    private var successToast: some View {
+        if let successMessage {
+            toastLabel {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(successMessage, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    if sidecarWriteFailed {
+                        Text("Couldn't update the metadata file next to the source images.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .task(id: successMessage) {
+                try? await Task.sleep(for: .seconds(2.5))
+                self.successMessage = nil
+            }
+        }
+    }
+
+    /// The floating pill chrome shared by `blockingIssueToast` and `successToast`, so the two
+    /// read as one consistent banner slot rather than two differently-styled ones.
+    private func toastLabel(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .font(.footnote)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     // MARK: - Shared field helper
@@ -470,10 +535,16 @@ struct CreatePostcardForm: View {
 
     // MARK: - Create
 
+    /// Compiles and adds the card, then — instead of dismissing — clears the form for the next
+    /// one (scanning a stack into one collection is the core loop) while keeping the chosen
+    /// destination, and writes the metadata back beside its component source files when this
+    /// card came from one (see `ComponentProvenance`). The window/`fullScreenCover` no longer
+    /// auto-dismisses on success; Cancel still closes it.
     private func create() async {
         guard let front = model.front?.data else { return }
         dimensionsError = nil
         flipError = nil
+        successMessage = nil
         isCreating = true
         defer { isCreating = false }
         do {
@@ -488,19 +559,34 @@ struct CreatePostcardForm: View {
             )
             // `nil` is "Individual postcards" — a bare file — not an unset destination; see
             // `CreatePostcardModel.destinationCollectionPath`.
+            let destinationMessage: String
             if let destination = model.destinationCollectionPath {
                 if isCloudBacked(destination) {
                     try await CloudLibrary.primeForGoCoreWrite(path: destination)
                 }
                 try await GoCore.shared.addCard(filename: compiled.filename, data: compiled.data, toCollectionAt: destination)
+                destinationMessage = "Added to \(destinationDisplayName(for: destination))"
             } else {
                 _ = try library.addBareCard(filename: compiled.filename, data: compiled.data)
+                destinationMessage = "Saved to Individual postcards"
             }
             library.contentGeneration += 1
-            dismiss()
+
+            // Uses the SAME metadataJSON just compiled from, per `ComponentProvenance
+            // .writeSidecar`'s contract. `nil` (no provenance) means this card didn't come from
+            // component files, so there's nothing to write back and nothing to report.
+            let sidecarOutcome = await model.componentProvenance?.writeSidecar(metadataJSON: metadataJSON)
+
+            performReset(keepingDestination: true)
+            sidecarWriteFailed = sidecarOutcome == false
+            successMessage = destinationMessage
         } catch {
             mapCreateError(error)
         }
+    }
+
+    private func destinationDisplayName(for path: String) -> String {
+        writableCollections.first { $0.path == path }?.displayName ?? "the collection"
     }
 
     private func isCloudBacked(_ path: String) -> Bool {
