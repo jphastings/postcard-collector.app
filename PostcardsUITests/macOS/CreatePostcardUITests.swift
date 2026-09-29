@@ -34,8 +34,10 @@ final class CreatePostcardUITests: XCTestCase {
         let window = createPostcardWindow()
         XCTAssertTrue(window.waitForExistence(timeout: 15), "⌘N never opened the \"Create a Postcard\" window")
 
+        // By identifier: the prompt's text is inside a button's label, which is exposed as the
+        // button alone, so it never appears as a static text of its own.
         XCTAssertTrue(
-            window.staticTexts["Drop scans of your postcard here"].waitForExistence(timeout: 5),
+            window.descendants(matching: .any)["PostcardDropZone"].waitForExistence(timeout: 5),
             "the postcard stage's empty drop zone never appeared"
         )
         XCTAssertTrue(window.textFields["Name"].exists, "name field never appeared")

@@ -127,6 +127,9 @@ struct PostcardStage: View {
             .animation(.easeInOut(duration: 0.15), value: isTargeted)
         }
         .buttonStyle(.plain)
+        // A button's label is one accessibility element — its texts aren't findable on their
+        // own — so UI tests find the prompt by this.
+        .accessibilityIdentifier("PostcardDropZone")
         .frame(maxWidth: .infinity, minHeight: paneHeight, alignment: .center)
     }
 
