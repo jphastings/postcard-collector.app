@@ -41,7 +41,10 @@ jobs:
       - name: gomobile init
         if: steps.cache-xcframework.outputs.cache-hit != 'true'
         working-directory: dotpostcard
-        run: go run golang.org/x/mobile/cmd/gomobile init
+        # Under the toolchain dotpostcard's Makefile pins for `gomobile bind` (keep the two in
+        # step): init installs gobind@latest, which now needs a newer Go than the go.mod
+        # version setup-go installs (GOTOOLCHAIN=local stops it fetching one itself).
+        run: GOTOOLCHAIN=go1.26.4 go run golang.org/x/mobile/cmd/gomobile init
 
       - name: Build XCFramework
         if: steps.cache-xcframework.outputs.cache-hit != 'true'
