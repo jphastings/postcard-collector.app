@@ -157,8 +157,9 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - The reliable queues are FIFOs shared by everything, so whatever is on screen goes as
   **messages** when both apps are running (`sendMessage`: immediate, ≤64KB, so blobs are
   chunked and each chunk acknowledged): requests, manifests, the first two missing cards,
-  details, and `opFocus` (a card scrolled ahead to, or zoomed into). A failed message always
-  falls back to the queue — messages are a speed-up, never the only route. Watch → phone
+  details, and `opFocus` (a card scrolled ahead to, or zoomed into). A failed message — or a
+  reply saying the watch didn't take it in (`acceptedKey`) — always falls back to the queue:
+  messages are a speed-up, never the only route. Watch → phone
   messages also wake the iPhone app, which is how a never-opened phone app gets asked for
   its catalog (`opHello`).
 - Collections stream progressively: manifest first, then each card *face* as its own

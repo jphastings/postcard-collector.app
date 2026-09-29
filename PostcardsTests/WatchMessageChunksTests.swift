@@ -37,27 +37,35 @@ final class WatchMessageChunksTests: XCTestCase {
 
     func testSingleChunkBlobIsCompleteImmediately() {
         var assembler = WatchChunkAssembler()
-        XCTAssertEqual(assembler.add(chunk: bytes(5), index: 0, count: 1, blobID: "a"), bytes(5))
+        XCTAssertEqual(assembler.add(chunk: bytes(5), index: 0, count: 1, blobID: "a"), .complete(bytes(5)))
         XCTAssertEqual(assembler.incompleteBlobCount, 0)
     }
 
-    func testChunksReassembleInOrderWhateverOrderTheyArrive() {
+    func testChunksReassembleInOrder() {
         let chunks = WatchMessageChunks.chunks(of: bytes(40), maxChunkSize: 16)
         var assembler = WatchChunkAssembler()
 
-        XCTAssertNil(assembler.add(chunk: chunks[2], index: 2, count: 3, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: chunks[0], index: 0, count: 3, blobID: "a"))
-        XCTAssertEqual(assembler.add(chunk: chunks[1], index: 1, count: 3, blobID: "a"), bytes(40))
+        XCTAssertEqual(assembler.add(chunk: chunks[0], index: 0, count: 3, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: chunks[1], index: 1, count: 3, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: chunks[2], index: 2, count: 3, blobID: "a"), .complete(bytes(40)))
         XCTAssertEqual(assembler.incompleteBlobCount, 0)
     }
 
-    func testARepeatedChunkIsIgnored() {
+    func testALaterChunkWithoutItsStartIsRejected() {
+        // Chunks arrive in order, so this blob's start was dropped: the phone has to send it
+        // another way.
+        var assembler = WatchChunkAssembler()
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 1, count: 3, blobID: "a"), .rejected)
+        XCTAssertEqual(assembler.incompleteBlobCount, 0)
+    }
+
+    func testARepeatedChunkIsTakenInWithoutEffect() {
         let chunks = WatchMessageChunks.chunks(of: bytes(20), maxChunkSize: 16)
         var assembler = WatchChunkAssembler()
 
-        XCTAssertNil(assembler.add(chunk: chunks[0], index: 0, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: chunks[0], index: 0, count: 2, blobID: "a"))
-        XCTAssertEqual(assembler.add(chunk: chunks[1], index: 1, count: 2, blobID: "a"), bytes(20))
+        XCTAssertEqual(assembler.add(chunk: chunks[0], index: 0, count: 2, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: chunks[0], index: 0, count: 2, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: chunks[1], index: 1, count: 2, blobID: "a"), .complete(bytes(20)))
     }
 
     func testInterleavedBlobsAssembleIndependently() {
@@ -65,37 +73,37 @@ final class WatchMessageChunksTests: XCTestCase {
         let second = WatchMessageChunks.chunks(of: Data(bytes(20).reversed()), maxChunkSize: 16)
         var assembler = WatchChunkAssembler()
 
-        XCTAssertNil(assembler.add(chunk: first[0], index: 0, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: second[0], index: 0, count: 2, blobID: "b"))
-        XCTAssertEqual(assembler.add(chunk: second[1], index: 1, count: 2, blobID: "b"), Data(bytes(20).reversed()))
-        XCTAssertEqual(assembler.add(chunk: first[1], index: 1, count: 2, blobID: "a"), bytes(20))
+        XCTAssertEqual(assembler.add(chunk: first[0], index: 0, count: 2, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: second[0], index: 0, count: 2, blobID: "b"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: second[1], index: 1, count: 2, blobID: "b"), .complete(Data(bytes(20).reversed())))
+        XCTAssertEqual(assembler.add(chunk: first[1], index: 1, count: 2, blobID: "a"), .complete(bytes(20)))
     }
 
     func testNonsenseIndicesAreRejected() {
         var assembler = WatchChunkAssembler()
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 2, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: -1, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 0, count: 0, blobID: "a"))
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 2, count: 2, blobID: "a"), .rejected)
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: -1, count: 2, blobID: "a"), .rejected)
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 0, count: 0, blobID: "a"), .rejected)
         XCTAssertEqual(assembler.incompleteBlobCount, 0)
     }
 
-    func testAChunkClaimingADifferentCountForAKnownBlobIsIgnored() {
+    func testAChunkClaimingADifferentCountForAKnownBlobIsRejected() {
         var assembler = WatchChunkAssembler()
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 1, count: 3, blobID: "a"))
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 1, count: 3, blobID: "a"), .rejected)
         XCTAssertEqual(assembler.incompleteBlobCount, 1)
     }
 
     func testTheOldestIncompleteBlobIsDroppedPastCapacity() {
         var assembler = WatchChunkAssembler(capacity: 2)
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "a"))
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "b"))
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "c"))
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "a"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "b"), .incomplete)
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 0, count: 2, blobID: "c"), .incomplete)
         XCTAssertEqual(assembler.incompleteBlobCount, 2)
 
-        // "a" was dropped, so its second chunk starts it afresh rather than completing it.
-        XCTAssertNil(assembler.add(chunk: bytes(1), index: 1, count: 2, blobID: "a"))
-        // "c" survived.
-        XCTAssertNotNil(assembler.add(chunk: bytes(1), index: 1, count: 2, blobID: "c"))
+        // "a" was dropped, so its second chunk can't complete it...
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 1, count: 2, blobID: "a"), .rejected)
+        // ...while "c" survived.
+        XCTAssertEqual(assembler.add(chunk: bytes(1), index: 1, count: 2, blobID: "c"), .complete(Data([0, 0])))
     }
 }

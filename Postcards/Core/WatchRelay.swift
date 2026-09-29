@@ -51,9 +51,11 @@ enum WatchRelay {
     static let opUnpin = "unpin"
     /// Send one card's faces at one tier right now, as messages — for the card on screen that
     /// the queue hasn't reached yet (`tierScreen`), or that's just been zoomed into
-    /// (`tierZoom`). Carries `cardNameKey`, `cardTierKey`, and optionally `cardSideKey` for the
-    /// side that's showing, which goes first.
+    /// (`tierZoom`). Carries `cardNameKey`, `cardTierKey`, and optionally `cardSidesKey`.
     static let opFocus = "focus"
+    /// `opFocus` key: the sides wanted, in the order to send them (the one showing first).
+    /// Without it, both sides, front first.
+    static let cardSidesKey = "sides"
     /// `opRequest` key whose value is JSON-encoded `WatchDownloadRequest`. A request without
     /// one means "I have nothing; send everything".
     static let downloadRequestKey = "downloadRequest"
@@ -124,6 +126,10 @@ enum WatchRelay {
     static let blobIDKey = "blobID"
     static let chunkIndexKey = "chunkIndex"
     static let chunkCountKey = "chunkCount"
+    /// Key in the watch's reply to a message: whether it took the message in. `false` — a
+    /// chunk it can't use, or a blob it couldn't store — sends the phone to its fallback, the
+    /// reliable queue. A reply without it counts as taken in.
+    static let acceptedKey = "accepted"
 
     /// Bytes of blob per message. WatchConnectivity rejects a message over 65,536 bytes (not
     /// documented, but consistently reported) — this leaves plenty of room for the metadata

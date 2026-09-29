@@ -23,6 +23,16 @@ enum WatchMessageChunks {
 /// range mid-send) is re-sent whole through the reliable file queue, so its partial copy here
 /// is only ever garbage.
 struct WatchChunkAssembler {
+    enum Outcome: Equatable {
+        /// Taken in; more chunks to come.
+        case incomplete
+        /// The last missing chunk: here's the whole blob.
+        case complete(Data)
+        /// Nothing this chunk can complete — a nonsense index or count, or a later chunk of a
+        /// blob whose start was dropped — so the phone should send the blob another way.
+        case rejected
+    }
+
     private struct Partial {
         var chunks: [Data?]
         var receivedCount = 0
@@ -33,23 +43,25 @@ struct WatchChunkAssembler {
     /// Incomplete blob ids, oldest first.
     private var order: [String] = []
 
-    init(capacity: Int = 4) {
+    init(capacity: Int = 16) {
         self.capacity = max(capacity, 1)
     }
 
     /// How many blobs are part-way through arriving.
     var incompleteBlobCount: Int { partials.count }
 
-    /// Adds one chunk, returning the whole blob once its last missing chunk arrives. `nil`
-    /// while the blob is incomplete, and for a chunk whose index or count doesn't make sense.
-    /// A repeated chunk is ignored.
-    mutating func add(chunk: Data, index: Int, count: Int, blobID: String) -> Data? {
-        guard count > 0, index >= 0, index < count else { return nil }
-        guard count > 1 else { return chunk }
+    /// Adds one chunk. The phone sends a blob's chunks in order, each acknowledged before the
+    /// next, so a later chunk with no earlier ones here means the blob's start was dropped —
+    /// rejected, like a chunk whose index or count doesn't make sense. A repeated chunk is
+    /// taken in without effect.
+    mutating func add(chunk: Data, index: Int, count: Int, blobID: String) -> Outcome {
+        guard count > 0, index >= 0, index < count else { return .rejected }
+        guard count > 1 else { return .complete(chunk) }
 
-        let isNew = partials[blobID] == nil
-        var partial = partials[blobID] ?? Partial(chunks: Array(repeating: nil, count: count))
-        guard partial.chunks.count == count else { return nil }
+        let existing = partials[blobID]
+        guard existing != nil || index == 0 else { return .rejected }
+        var partial = existing ?? Partial(chunks: Array(repeating: nil, count: count))
+        guard partial.chunks.count == count else { return .rejected }
         if partial.chunks[index] == nil {
             partial.chunks[index] = chunk
             partial.receivedCount += 1
@@ -62,16 +74,16 @@ struct WatchChunkAssembler {
             for case let piece? in partial.chunks {
                 whole.append(piece)
             }
-            return whole
+            return .complete(whole)
         }
 
         partials[blobID] = partial
-        if isNew {
+        if existing == nil {
             order.append(blobID)
             while order.count > capacity {
                 partials[order.removeFirst()] = nil
             }
         }
-        return nil
+        return .incomplete
     }
 }

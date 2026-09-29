@@ -170,6 +170,12 @@ final class WatchLibrary: NSObject {
         return manifest.filter { hasScreenFaces(id: id, cardName: $0.name, hasBack: $0.flip != .none) }.count
     }
 
+    /// How many cards have both sides' zoom faces — progress on a pinned collection's zoom tier.
+    func zoomReceivedCount(for id: String) -> Int {
+        guard let manifest = manifests[id] else { return 0 }
+        return manifest.filter { hasZoomFaces(id: id, cardName: $0.name, hasBack: $0.flip != .none) }.count
+    }
+
     /// Whether the collection can be shown as a scroll of slots at all — i.e. its manifest has
     /// landed, even if not every card's image has (those slots show a placeholder meanwhile).
     func isPresent(_ id: String) -> Bool {
@@ -258,7 +264,14 @@ final class WatchLibrary: NSObject {
         if !force, let last = lastRequestDates[id], now.timeIntervalSince(last) < Self.requestDebounce {
             return
         }
-        guard let requestData = try? JSONEncoder().encode(downloadRequest(for: id)) else { return }
+        guard
+            let requestData = try? JSONEncoder().encode(downloadRequest(for: id)),
+            send([
+                WatchRelay.opKey: WatchRelay.opRequest,
+                WatchRelay.idKey: id,
+                WatchRelay.downloadRequestKey: requestData,
+            ], reliably: true)
+        else { return }
         lastRequestDates[id] = now
         if manifests[id] == nil, isPhoneReachable {
             awaitingManifestIDs.insert(id)
@@ -268,11 +281,6 @@ final class WatchLibrary: NSObject {
                 self.awaitingManifestIDs.remove(id)
             }
         }
-        send([
-            WatchRelay.opKey: WatchRelay.opRequest,
-            WatchRelay.idKey: id,
-            WatchRelay.downloadRequestKey: requestData,
-        ], reliably: true)
     }
 
     /// Re-requests `id` if it's incomplete and nothing for it has arrived — or been asked
@@ -285,28 +293,29 @@ final class WatchLibrary: NSObject {
         requestDownloadIfNeeded(id: id, force: true)
     }
 
-    /// Asks the phone for one card's faces at `tier` right now, as messages — for the card on
+    /// Asks the phone for one card's `sides` at `tier` right now, as messages — for the card on
     /// screen that the queue hasn't reached (screen tier), or that's just been zoomed into
     /// (zoom tier). Messages only reach a phone in range, so this is a no-op otherwise, and a
-    /// repeat inside `focusDebounce` is dropped while the first answer is on its way.
-    func requestFocus(id: String, cardName: String, tier: String, preferredSide: String?) {
-        guard isPhoneReachable else { return }
+    /// repeat inside `focusDebounce` is dropped while the first answer is on its way. Callers
+    /// ask again while the card stays missing: an ask can go astray (a phone app only just
+    /// woken may not have its library ready to answer it).
+    func requestFocus(id: String, cardName: String, tier: String, sides: [String]) {
+        guard isPhoneReachable, !sides.isEmpty else { return }
         let key = WatchFaceKey(id: id, cardName: cardName, tier: tier, side: "")
         let now = Date()
         if let last = lastFocusDates[key], now.timeIntervalSince(last) < Self.focusDebounce {
             return
         }
-        lastFocusDates[key] = now
-        var payload: [String: Any] = [
+        let sent = send([
             WatchRelay.opKey: WatchRelay.opFocus,
             WatchRelay.idKey: id,
             WatchRelay.cardNameKey: cardName,
             WatchRelay.cardTierKey: tier,
-        ]
-        if let preferredSide {
-            payload[WatchRelay.cardSideKey] = preferredSide
+            WatchRelay.cardSidesKey: sides,
+        ], reliably: false)
+        if sent {
+            lastFocusDates[key] = now
         }
-        send(payload, reliably: false)
     }
 
     /// What to tell the phone `id` already has.
@@ -329,8 +338,9 @@ final class WatchLibrary: NSObject {
         if let lastHelloDate, now.timeIntervalSince(lastHelloDate) < Self.helloInterval {
             return
         }
-        lastHelloDate = now
-        send([WatchRelay.opKey: WatchRelay.opHello], reliably: false)
+        if send([WatchRelay.opKey: WatchRelay.opHello], reliably: false) {
+            lastHelloDate = now
+        }
     }
 
     /// Picks interrupted pinned downloads back up whenever the phone comes (back) into range.
@@ -342,20 +352,21 @@ final class WatchLibrary: NSObject {
 
     /// Sends a watch → phone op: as a message when the phone is in range — it arrives at once,
     /// and wakes the iPhone app if it isn't running — and otherwise, or if the message fails,
-    /// on the reliable user-info queue when `reliably`.
-    private func send(_ payload: [String: Any], reliably: Bool) {
+    /// on the reliable user-info queue when `reliably`. Returns whether it went anywhere.
+    @discardableResult
+    private func send(_ payload: [String: Any], reliably: Bool) -> Bool {
         let session = WCSession.default
-        guard session.activationState == .activated else { return }
+        guard session.activationState == .activated else { return false }
         guard session.isReachable else {
-            if reliably {
-                _ = session.transferUserInfo(payload)
-            }
-            return
+            guard reliably else { return false }
+            _ = session.transferUserInfo(payload)
+            return true
         }
         session.sendMessage(payload, replyHandler: nil) { _ in
             guard reliably else { return }
             _ = WCSession.default.transferUserInfo(payload)
         }
+        return true
     }
 
     // MARK: - Arrivals
@@ -531,7 +542,7 @@ private final class WatchChunkInbox: @unchecked Sendable {
     private let lock = NSLock()
     private var assembler = WatchChunkAssembler()
 
-    func add(chunk: Data, index: Int, count: Int, blobID: String) -> Data? {
+    func add(chunk: Data, index: Int, count: Int, blobID: String) -> WatchChunkAssembler.Outcome {
         lock.lock()
         defer { lock.unlock() }
         return assembler.add(chunk: chunk, index: index, count: count, blobID: blobID)
@@ -590,8 +601,7 @@ extension WatchLibrary: WCSessionDelegate {
         didReceiveMessage message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) {
-        receiveMessage(message)
-        replyHandler([:])
+        replyHandler([WatchRelay.acceptedKey: receiveMessage(message)])
     }
 
     nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
@@ -599,66 +609,82 @@ extension WatchLibrary: WCSessionDelegate {
         receiveBlob(metadata: metadata, contents: .file(file.fileURL))
     }
 
-    private nonisolated func receiveMessage(_ message: [String: Any]) {
+    /// Handles one message from the phone, returning whether it was taken in — which the reply
+    /// tells the phone, so it can fall back to its reliable queue if not.
+    @discardableResult
+    private nonisolated func receiveMessage(_ message: [String: Any]) -> Bool {
         let op = message[WatchRelay.opKey] as? String
         if op == WatchRelay.opManifest {
-            receiveManifest(message)
-        } else if op == WatchRelay.opCard || op == WatchRelay.opDetails {
-            guard
-                let chunk = message[WatchRelay.blobKey] as? Data,
-                let blob = chunkInbox.add(
-                    chunk: chunk,
-                    index: message[WatchRelay.chunkIndexKey] as? Int ?? 0,
-                    count: message[WatchRelay.chunkCountKey] as? Int ?? 1,
-                    blobID: message[WatchRelay.blobIDKey] as? String ?? ""
-                )
-            else { return }
-            receiveBlob(metadata: message, contents: .data(blob))
+            return receiveManifest(message)
+        }
+        guard op == WatchRelay.opCard || op == WatchRelay.opDetails, let chunk = message[WatchRelay.blobKey] as? Data else {
+            return false
+        }
+        let outcome = chunkInbox.add(
+            chunk: chunk,
+            index: message[WatchRelay.chunkIndexKey] as? Int ?? 0,
+            count: message[WatchRelay.chunkCountKey] as? Int ?? 1,
+            blobID: message[WatchRelay.blobIDKey] as? String ?? ""
+        )
+        switch outcome {
+        case .incomplete:
+            return true
+        case .rejected:
+            return false
+        case .complete(let blob):
+            return receiveBlob(metadata: message, contents: .data(blob))
         }
     }
 
-    private nonisolated func receiveManifest(_ payload: [String: Any]) {
+    @discardableResult
+    private nonisolated func receiveManifest(_ payload: [String: Any]) -> Bool {
         guard
             payload[WatchRelay.opKey] as? String == WatchRelay.opManifest,
             let id = payload[WatchRelay.idKey] as? String,
             let data = payload[WatchRelay.manifestKey] as? Data,
             let manifest = WatchCacheLayout.decodeManifest(data)
-        else { return }
+        else { return false }
         _ = Self.store(.data(data), at: WatchCacheLayout.manifestURL(id: id, in: supportDirectory))
         Task { @MainActor in
             self.adoptManifest(manifest, id: id)
         }
+        return true
     }
 
-    /// Files one card face or details blob, then records it on the main actor.
-    private nonisolated func receiveBlob(metadata: [String: Any], contents: WatchArrival) {
+    /// Files one card face or details blob, then records it on the main actor. Returns whether
+    /// it was stored.
+    @discardableResult
+    private nonisolated func receiveBlob(metadata: [String: Any], contents: WatchArrival) -> Bool {
         guard
             let op = metadata[WatchRelay.opKey] as? String,
             let id = metadata[WatchRelay.idKey] as? String
-        else { return }
+        else { return false }
 
         if op == WatchRelay.opCard {
             guard
                 let cardName = metadata[WatchRelay.cardNameKey] as? String,
                 let tier = metadata[WatchRelay.cardTierKey] as? String,
                 let side = metadata[WatchRelay.cardSideKey] as? String
-            else { return }
+            else { return false }
             let destination = WatchCacheLayout.cardBlobURL(id: id, cardName: cardName, tier: tier, side: side, in: supportDirectory)
-            guard Self.store(contents, at: destination) else { return }
+            guard Self.store(contents, at: destination) else { return false }
             let key = WatchFaceKey(id: id, cardName: cardName, tier: tier, side: side)
             Task { @MainActor in
                 self.recordFace(key)
             }
+            return true
         } else if op == WatchRelay.opDetails {
             let destination = WatchCacheLayout.detailsURL(id: id, in: supportDirectory)
             guard
                 Self.store(contents, at: destination),
                 let data = FileManager.default.contents(atPath: destination.path),
                 let details = WatchCacheLayout.decodeDetails(data)
-            else { return }
+            else { return false }
             Task { @MainActor in
                 self.adoptDetails(details, id: id)
             }
+            return true
         }
+        return false
     }
 }

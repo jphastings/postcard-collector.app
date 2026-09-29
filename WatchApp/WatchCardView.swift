@@ -94,19 +94,29 @@ struct WatchCardView: View {
         library.hasScreenFaces(id: collectionID, cardName: meta.name, hasBack: hasBack)
     }
 
-    private struct ZoomLoadTrigger: Equatable {
-        let isZoomed: Bool
-        let hasFront: Bool
-        let hasBack: Bool
+    /// The side facing the viewer, as the relay names it.
+    private var showingSide: String { isShowingFront ? WatchRelay.sideFront : WatchRelay.sideBack }
+
+    /// This card's sides still missing their screen-tier faces, front first.
+    private var missingScreenSides: [String] {
+        (hasBack ? [WatchRelay.sideFront, WatchRelay.sideBack] : [WatchRelay.sideFront]).filter {
+            !library.hasFace(id: collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: $0)
+        }
     }
 
-    /// Each side separately, so the side showing sharpens the moment its zoom face lands
-    /// rather than waiting for the other.
+    private struct ZoomLoadTrigger: Equatable {
+        let isZoomed: Bool
+        let side: String
+        let hasZoomFace: Bool
+    }
+
+    /// Only the side showing: a zoomed card can't be flipped (a swipe pans it), so the other
+    /// side's zoom face would only cost memory — several megabytes decoded — and bandwidth.
     private var zoomLoadTrigger: ZoomLoadTrigger {
         ZoomLoadTrigger(
             isZoomed: isZoomed,
-            hasFront: library.hasFace(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideFront),
-            hasBack: hasBack && library.hasFace(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: WatchRelay.sideBack)
+            side: showingSide,
+            hasZoomFace: library.hasFace(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, side: showingSide)
         )
     }
 
@@ -258,10 +268,13 @@ struct WatchCardView: View {
         guard isReceived else {
             loadState = .waiting
             // Still missing after a while on screen — the queue hasn't reached this card, or
-            // the person has scrolled ahead of it — so ask for it directly.
-            try? await Task.sleep(for: Self.focusDelay)
-            guard !Task.isCancelled else { return }
-            library.requestFocus(id: collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, preferredSide: nil)
+            // the person has scrolled ahead of it — so ask for it directly, and keep asking
+            // (the library spaces the asks out) until it lands or the card leaves the screen.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.focusDelay)
+                guard !Task.isCancelled else { return }
+                library.requestFocus(id: collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, sides: missingScreenSides)
+            }
             return
         }
         guard let frontURL = library.cardBlobURL(collectionID, cardName: meta.name, tier: WatchRelay.tierScreen, side: WatchRelay.sideFront) else {
@@ -289,25 +302,25 @@ struct WatchCardView: View {
         loadState = .loaded(front: front, back: back)
     }
 
-    /// While zoomed, swaps in each side's zoom face as it's available — asking the phone for
-    /// any that's missing, the side showing first.
+    /// While zoomed, swaps in the showing side's zoom face once it's here — asking the phone
+    /// for it meanwhile, and again (the library spaces the asks out) until it lands or the
+    /// card is zoomed back out.
     private func loadZoomFacesIfNeeded() async {
         let trigger = zoomLoadTrigger
         guard trigger.isZoomed else { return }
-        if !trigger.hasFront || (hasBack && !trigger.hasBack) {
-            library.requestFocus(
-                id: collectionID,
-                cardName: meta.name,
-                tier: WatchRelay.tierZoom,
-                preferredSide: isShowingFront ? WatchRelay.sideFront : WatchRelay.sideBack
-            )
+        guard trigger.hasZoomFace else {
+            while !Task.isCancelled {
+                library.requestFocus(id: collectionID, cardName: meta.name, tier: WatchRelay.tierZoom, sides: [trigger.side])
+                try? await Task.sleep(for: Self.focusDelay)
+            }
+            return
         }
-        if trigger.hasFront, zoomFront == nil, let image = await decodedZoomFace(side: WatchRelay.sideFront) {
-            guard !Task.isCancelled, isZoomed else { return }
+        let isFront = trigger.side == WatchRelay.sideFront
+        guard (isFront ? zoomFront : zoomBack) == nil, let image = await decodedZoomFace(side: trigger.side) else { return }
+        guard !Task.isCancelled, isZoomed else { return }
+        if isFront {
             zoomFront = image
-        }
-        if trigger.hasBack, zoomBack == nil, let image = await decodedZoomFace(side: WatchRelay.sideBack) {
-            guard !Task.isCancelled, isZoomed else { return }
+        } else {
             zoomBack = image
         }
     }

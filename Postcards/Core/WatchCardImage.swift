@@ -19,36 +19,38 @@ enum WatchCardImage {
     /// fails.
     static func encodedFace(_ image: CGImage, maxPixelSize: Int, quality: CGFloat) -> Data? {
         guard maxPixelSize > 0, let resized = resized(image, maxPixelSize: maxPixelSize) else { return nil }
-        if heicAlpha.keepsAlpha != false, let heic = encode(resized, as: .heic, quality: quality) {
-            let keepsAlpha = heicAlpha.keepsAlpha ?? heicAlpha.record(preservesAlpha(heic))
-            if keepsAlpha { return heic }
+        if let heic = encode(resized, as: .heic, quality: quality),
+           heicAlpha.isConfirmed || heicAlpha.confirm(preservesAlpha(heic)) {
+            return heic
         }
         return encode(resized, as: .png, quality: quality)
     }
 
-    /// Whether this device's HEIC encoder keeps an alpha channel: checked by round-tripping the
-    /// first face encoded, then remembered. It's a property of the encoder, not of the image —
-    /// every face is drawn into the same premultiplied-RGBA context before encoding — and the
-    /// check costs a full decode of every face otherwise.
-    private static let heicAlpha = HEICAlphaSupport()
+    /// Whether this device's HEIC encoder has been seen to keep an alpha channel. Once it has,
+    /// later faces skip the check — a full decode of every face — since keeping alpha is a
+    /// property of the encoder, and every face is drawn into the same premultiplied-RGBA
+    /// context before encoding. Only a success is remembered: an encoder that drops alpha
+    /// might do so only for some images (fully opaque ones, say), so a failure is re-checked
+    /// face by face, each falling back to PNG as before.
+    private static let heicAlpha = HEICAlphaConfirmation()
 
-    private final class HEICAlphaSupport: @unchecked Sendable {
+    private final class HEICAlphaConfirmation: @unchecked Sendable {
         private let lock = NSLock()
-        private var known: Bool?
+        private var confirmed = false
 
-        /// `nil` until the first HEIC encode has been checked.
-        var keepsAlpha: Bool? {
+        var isConfirmed: Bool {
             lock.lock()
             defer { lock.unlock() }
-            return known
+            return confirmed
         }
 
-        /// Records a check's result, returning it.
-        func record(_ keepsAlpha: Bool) -> Bool {
+        /// Records a check that succeeded; returns the check's result either way.
+        func confirm(_ keepsAlpha: Bool) -> Bool {
+            guard keepsAlpha else { return false }
             lock.lock()
             defer { lock.unlock() }
-            known = keepsAlpha
-            return keepsAlpha
+            confirmed = true
+            return true
         }
     }
 

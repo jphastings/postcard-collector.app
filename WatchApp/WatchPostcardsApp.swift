@@ -24,7 +24,7 @@ struct WatchPostcardsApp: App {
                 WatchCollectionListView(library: library)
             }
         }
-        .backgroundTask(.watchConnectivity) {
+        .backgroundTask(.watchConnectivity) { [library = library] in
             await library.waitForPendingContent()
         }
     }

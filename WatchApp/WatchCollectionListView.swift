@@ -72,16 +72,11 @@ private enum CollectionDownloadStatus: Equatable {
     case needsPhone
     /// Asked for; waiting on the phone's first reply.
     case waiting
-    /// Arriving: how many cards' images have landed, of how many.
-    case downloading(received: Int, expected: Int)
-    /// Every card's images have landed.
+    /// Arriving: how many cards can be browsed, of how many, and how far along the whole
+    /// download is (for a pinned collection, that includes the zoom detail).
+    case downloading(received: Int, expected: Int, fraction: Double)
+    /// Everything this collection keeps on the watch has landed.
     case downloaded(Int)
-
-    /// How much has arrived, while downloading.
-    var fraction: Double {
-        guard case .downloading(let received, let expected) = self, expected > 0 else { return 0 }
-        return Double(received) / Double(expected)
-    }
 }
 
 /// One collection's row: a link that opens the collection, with its download status.
@@ -121,7 +116,14 @@ private struct CollectionRow: View {
     private var status: CollectionDownloadStatus {
         if let expected = library.expectedCount(for: info.id) {
             let received = library.receivedCount(for: info.id)
-            return received >= expected ? .downloaded(expected) : .downloading(received: received, expected: expected)
+            // A pinned collection is kept for offline use zoom detail and all, so it isn't
+            // done until that's here too: the ring counts both tiers, the text the cards that
+            // can be browsed.
+            let isPinned = library.isPinned(info.id)
+            let arrived = received + (isPinned ? library.zoomReceivedCount(for: info.id) : 0)
+            let total = isPinned ? 2 * expected : expected
+            guard arrived < total else { return .downloaded(expected) }
+            return .downloading(received: received, expected: expected, fraction: Double(arrived) / Double(total))
         }
         if library.isAwaitingManifest(info.id) {
             return .waiting
@@ -133,8 +135,8 @@ private struct CollectionRow: View {
         switch status {
         case .downloaded(let count):
             return Self.cardCount(count)
-        case .downloading(let received, let expected):
-            return "\(received) of \(Self.cardCount(expected))"
+        case .downloading(let received, let expected, _):
+            return received < expected ? "\(received) of \(Self.cardCount(expected))" : Self.cardCount(expected)
         case .waiting:
             return "Downloading…"
         case .notDownloaded:
@@ -193,10 +195,10 @@ private struct CollectionStatusBadge: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .accessibilityLabel("Downloaded")
-        case .downloading:
-            ProgressRing(fraction: status.fraction)
+        case .downloading(_, _, let fraction):
+            ProgressRing(fraction: fraction)
                 .accessibilityLabel("Downloading")
-                .accessibilityValue(Text(status.fraction, format: .percent.precision(.fractionLength(0))))
+                .accessibilityValue(Text(fraction, format: .percent.precision(.fractionLength(0))))
         case .waiting:
             SpinningRing()
                 .accessibilityLabel("Downloading")

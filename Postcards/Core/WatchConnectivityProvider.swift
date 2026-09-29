@@ -28,9 +28,12 @@ private let messageTimeout: TimeInterval = 20
 final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private let cloudLibrary: CloudLibrary
     private var lastPublishedCatalogData: Data?
-    /// Set when the watch says it has never received a catalog (`opHello`): the next publish
-    /// goes out even if it's unchanged, since the watch evidently doesn't have the last one.
+    /// Set when the watch says it has never received a catalog (`opHello`): the next push goes
+    /// out even if it's unchanged, since the watch evidently doesn't have the last one.
     private var catalogPushRequested = false
+    /// Bumped by every publish, so a slow snapshot that finishes after a newer one is dropped
+    /// rather than overwriting it.
+    private var catalogGeneration = 0
     /// Collection ids currently being streamed, so a pin followed quickly by a request (or a
     /// retried watch request) doesn't race two overlapping streams for the same collection.
     private var inFlightStreamIDs: Set<String> = []
@@ -105,12 +108,12 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private func publishCatalog() {
         guard isLibraryReady else { return }
         let collections = cloudLibrary.items.filter { $0.isCollection }
-        let forced = catalogPushRequested
-        catalogPushRequested = false
+        catalogGeneration += 1
+        let generation = catalogGeneration
         Task.detached(priority: .utility) { [weak self] in
             let catalog = collections.map(Self.catalogEntry(for:))
             guard let data = try? JSONEncoder().encode(catalog) else { return }
-            await self?.pushCatalog(data, forced: forced)
+            await self?.pushCatalog(data, generation: generation)
         }
     }
 
@@ -121,12 +124,16 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         return WatchCatalogBuilder.entry(for: item, reader: reader)
     }
 
-    /// Latest-wins push, deduped against the last context we successfully set so an
-    /// unchanged catalog (e.g. a query update for content we don't surface) doesn't churn
-    /// `WCSession` — unless `forced`, when a nonce makes it go out regardless. Only recorded
-    /// as "last published" once the push actually succeeds — a failed push (logged, not
-    /// swallowed) must not poison the dedupe so a later retry of the same catalog is skipped.
-    private func pushCatalog(_ data: Data, forced: Bool) {
+    /// Latest-wins push of the newest publish's catalog (an older `generation` is dropped),
+    /// deduped against the last context we successfully set so an unchanged catalog (e.g. a
+    /// query update for content we don't surface) doesn't churn `WCSession` — unless the watch
+    /// asked for it (`catalogPushRequested`), when a nonce makes it go out regardless. Only
+    /// recorded as "last published" (and the request as met) once the push actually succeeds
+    /// — a failed push (logged, not swallowed) must not poison the dedupe so a later retry of
+    /// the same catalog is skipped.
+    private func pushCatalog(_ data: Data, generation: Int) {
+        guard generation == catalogGeneration else { return }
+        let forced = catalogPushRequested
         guard forced || data != lastPublishedCatalogData else { return }
         guard WCSession.default.activationState == .activated else { return }
         var context: [String: Any] = [WatchRelay.catalogKey: data]
@@ -136,6 +143,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         do {
             try WCSession.default.updateApplicationContext(context)
             lastPublishedCatalogData = data
+            catalogPushRequested = false
         } catch {
             logger.error("Failed to push watch catalog (\(data.count) bytes): \(String(describing: error), privacy: .public)")
         }
@@ -162,7 +170,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
                 let cardName = payload[WatchRelay.cardNameKey] as? String,
                 let tier = payload[WatchRelay.cardTierKey] as? String
             else { return }
-            sendFocusedCard(id: id, cardName: cardName, tier: tier, preferredSide: payload[WatchRelay.cardSideKey] as? String)
+            sendFocusedCard(id: id, cardName: cardName, tier: tier, sides: payload[WatchRelay.cardSidesKey] as? [String])
         default:
             // opUnpin: there's nothing in flight worth cancelling — anything still arriving
             // for an unpinned collection just becomes evictable on the watch.
@@ -186,7 +194,11 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// after that is let through: it says what the watch already has, and `stream` also skips
     /// any face still sitting in `WCSession`'s outstanding queue, so it only ever adds what's
     /// genuinely missing.
-    private func streamCollection(id: String, request: WatchDownloadRequest) {
+    ///
+    /// A request that waited behind a stream runs without messages (`allowsMessages`): what it
+    /// says the watch has predates that stream, whose own messages have since delivered its
+    /// first cards.
+    private func streamCollection(id: String, request: WatchDownloadRequest, allowsMessages: Bool = true) {
         guard !inFlightStreamIDs.contains(id) else {
             queuedRequests[id] = request
             return
@@ -200,7 +212,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
         inFlightStreamIDs.insert(id)
         Task.detached(priority: .userInitiated) { [weak self] in
-            await Self.stream(item: item, id: id, request: request)
+            await Self.stream(item: item, id: id, request: request, allowsMessages: allowsMessages)
             await self?.markStreamFinished(id: id)
         }
     }
@@ -208,20 +220,21 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private func markStreamFinished(id: String) {
         inFlightStreamIDs.remove(id)
         if let next = queuedRequests.removeValue(forKey: id) {
-            streamCollection(id: id, request: next)
+            streamCollection(id: id, request: next, allowsMessages: false)
         }
     }
 
-    /// Sends one card's faces at `tier` as messages, the showing side first, in answer to an
-    /// `opFocus`. Unknown ids are ignored: focus is only ever asked for a collection the watch
-    /// has open, which a stream has already found.
-    private func sendFocusedCard(id: String, cardName: String, tier: String, preferredSide: String?) {
+    /// Sends one card's faces at `tier` as messages, in answer to an `opFocus`: the `sides`
+    /// asked for, in that order, or both sides if it didn't say. Unknown ids are ignored — a
+    /// phone app only just woken may not have its library ready, and the watch keeps asking
+    /// while the card is still missing.
+    private func sendFocusedCard(id: String, cardName: String, tier: String, sides: [String]?) {
         let key = WatchFaceKey(id: id, cardName: cardName, tier: tier, side: "")
         guard !inFlightFocusKeys.contains(key), let item = collectionItem(id: id) else { return }
 
         inFlightFocusKeys.insert(key)
         Task.detached(priority: .userInitiated) { [weak self] in
-            await Self.sendFocused(item: item, id: id, cardName: cardName, tier: tier, preferredSide: preferredSide)
+            await Self.sendFocused(item: item, id: id, cardName: cardName, tier: tier, sides: sides)
             await self?.markFocusFinished(key)
         }
     }
@@ -242,7 +255,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// Each card is split once, at full resolution, for both tiers: its screen faces are sent
     /// straight away, while its zoom faces (if wanted) are written out and only queued once
     /// every card's screen faces are — see `sendCard`.
-    private nonisolated static func stream(item: CloudItem, id: String, request: WatchDownloadRequest) async {
+    private nonisolated static func stream(item: CloudItem, id: String, request: WatchDownloadRequest, allowsMessages: Bool) async {
         do {
             try await CloudLibrary.primeForGoCore(path: item.path)
             let reader = try CollectionReader(path: item.path)
@@ -254,7 +267,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let plan = WatchStreamPlan(
                 cardNames: summaries.map(\.name),
                 request: request,
-                immediateLimit: isWatchReachable ? WatchRelay.immediateCardCount : 0
+                immediateLimit: allowsMessages && isWatchReachable ? WatchRelay.immediateCardCount : 0
             )
             let zoomCards = Set(plan.queuedZoomCards)
             let alreadyQueued = outstandingCardFaceKeys()
@@ -270,7 +283,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             }
 
             if plan.sendsDetails {
-                await sendDetails(summaries, id: id, reader: reader)
+                await sendDetails(summaries, id: id, reader: reader, allowsMessages: allowsMessages)
             }
 
             let queuedCards = Set(plan.queuedScreenCards)
@@ -295,9 +308,9 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     }
 
     /// The answer to an `opFocus`: one card's faces at one tier, as messages (each falling
-    /// back to the file queue if its messages don't get through), the side that's showing
-    /// first.
-    private nonisolated static func sendFocused(item: CloudItem, id: String, cardName: String, tier: String, preferredSide: String?) async {
+    /// back to the file queue if its messages don't get through) — the `sides` asked for, in
+    /// that order, or both.
+    private nonisolated static func sendFocused(item: CloudItem, id: String, cardName: String, tier: String, sides: [String]?) async {
         do {
             try await CloudLibrary.primeForGoCore(path: item.path)
             let reader = try CollectionReader(path: item.path)
@@ -306,8 +319,9 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let summary = summaries[index]
 
             var faces = try splitFaces(of: summary, reader: reader)
-            if let preferred = faces.firstIndex(where: { $0.side == preferredSide }) {
-                faces.insert(faces.remove(at: preferred), at: 0)
+            if let sides {
+                let split = faces
+                faces = sides.compactMap { side in split.first(where: { $0.side == side }) }
             }
             for face in faces {
                 guard let blob = encodedFace(face.image, tier: tier, side: face.side, cardName: cardName, id: id) else { continue }
@@ -364,12 +378,17 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     }
 
     /// Sends the collection's details — every card's `WatchCardDetails`, for the watch's info
-    /// page — preferring messages. A card whose full metadata can't be read still gets the
-    /// details its summary carries.
-    private nonisolated static func sendDetails(_ summaries: [CardSummary], id: String, reader: CollectionReader) async {
+    /// page — preferring messages if `allowsMessages`. A card whose full metadata can't be read
+    /// still gets the details its summary carries.
+    private nonisolated static func sendDetails(_ summaries: [CardSummary], id: String, reader: CollectionReader, allowsMessages: Bool) async {
         let details = summaries.map { WatchCardDetails(summary: $0, metadata: try? reader.metadata(name: $0.name)) }
         guard let data = try? JSONEncoder().encode(details) else { return }
-        await sendPreferringMessages(data, metadata: [WatchRelay.opKey: WatchRelay.opDetails, WatchRelay.idKey: id])
+        let metadata: [String: Any] = [WatchRelay.opKey: WatchRelay.opDetails, WatchRelay.idKey: id]
+        if allowsMessages {
+            await sendPreferringMessages(data, metadata: metadata)
+        } else {
+            queue(data, metadata: metadata)
+        }
     }
 
     /// How `sendCard` delivers a card's screen faces.
@@ -506,16 +525,16 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         return true
     }
 
-    /// `sendMessage` with a reply handler, as one async call: `true` once the watch has
-    /// replied, `false` if it isn't reachable, the message fails, or no answer comes within
-    /// `messageTimeout`.
+    /// `sendMessage` with a reply handler, as one async call: `true` once the watch has replied
+    /// that it took the message in; `false` if it replied that it didn't, it isn't reachable,
+    /// the message fails, or no answer comes within `messageTimeout`.
     private nonisolated static func sendAcknowledgedMessage(_ message: [String: Any]) async -> Bool {
         let session = WCSession.default
         guard session.activationState == .activated, session.isReachable else { return false }
         return await withCheckedContinuation { continuation in
             let outcome = MessageOutcome(continuation)
-            session.sendMessage(message, replyHandler: { _ in
-                outcome.resolve(true)
+            session.sendMessage(message, replyHandler: { reply in
+                outcome.resolve(reply[WatchRelay.acceptedKey] as? Bool ?? true)
             }, errorHandler: { error in
                 logger.info("watch message not delivered: \(String(describing: error), privacy: .public)")
                 outcome.resolve(false)
