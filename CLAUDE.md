@@ -198,9 +198,12 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   code uses — runtime `#available` guards don't help the *compiler* against an old SDK.
 - Release flow spans two repos, in order: dotpostcard main push auto-releases via
   commitizen (`feat:`/`fix:` prefixes drive the version); then bump `DOTPOSTCARD_REF`
-  in **both** workflow files here, bump `MARKETING_VERSION`, push main and tag `v*`.
-  Tagging without those bumps ships a stale framework or collides on version — both have
-  happened. A new `DOTPOSTCARD_REF` means a cold xcframework cache (~10 min extra).
+  in **both** workflow files here and merge that to main. Releases here are Knope's
+  (`knope.toml`): it keeps a "chore: prepare release x.y.z" PR open (`MARKETING_VERSION` and
+  `CHANGELOG.md` from the conventional commits), and merging it builds that commit, tags
+  `v*`, and publishes the release. Never tag or bump `MARKETING_VERSION` by hand. Releasing
+  before the `DOTPOSTCARD_REF` bump ships a stale framework — it has happened. A new
+  `DOTPOSTCARD_REF` means a cold xcframework cache (~10 min extra).
 - iCloud is a *restricted* entitlement: release provisioning profiles must be generated
   **after** the App IDs gained the iCloud capability, or archives fail. Release signing
   is manual; see `docs/RELEASING.md`. The watch app carries no iCloud entitlement (the

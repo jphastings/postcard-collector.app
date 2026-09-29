@@ -1,0 +1,53 @@
+name: Prepare release
+
+# Keeps a "chore: prepare release x.y.z" pull request open, from the `release` branch, whenever
+# `main` has something worth releasing: MARKETING_VERSION bumped and CHANGELOG.md updated, by
+# Knope, from the conventional commits since the last release. Merging it releases that version
+# (release.yaml). See knope.toml and docs/RELEASING.md.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: true
+
+jobs:
+  prepare-release:
+    name: Open or update the release pull request
+    # Merging the release pull request pushes to main too; there's nothing new to prepare then.
+    if: "!contains(github.event.head_commit.message, 'chore: prepare release')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Knope reads every tag, and every commit since the last one, to pick the next version.
+          fetch-depth: 0
+          # Also pushes the `release` branch. With the RELEASE_TOKEN secret set (see
+          # docs/RELEASING.md), the pull request it opens runs CI like any other — one opened
+          # with the default token doesn't.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Knope
+        uses: knope-dev/action@19617851f9f13ab2f27a05989c55efb18aca3675 # v2.1.2
+        with:
+          version: 0.23.0
+
+      - name: Prepare release
+        run: knope prepare-release --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        # Knope stops with an error when nothing since the last release warrants one (only
+        # docs:, ci:, refactor: commits, say) — no reason to fail the push. Check this step's
+        # log if a release pull request you expected doesn't appear.
+        continue-on-error: true

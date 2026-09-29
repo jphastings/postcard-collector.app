@@ -3,11 +3,13 @@
 CI (`.github/workflows/ci.yaml`) builds the Go XCFramework, generates the Xcode project, builds
 both platforms, and runs `PostcardsTests` on every push to `main` and every PR.
 
-Tagged releases (`.github/workflows/release.yaml`) additionally archive, sign, notarize, and
-publish macOS + iOS artifacts to a GitHub Release — but only once you've added the secrets below.
-**Without the secrets, the release workflow still runs and still publishes a release**, just with
-unsigned artifacts (an unsigned `.app.zip` on macOS, an unsigned iOS Simulator `.app.zip`
-instead of a TestFlight upload).
+Releases are cut by merging a pull request (see [Cutting a release](#cutting-a-release)):
+[Knope](https://knope.tech) keeps a "chore: prepare release x.y.z" pull request open whenever
+`main` has something to release, and merging it runs `.github/workflows/release.yaml`, which
+archives, signs, notarizes, and publishes macOS + iOS artifacts to a GitHub Release — signing
+only once you've added the secrets below. **Without the secrets, the release workflow still runs
+and still publishes a release**, just with unsigned artifacts (an unsigned `.app.zip` on macOS,
+an unsigned iOS Simulator `.app.zip` instead of a TestFlight upload).
 
 ## One-time prerequisite: iCloud on the App IDs
 
@@ -161,7 +163,7 @@ rm /tmp/sparkle_private_key
 
 Without this secret, the release workflow skips appcast generation entirely — macOS artifacts
 still build and publish as before, they just won't be discoverable as updates by Sparkle. Once
-the secret is present, every tagged release additionally gets an `appcast.xml` asset generated
+the secret is present, every release additionally gets an `appcast.xml` asset generated
 from that release's `Postcards-macOS.zip` and uploaded to the same GitHub Release (this doesn't
 require the Developer ID/notarization secrets above — Sparkle's own signature check only needs
 the archived app's embedded `SUPublicEDKey` to match, independent of Apple code signing — though
@@ -178,13 +180,34 @@ must be reinstalled manually.
 
 ## Cutting a release
 
-```sh
-git tag v1.2.3
-git push --tags
-```
+Releases come from [Knope](https://knope.tech) (configured in `knope.toml`), driven by the
+[conventional commits](https://www.conventionalcommits.org) merged into `main`:
 
-This triggers `release.yaml`, which produces a GitHub Release on the pushed tag with generated
-release notes and whatever artifacts the available secrets allow:
+1. Every push to `main` runs `prepare-release.yaml`, which keeps a **"chore: prepare release
+   x.y.z"** pull request open from the `release` branch while there's anything to release. It
+   bumps `MARKETING_VERSION` in `project.yml` and adds the release's notes to `CHANGELOG.md`, and
+   it's refreshed as more lands on `main`, so it always previews the next release.
+2. **Merging it releases that version.** `release.yaml` builds the merge commit, then Knope tags
+   it `vx.y.z` and publishes the GitHub Release — `CHANGELOG.md`'s section as the notes, the
+   builds attached before it's published, so the latest release always carries the
+   `appcast.xml` Sparkle needs.
+
+Don't tag, or bump `MARKETING_VERSION`, by hand: the version comes from the commits. While the
+app is 0.x, `feat:` and `fix:` both bump the last number (0.7.0 → 0.7.1), and only a breaking
+change — `feat!:`, or a `BREAKING CHANGE:` footer — bumps the middle one (0.7.0 → 0.8.0).
+`docs:`, `ci:`, `refactor:` and the like don't warrant a release on their own. If a release run
+fails partway, re-run its failed jobs from the Actions tab; **Actions → Release → Run workflow**
+releases the version on `main` by hand if the merge's own run never started.
+
+**One-time setup** — the workflow that opens the release pull request needs permission to:
+either turn on **Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to
+create and approve pull requests"**, or add a `RELEASE_TOKEN` secret: a
+[fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+for this repository with **Contents** and **Pull requests** read & write. With the token, the
+release pull request also runs CI like any other (GitHub doesn't run workflows on pull requests
+opened with the default token).
+
+Each release gets whatever artifacts the available secrets allow:
 
 | Secrets present | macOS artifact | iOS artifact |
 | --- | --- | --- |
