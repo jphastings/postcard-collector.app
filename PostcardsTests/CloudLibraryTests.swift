@@ -148,9 +148,8 @@ final class CloudLibraryTests: XCTestCase {
 
     // MARK: - shouldAutoDownload default
 
-    /// iOS/macOS rely on `shouldAutoDownload`'s default (download everything) being
-    /// unchanged by the watch app's pin-aware override — see `PostcardsApp`, which never
-    /// sets this closure itself.
+    /// The default is to download everything; `PostcardsApp` opts out explicitly for its
+    /// click/tap-to-download sidebar.
     @MainActor
     func testShouldAutoDownloadDefaultsToTrueForAnyItem() {
         let cloudLibrary = CloudLibrary()
@@ -160,10 +159,9 @@ final class CloudLibraryTests: XCTestCase {
 
     // MARK: - start() idempotency
 
-    /// `WatchConnectivityProvider` and `PostcardsApp`'s `.task` can both end up kicking
-    /// `start()` (the provider does so whenever a watch request arrives before the library is
-    /// ready) — a second call must be a harmless no-op rather than re-resolving the container
-    /// or restarting the query.
+    /// `WatchConnectivityProvider` (at launch, and whenever a watch request arrives before the
+    /// library is ready) and `PostcardsApp`'s `.task` both kick `start()` — a second call must
+    /// be a harmless no-op rather than re-resolving the container or restarting the query.
     @MainActor
     func testStartCalledTwiceIsIdempotent() async {
         let cloudLibrary = CloudLibrary()

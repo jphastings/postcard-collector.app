@@ -7,7 +7,7 @@ import Foundation
 /// Each collection gets its own directory (rather than one flat `.postcards` file) because
 /// progressive streaming fills it in incrementally: a manifest describing every card's slot,
 /// then each card FACE's (front/back, at a screen or zoom tier) ready-to-display image blob as
-/// it arrives — see `WatchRelay`.
+/// it arrives, plus the details its info page shows — see `WatchRelay`.
 enum WatchCacheLayout {
     static func collectionsDirectory(in supportDirectory: URL) -> URL {
         supportDirectory.appendingPathComponent("Collections", isDirectory: true)
@@ -19,6 +19,11 @@ enum WatchCacheLayout {
 
     static func manifestURL(id: String, in supportDirectory: URL) -> URL {
         collectionDirectory(id: id, in: supportDirectory).appendingPathComponent("manifest.json")
+    }
+
+    /// The collection's `[WatchCardDetails]`, for the info page.
+    static func detailsURL(id: String, in supportDirectory: URL) -> URL {
+        collectionDirectory(id: id, in: supportDirectory).appendingPathComponent("details.json")
     }
 
     static func cardsDirectory(id: String, in supportDirectory: URL) -> URL {
@@ -95,6 +100,10 @@ enum WatchCacheLayout {
 
     static func decodeManifest(_ data: Data) -> [WatchCardMeta]? {
         try? JSONDecoder().decode([WatchCardMeta].self, from: data)
+    }
+
+    static func decodeDetails(_ data: Data) -> [WatchCardDetails]? {
+        try? JSONDecoder().decode([WatchCardDetails].self, from: data)
     }
 
     // MARK: - Temporary cache eviction

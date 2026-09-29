@@ -19,10 +19,37 @@ enum WatchCardImage {
     /// fails.
     static func encodedFace(_ image: CGImage, maxPixelSize: Int, quality: CGFloat) -> Data? {
         guard maxPixelSize > 0, let resized = resized(image, maxPixelSize: maxPixelSize) else { return nil }
-        if let heic = encode(resized, as: .heic, quality: quality), preservesAlpha(heic) {
-            return heic
+        if heicAlpha.keepsAlpha != false, let heic = encode(resized, as: .heic, quality: quality) {
+            let keepsAlpha = heicAlpha.keepsAlpha ?? heicAlpha.record(preservesAlpha(heic))
+            if keepsAlpha { return heic }
         }
         return encode(resized, as: .png, quality: quality)
+    }
+
+    /// Whether this device's HEIC encoder keeps an alpha channel: checked by round-tripping the
+    /// first face encoded, then remembered. It's a property of the encoder, not of the image —
+    /// every face is drawn into the same premultiplied-RGBA context before encoding — and the
+    /// check costs a full decode of every face otherwise.
+    private static let heicAlpha = HEICAlphaSupport()
+
+    private final class HEICAlphaSupport: @unchecked Sendable {
+        private let lock = NSLock()
+        private var known: Bool?
+
+        /// `nil` until the first HEIC encode has been checked.
+        var keepsAlpha: Bool? {
+            lock.lock()
+            defer { lock.unlock() }
+            return known
+        }
+
+        /// Records a check's result, returning it.
+        func record(_ keepsAlpha: Bool) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            known = keepsAlpha
+            return keepsAlpha
+        }
     }
 
     /// Draws `image` into a fresh premultiplied-alpha RGBA8 context scaled so its longest side

@@ -7,15 +7,19 @@ import WatchConnectivity
 
 private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "WatchConnectivityProvider")
 
+/// How long to wait for the watch to acknowledge one message before treating it as lost.
+private let messageTimeout: TimeInterval = 20
+
 /// The iPhone side of the watch relay (see `WatchRelay` for the wire contract). Publishes a
 /// lightweight catalog of `CloudLibrary`'s collections as the `WCSession` application
-/// context, keeps it in sync as the library changes, and answers the watch's pin/request ops
-/// by streaming a collection progressively: a manifest of every card's identity/layout, then
-/// each card's faces (front, and back if present) as their own file transfers — screen-tier
-/// sized first in display order, so the watch can show the first postcard within a second or
-/// two, then zoom-tier sized trailing behind for double-tap sharpness. All pixel work
-/// (splitting, un-rotating, downsampling, encoding) happens here on the phone; the watch only
-/// ever decodes a ready-to-display image.
+/// context, keeps it in sync as the library changes, and answers the watch's requests by
+/// streaming whatever of a collection it's missing: a manifest of every card's identity and
+/// layout, the first missing cards as messages, the collection's details, the rest of the
+/// cards' screen-tier faces through the file queue in display order, and — for a pinned
+/// collection — zoom-tier faces trailing behind. It also answers a card the watch needs right
+/// now (scrolled ahead to, or zoomed into) with just that card's faces, as messages. All pixel
+/// work (splitting, un-rotating, downsampling, encoding) happens here on the phone; the watch
+/// only ever decodes a ready-to-display image.
 ///
 /// Compiled into the iOS target only — `WatchConnectivity` doesn't exist on macOS, and this
 /// file is swept into `PostcardsTests` (a macOS bundle) along with the rest of `Postcards/Core`,
@@ -24,50 +28,73 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private let cloudLibrary: CloudLibrary
     private var lastPublishedCatalogData: Data?
+    /// Set when the watch says it has never received a catalog (`opHello`): the next publish
+    /// goes out even if it's unchanged, since the watch evidently doesn't have the last one.
+    private var catalogPushRequested = false
     /// Collection ids currently being streamed, so a pin followed quickly by a request (or a
     /// retried watch request) doesn't race two overlapping streams for the same collection.
     private var inFlightStreamIDs: Set<String> = []
-    /// Ids requested before `cloudLibrary.items` had the matching collection — e.g. a
-    /// background launch delivering a queued request before `NSMetadataQuery` has gathered.
-    /// Retried once the catalog changes (see `armCatalogObservation`).
-    private var pendingStreamIDs: Set<String> = []
+    /// The latest request for a collection that arrived while its previous stream was still
+    /// running, run as soon as that one finishes — so, say, pinning a collection mid-browse
+    /// still gets it its zoom tier.
+    private var queuedRequests: [String: WatchDownloadRequest] = [:]
+    /// Requests for ids not yet in `cloudLibrary.items` — e.g. a background launch delivering
+    /// a queued request before `NSMetadataQuery` has gathered. Retried once the catalog
+    /// changes (see `armCatalogObservation`).
+    private var pendingRequests: [String: WatchDownloadRequest] = [:]
+    /// Cards (by collection, card, and tier) whose faces are being sent in answer to an
+    /// `opFocus`, so the watch asking again before they've landed doesn't send them twice.
+    private var inFlightFocusKeys: Set<WatchFaceKey> = []
 
     init(cloudLibrary: CloudLibrary) {
         self.cloudLibrary = cloudLibrary
         super.init()
     }
 
-    /// Activates the session and arms catalog observation. Safe to call once at app launch;
-    /// a no-op on hardware/OS combinations without Watch Connectivity support.
+    /// Activates the session, arms catalog observation, and starts the library. Call once at
+    /// app launch — including a background launch, which is how a watch request reaches an app
+    /// that isn't running; such a launch never shows `LibraryView`, whose task would otherwise
+    /// start the library, and without it there's no catalog to publish or collection to
+    /// stream. A no-op on hardware/OS combinations without Watch Connectivity support.
     func start() {
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = self
         WCSession.default.activate()
         armCatalogObservation()
+        Task { await cloudLibrary.start() }
     }
 
     // MARK: - Catalog publishing
 
     /// Re-arms itself before publishing, so this keeps reacting to every subsequent change to
-    /// `cloudLibrary.items` — `withObservationTracking`'s `onChange` fires only once per call.
+    /// the library — `withObservationTracking`'s `onChange` fires only once per call.
     private func armCatalogObservation() {
         withObservationTracking {
             _ = cloudLibrary.items
+            _ = cloudLibrary.hasGatheredItems
+            _ = cloudLibrary.containerState
         } onChange: { [weak self] in
             Task { @MainActor in self?.armCatalogObservation() }
         }
         publishCatalog()
-        retryPendingStreams()
+        retryPendingRequests()
     }
 
-    /// Re-attempts any stream request that arrived before its collection was in
-    /// `cloudLibrary.items` (see `streamCollectionIfNeeded`). Only touches ids whose item has
-    /// since appeared — still-missing ids are left in `pendingStreamIDs` untouched, so this
-    /// doesn't re-kick `cloudLibrary.start()` on every catalog change while genuinely waiting.
-    private func retryPendingStreams() {
-        for id in pendingStreamIDs where cloudLibrary.items.contains(where: { $0.isCollection && $0.displayName == id }) {
-            pendingStreamIDs.remove(id)
-            streamCollectionIfNeeded(id: id)
+    /// Whether `cloudLibrary.items` says anything yet: until the iCloud query's first gather,
+    /// an empty list only means "not looked yet", and publishing it would tell the watch there
+    /// are no collections. With no iCloud at all, empty is the real answer.
+    private var isLibraryReady: Bool {
+        cloudLibrary.hasGatheredItems || cloudLibrary.containerState == .unavailable
+    }
+
+    /// Re-attempts any request that arrived before its collection was in `cloudLibrary.items`
+    /// (see `streamCollection`). Only touches ids whose item has since appeared — still-missing
+    /// ids are left queued untouched, so this doesn't re-kick `cloudLibrary.start()` on every
+    /// catalog change while genuinely waiting.
+    private func retryPendingRequests() {
+        for (id, request) in pendingRequests where collectionItem(id: id) != nil {
+            pendingRequests[id] = nil
+            streamCollection(id: id, request: request)
         }
     }
 
@@ -76,11 +103,14 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// triggering a download just to advertise it. The (blocking, SQLite) reads happen off
     /// the main actor — `CloudItem` is `Sendable`, so the snapshot can safely cross.
     private func publishCatalog() {
+        guard isLibraryReady else { return }
         let collections = cloudLibrary.items.filter { $0.isCollection }
+        let forced = catalogPushRequested
+        catalogPushRequested = false
         Task.detached(priority: .utility) { [weak self] in
             let catalog = collections.map(Self.catalogEntry(for:))
             guard let data = try? JSONEncoder().encode(catalog) else { return }
-            await self?.pushCatalogIfNeeded(data)
+            await self?.pushCatalog(data, forced: forced)
         }
     }
 
@@ -93,14 +123,18 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
     /// Latest-wins push, deduped against the last context we successfully set so an
     /// unchanged catalog (e.g. a query update for content we don't surface) doesn't churn
-    /// `WCSession`. Only recorded as "last published" once the push actually succeeds — a
-    /// failed push (logged, not swallowed) must not poison the dedupe so a later retry of the
-    /// same catalog is skipped.
-    private func pushCatalogIfNeeded(_ data: Data) {
-        guard data != lastPublishedCatalogData else { return }
+    /// `WCSession` — unless `forced`, when a nonce makes it go out regardless. Only recorded
+    /// as "last published" once the push actually succeeds — a failed push (logged, not
+    /// swallowed) must not poison the dedupe so a later retry of the same catalog is skipped.
+    private func pushCatalog(_ data: Data, forced: Bool) {
+        guard forced || data != lastPublishedCatalogData else { return }
         guard WCSession.default.activationState == .activated else { return }
+        var context: [String: Any] = [WatchRelay.catalogKey: data]
+        if forced {
+            context[WatchRelay.catalogNonceKey] = UUID().uuidString
+        }
         do {
-            try WCSession.default.updateApplicationContext([WatchRelay.catalogKey: data])
+            try WCSession.default.updateApplicationContext(context)
             lastPublishedCatalogData = data
         } catch {
             logger.error("Failed to push watch catalog (\(data.count) bytes): \(String(describing: error), privacy: .public)")
@@ -110,122 +144,178 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     // MARK: - Watch requests
 
     private func handleIncomingOp(_ payload: [String: Any]) {
-        guard
-            let op = payload[WatchRelay.opKey] as? String,
-            let id = payload[WatchRelay.idKey] as? String
-        else { return }
+        guard let op = payload[WatchRelay.opKey] as? String else { return }
 
         switch op {
+        case WatchRelay.opHello:
+            catalogPushRequested = true
+            publishCatalog()
         case WatchRelay.opPin, WatchRelay.opRequest:
-            streamCollectionIfNeeded(id: id)
-        case WatchRelay.opUnpin:
-            // There's nothing in flight to cancel: the watch simply discards a manifest/card
-            // that lands for a collection it has since unpinned.
-            break
+            guard let id = payload[WatchRelay.idKey] as? String else { return }
+            let request = (payload[WatchRelay.downloadRequestKey] as? Data)
+                .flatMap { try? JSONDecoder().decode(WatchDownloadRequest.self, from: $0) }
+                ?? .everything
+            streamCollection(id: id, request: request)
+        case WatchRelay.opFocus:
+            guard
+                let id = payload[WatchRelay.idKey] as? String,
+                let cardName = payload[WatchRelay.cardNameKey] as? String,
+                let tier = payload[WatchRelay.cardTierKey] as? String
+            else { return }
+            sendFocusedCard(id: id, cardName: cardName, tier: tier, preferredSide: payload[WatchRelay.cardSideKey] as? String)
         default:
+            // opUnpin: there's nothing in flight worth cancelling — anything still arriving
+            // for an unpinned collection just becomes evictable on the watch.
             break
         }
     }
 
-    /// Starts streaming `id`'s manifest and cards to the watch, unless a stream for the same
-    /// id is already running. If `id` isn't in `cloudLibrary.items` yet — a background launch
-    /// or a request that beat `NSMetadataQuery`'s initial gather — the request is queued
-    /// rather than dropped, and `cloudLibrary.start()` is kicked (idempotent) so a library that
-    /// never started (e.g. this delegate existing before any view called `start()`) does.
-    /// `armCatalogObservation`'s change reaction retries queued ids once the catalog updates.
+    private func collectionItem(id: String) -> CloudItem? {
+        cloudLibrary.items.first { $0.isCollection && $0.displayName == id }
+    }
+
+    /// Starts streaming whatever of `id` the watch is missing, per `request`. If a stream for
+    /// the same id is already running, the request waits for it to finish (see
+    /// `queuedRequests`). If `id` isn't in `cloudLibrary.items` yet — a background launch or a
+    /// request that beat `NSMetadataQuery`'s initial gather — it's queued rather than dropped,
+    /// and `cloudLibrary.start()` is kicked (idempotent). `armCatalogObservation`'s change
+    /// reaction retries queued ids once the catalog updates.
     ///
-    /// `inFlightStreamIDs` only guards the few seconds this method's own encode/enqueue loop
-    /// takes — it says nothing about whether the *previous* stream's transfers have actually
-    /// drained out of `WCSession`'s queue, which over Bluetooth can take minutes. So a retried
-    /// watch request (timeout-retry, or a re-tapped row) routinely arrives once this guard has
-    /// cleared but while the earlier transfers are still outstanding. Rather than adding a
-    /// second, queue-aware guard here — which would need to decide whether "some but not all
-    /// faces outstanding" counts as in-flight — every restart is let through, and `stream`
-    /// itself skips re-encoding/re-enqueuing any face still sitting in the outstanding queue
-    /// (see `outstandingCardFaceKeys`). The only "waste" of a redundant restart is then a
-    /// re-sent manifest (a few KB over the reliable user-info queue) and a cheap re-check per
-    /// card, which is simpler and safer than trying to short-circuit the whole stream.
-    private func streamCollectionIfNeeded(id: String) {
-        guard !inFlightStreamIDs.contains(id) else { return }
-        guard let item = cloudLibrary.items.first(where: { $0.isCollection && $0.displayName == id }) else {
-            pendingStreamIDs.insert(id)
+    /// `inFlightStreamIDs` only guards the few seconds this method's own encode/enqueue work
+    /// takes — the queue it fills can take minutes to drain over Bluetooth. A request arriving
+    /// after that is let through: it says what the watch already has, and `stream` also skips
+    /// any face still sitting in `WCSession`'s outstanding queue, so it only ever adds what's
+    /// genuinely missing.
+    private func streamCollection(id: String, request: WatchDownloadRequest) {
+        guard !inFlightStreamIDs.contains(id) else {
+            queuedRequests[id] = request
+            return
+        }
+        guard let item = collectionItem(id: id) else {
+            pendingRequests[id] = request
             logger.info("queued stream for \(id, privacy: .public): library not ready")
             Task { await cloudLibrary.start() }
             return
         }
 
         inFlightStreamIDs.insert(id)
-        Task.detached(priority: .utility) { [weak self] in
-            await Self.stream(item: item, id: id)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            await Self.stream(item: item, id: id, request: request)
             await self?.markStreamFinished(id: id)
         }
     }
 
     private func markStreamFinished(id: String) {
         inFlightStreamIDs.remove(id)
+        if let next = queuedRequests.removeValue(forKey: id) {
+            streamCollection(id: id, request: next)
+        }
     }
+
+    /// Sends one card's faces at `tier` as messages, the showing side first, in answer to an
+    /// `opFocus`. Unknown ids are ignored: focus is only ever asked for a collection the watch
+    /// has open, which a stream has already found.
+    private func sendFocusedCard(id: String, cardName: String, tier: String, preferredSide: String?) {
+        let key = WatchFaceKey(id: id, cardName: cardName, tier: tier, side: "")
+        guard !inFlightFocusKeys.contains(key), let item = collectionItem(id: id) else { return }
+
+        inFlightFocusKeys.insert(key)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            await Self.sendFocused(item: item, id: id, cardName: cardName, tier: tier, preferredSide: preferredSide)
+            await self?.markFocusFinished(key)
+        }
+    }
+
+    private func markFocusFinished(_ key: WatchFaceKey) {
+        inFlightFocusKeys.remove(key)
+    }
+
+    // MARK: - Streaming
 
     /// The manifest + per-card streaming work, off the main actor: blocking SQLite reads,
     /// `ImageSplitter`'s pixel-level rotation, and ImageIO encoding all belong on a background
     /// thread, and `WCSession`'s transfer methods are documented as safe to call from any
     /// thread. A failure partway through (unreadable file, unsupported schema, ...) is logged
     /// and simply stops the stream — `markStreamFinished` still runs afterwards, so a later
-    /// opRequest can retry.
+    /// request can retry.
     ///
-    /// Each card is split once, at full resolution, into its faces; screen-tier transfers are
-    /// enqueued immediately (so `transferFile`'s FIFO queue carries them first, in scroll
-    /// order) while zoom-tier transfers are buffered and only enqueued once every card's
-    /// screen tier is queued — see `sendCardFaces`.
-    private nonisolated static func stream(item: CloudItem, id: String) async {
+    /// Each card is split once, at full resolution, for both tiers: its screen faces are sent
+    /// straight away, while its zoom faces (if wanted) are written out and only queued once
+    /// every card's screen faces are — see `sendCard`.
+    private nonisolated static func stream(item: CloudItem, id: String, request: WatchDownloadRequest) async {
         do {
             try await CloudLibrary.primeForGoCore(path: item.path)
             let reader = try CollectionReader(path: item.path)
             let summaries = try reader.cardSummaries()
 
-            sendManifest(summaries, id: id)
+            await sendManifest(summaries, id: id)
 
+            let isWatchReachable = WCSession.default.isReachable
+            let plan = WatchStreamPlan(
+                cardNames: summaries.map(\.name),
+                request: request,
+                immediateLimit: isWatchReachable ? WatchRelay.immediateCardCount : 0
+            )
+            let zoomCards = Set(plan.queuedZoomCards)
             let alreadyQueued = outstandingCardFaceKeys()
-            var zoomTransfers: [PendingFaceTransfer] = []
-            var skippedCount = 0
-            for (index, summary) in summaries.enumerated() {
-                sendCardFaces(
+            var zoomTransfers: [PendingTransfer] = []
+
+            let immediateCards = Set(plan.immediateScreenCards)
+            for (index, summary) in summaries.enumerated() where immediateCards.contains(summary.name) {
+                await sendCard(
                     summary, index: index, count: summaries.count, id: id, reader: reader,
-                    zoomTransfers: &zoomTransfers, alreadyQueued: alreadyQueued, skippedCount: &skippedCount
+                    screen: .immediately, includeZoom: zoomCards.contains(summary.name),
+                    alreadyQueued: alreadyQueued, zoomTransfers: &zoomTransfers
                 )
             }
+
+            if plan.sendsDetails {
+                await sendDetails(summaries, id: id, reader: reader)
+            }
+
+            let queuedCards = Set(plan.queuedScreenCards)
+            for (index, summary) in summaries.enumerated() where !immediateCards.contains(summary.name) {
+                let screen: ScreenDelivery? = queuedCards.contains(summary.name) ? .queued : nil
+                let includeZoom = zoomCards.contains(summary.name)
+                guard screen != nil || includeZoom else { continue }
+                await sendCard(
+                    summary, index: index, count: summaries.count, id: id, reader: reader,
+                    screen: screen, includeZoom: includeZoom,
+                    alreadyQueued: alreadyQueued, zoomTransfers: &zoomTransfers
+                )
+            }
+
             for transfer in zoomTransfers {
                 _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
             }
-            logger.info("streaming \(id, privacy: .public): \(summaries.count) cards (\(skippedCount) faces already queued, skipped)")
-            logger.info("finished streaming \(id, privacy: .public)")
+            logger.info("streamed \(id, privacy: .public): \(plan.immediateScreenCards.count) cards as messages, \(plan.queuedScreenCards.count) queued, \(zoomTransfers.count) zoom faces queued")
         } catch {
             logger.error("Failed to stream watch collection \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
-    /// Identifies one face (front/back) of one card, at one quality tier, within one
-    /// collection — the same identity carried in a card `transferFile`'s metadata (see
-    /// `WatchRelay.opCard`). Used to match a face about to be sent against faces already
-    /// queued in `WCSession`'s outstanding-transfer list.
-    private struct CardFaceKey: Hashable {
-        let id: String
-        let cardName: String
-        let tier: String
-        let side: String
+    /// The answer to an `opFocus`: one card's faces at one tier, as messages (each falling
+    /// back to the file queue if its messages don't get through), the side that's showing
+    /// first.
+    private nonisolated static func sendFocused(item: CloudItem, id: String, cardName: String, tier: String, preferredSide: String?) async {
+        do {
+            try await CloudLibrary.primeForGoCore(path: item.path)
+            let reader = try CollectionReader(path: item.path)
+            let summaries = try reader.cardSummaries()
+            guard let index = summaries.firstIndex(where: { $0.name == cardName }) else { return }
+            let summary = summaries[index]
 
-        /// Builds a key from a queued transfer's `file.metadata`, or `nil` if it isn't a
-        /// card-face transfer (wrong/missing op) or is missing an expected field. Defensive
-        /// rather than force-unwrapped since this reads metadata `WCSession` handed back to
-        /// us, not metadata we just built ourselves.
-        static func from(metadata: [String: Any]) -> CardFaceKey? {
-            guard
-                metadata[WatchRelay.opKey] as? String == WatchRelay.opCard,
-                let id = metadata[WatchRelay.idKey] as? String,
-                let cardName = metadata[WatchRelay.cardNameKey] as? String,
-                let tier = metadata[WatchRelay.cardTierKey] as? String,
-                let side = metadata[WatchRelay.cardSideKey] as? String
-            else { return nil }
-            return CardFaceKey(id: id, cardName: cardName, tier: tier, side: side)
+            var faces = try splitFaces(of: summary, reader: reader)
+            if let preferred = faces.firstIndex(where: { $0.side == preferredSide }) {
+                faces.insert(faces.remove(at: preferred), at: 0)
+            }
+            for face in faces {
+                guard let blob = encodedFace(face.image, tier: tier, side: face.side, cardName: cardName, id: id) else { continue }
+                let metadata = faceMetadata(summary, index: index, count: summaries.count, id: id, tier: tier, side: face.side)
+                await sendPreferringMessages(blob, metadata: metadata)
+            }
+        } catch {
+            logger.error("Failed to send focused card \"\(cardName, privacy: .public)\" in \(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -236,107 +326,147 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     ///
     /// Taken once, at the start of a stream: the queue only shrinks while we're sending (as
     /// transfers finish draining), so a snapshot from the start can at worst under-skip —
-    /// resending something that finished mid-stream, no worse than today — never over-skip.
-    private nonisolated static func outstandingCardFaceKeys() -> Set<CardFaceKey> {
-        Set(WCSession.default.outstandingFileTransfers.compactMap { CardFaceKey.from(metadata: $0.file.metadata ?? [:]) })
+    /// resending something that finished mid-stream — never over-skip.
+    private nonisolated static func outstandingCardFaceKeys() -> Set<WatchFaceKey> {
+        Set(WCSession.default.outstandingFileTransfers.compactMap { faceKey(fromMetadata: $0.file.metadata ?? [:]) })
     }
 
-    private nonisolated static func sendManifest(_ summaries: [CardSummary], id: String) {
+    /// The face a queued transfer carries, or `nil` if it isn't a card-face transfer (wrong or
+    /// missing op) or is missing a field. Defensive rather than force-unwrapped, since this
+    /// reads metadata `WCSession` handed back to us, not metadata we just built ourselves.
+    private nonisolated static func faceKey(fromMetadata metadata: [String: Any]) -> WatchFaceKey? {
+        guard
+            metadata[WatchRelay.opKey] as? String == WatchRelay.opCard,
+            let id = metadata[WatchRelay.idKey] as? String,
+            let cardName = metadata[WatchRelay.cardNameKey] as? String,
+            let tier = metadata[WatchRelay.cardTierKey] as? String,
+            let side = metadata[WatchRelay.cardSideKey] as? String
+        else { return nil }
+        return WatchFaceKey(id: id, cardName: cardName, tier: tier, side: side)
+    }
+
+    /// Sends the manifest as a message when the watch is looking (the collection opens the
+    /// moment it lands), otherwise — or if that fails — on the reliable user-info queue.
+    private nonisolated static func sendManifest(_ summaries: [CardSummary], id: String) async {
         let manifest = summaries.map {
             WatchCardMeta(name: $0.name, flip: $0.flip, frontPxW: $0.frontPxW, frontPxH: $0.frontPxH)
         }
         guard let data = try? JSONEncoder().encode(manifest) else { return }
-        _ = WCSession.default.transferUserInfo([
+        let payload: [String: Any] = [
             WatchRelay.opKey: WatchRelay.opManifest,
             WatchRelay.idKey: id,
             WatchRelay.manifestKey: data,
-        ])
+        ]
+        if data.count <= WatchRelay.messageChunkSize, await sendAcknowledgedMessage(payload) {
+            return
+        }
+        _ = WCSession.default.transferUserInfo(payload)
+    }
+
+    /// Sends the collection's details — every card's `WatchCardDetails`, for the watch's info
+    /// page — preferring messages. A card whose full metadata can't be read still gets the
+    /// details its summary carries.
+    private nonisolated static func sendDetails(_ summaries: [CardSummary], id: String, reader: CollectionReader) async {
+        let details = summaries.map { WatchCardDetails(summary: $0, metadata: try? reader.metadata(name: $0.name)) }
+        guard let data = try? JSONEncoder().encode(details) else { return }
+        await sendPreferringMessages(data, metadata: [WatchRelay.opKey: WatchRelay.opDetails, WatchRelay.idKey: id])
+    }
+
+    /// How `sendCard` delivers a card's screen faces.
+    private enum ScreenDelivery {
+        /// As messages, ahead of the queue (falling back to it if they don't get through).
+        case immediately
+        /// Through the file queue — unless the face is already sitting in it.
+        case queued
     }
 
     /// A face's blob already written to a temp file, with its `transferFile` metadata, ready
-    /// to hand to `WCSession` — or to hold onto until the right point in the send order.
-    private struct PendingFaceTransfer {
+    /// to hand to `WCSession` at the right point in the send order.
+    private struct PendingTransfer {
         let url: URL
         let metadata: [String: Any]
     }
 
     /// Splits one card's stored (combined front+back) image ONCE at full resolution, then
-    /// produces up to four face blobs (front/back × screen/zoom, back only if the card has
-    /// one). Screen-tier faces are sent immediately; zoom-tier faces are appended to
-    /// `zoomTransfers` for the caller to send after every card's screen tier has been queued.
-    /// Best-effort: a single unreadable/undecodable card, or one face that fails to encode, is
-    /// logged and skipped rather than aborting the rest of the collection's stream.
-    ///
-    /// Before encoding each face, it's checked against `alreadyQueued` (the outstanding-queue
-    /// snapshot `stream` took at the start) — a face still draining from an earlier stream of
-    /// this same collection is skipped entirely (no encode, no temp file, no enqueue) rather
-    /// than piling a duplicate transfer onto `WCSession`'s queue. `skippedCount` accumulates
-    /// across the whole stream for the summary log.
-    private nonisolated static func sendCardFaces(
+    /// sends its screen faces as `screen` says (or not at all, if `nil`), and — if
+    /// `includeZoom` — writes out its zoom faces and appends them to `zoomTransfers`, for the
+    /// caller to queue after every card's screen faces. Best-effort: a card that can't be read
+    /// or split, or one face that fails to encode, is logged and skipped rather than aborting
+    /// the rest of the collection's stream. A face still draining from an earlier stream of
+    /// this collection (`alreadyQueued`) isn't queued again.
+    private nonisolated static func sendCard(
         _ summary: CardSummary,
         index: Int,
         count: Int,
         id: String,
         reader: CollectionReader,
-        zoomTransfers: inout [PendingFaceTransfer],
-        alreadyQueued: Set<CardFaceKey>,
-        skippedCount: inout Int
-    ) {
+        screen: ScreenDelivery?,
+        includeZoom: Bool,
+        alreadyQueued: Set<WatchFaceKey>,
+        zoomTransfers: inout [PendingTransfer]
+    ) async {
+        let faces: [(image: CGImage, side: String)]
         do {
-            let imageData = try reader.imageData(name: summary.name)
-            let split = try ImageSplitter.split(data: imageData, flip: summary.flip)
-
-            var faces: [(image: CGImage, side: String)] = [(split.front, WatchRelay.sideFront)]
-            if let back = split.back {
-                faces.append((back, WatchRelay.sideBack))
-            }
-
-            for (image, side) in faces {
-                if alreadyQueued.contains(CardFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierScreen, side: side)) {
-                    skippedCount += 1
-                } else if let transfer = try faceTransfer(
-                    image, tier: WatchRelay.tierScreen, maxPixelSize: WatchRelay.screenTierMaxPixelSize,
-                    quality: WatchRelay.screenTierQuality,
-                    side: side, summary: summary, index: index, count: count, id: id
-                ) {
-                    _ = WCSession.default.transferFile(transfer.url, metadata: transfer.metadata)
-                }
-
-                if alreadyQueued.contains(CardFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierZoom, side: side)) {
-                    skippedCount += 1
-                } else if let transfer = try faceTransfer(
-                    image, tier: WatchRelay.tierZoom, maxPixelSize: WatchRelay.zoomTierMaxPixelSize,
-                    quality: WatchRelay.zoomTierQuality,
-                    side: side, summary: summary, index: index, count: count, id: id
-                ) {
-                    zoomTransfers.append(transfer)
-                }
-            }
+            faces = try splitFaces(of: summary, reader: reader)
         } catch {
             logger.error("Failed to send card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            return
+        }
+
+        for (image, side) in faces {
+            let screenKey = WatchFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierScreen, side: side)
+            if let screen, screen == .immediately || !alreadyQueued.contains(screenKey),
+               let blob = encodedFace(image, tier: WatchRelay.tierScreen, side: side, cardName: summary.name, id: id) {
+                let metadata = faceMetadata(summary, index: index, count: count, id: id, tier: WatchRelay.tierScreen, side: side)
+                switch screen {
+                case .immediately:
+                    await sendPreferringMessages(blob, metadata: metadata)
+                case .queued:
+                    queue(blob, metadata: metadata)
+                }
+            }
+
+            let zoomKey = WatchFaceKey(id: id, cardName: summary.name, tier: WatchRelay.tierZoom, side: side)
+            if includeZoom, !alreadyQueued.contains(zoomKey),
+               let blob = encodedFace(image, tier: WatchRelay.tierZoom, side: side, cardName: summary.name, id: id) {
+                let metadata = faceMetadata(summary, index: index, count: count, id: id, tier: WatchRelay.tierZoom, side: side)
+                do {
+                    zoomTransfers.append(PendingTransfer(url: try writeTempBlob(blob), metadata: metadata))
+                } catch {
+                    logger.error("Couldn't write zoom face of card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
         }
     }
 
-    /// Downsamples+encodes one face at one tier and writes it to a temp file. `nil` (logged)
-    /// if the encode fails; the caller carries on to the next face/tier rather than aborting
-    /// the whole card.
-    private nonisolated static func faceTransfer(
-        _ image: CGImage,
-        tier: String,
-        maxPixelSize: Int,
-        quality: CGFloat,
-        side: String,
-        summary: CardSummary,
-        index: Int,
-        count: Int,
-        id: String
-    ) throws -> PendingFaceTransfer? {
-        guard let blob = WatchCardImage.encodedFace(image, maxPixelSize: maxPixelSize, quality: quality) else {
-            logger.error("Couldn't encode \(side, privacy: .public)/\(tier, privacy: .public) face of card \"\(summary.name, privacy: .public)\" in \(id, privacy: .public)")
-            return nil
+    /// A card's faces — the front, and the back if it has one — split out of its stored
+    /// combined image at full resolution, the back already turned upright.
+    private nonisolated static func splitFaces(of summary: CardSummary, reader: CollectionReader) throws -> [(image: CGImage, side: String)] {
+        let split = try ImageSplitter.split(data: reader.imageData(name: summary.name), flip: summary.flip)
+        var faces: [(image: CGImage, side: String)] = [(split.front, WatchRelay.sideFront)]
+        if let back = split.back {
+            faces.append((back, WatchRelay.sideBack))
         }
-        let url = try writeTempBlob(blob)
-        return PendingFaceTransfer(url: url, metadata: [
+        return faces
+    }
+
+    /// Downsamples and encodes one face for `tier`. `nil` (logged) if the encode fails; the
+    /// caller carries on to the next face or tier rather than aborting the whole card.
+    private nonisolated static func encodedFace(_ image: CGImage, tier: String, side: String, cardName: String, id: String) -> Data? {
+        let isZoom = tier == WatchRelay.tierZoom
+        let blob = WatchCardImage.encodedFace(
+            image,
+            maxPixelSize: isZoom ? WatchRelay.zoomTierMaxPixelSize : WatchRelay.screenTierMaxPixelSize,
+            quality: isZoom ? WatchRelay.zoomTierQuality : WatchRelay.screenTierQuality
+        )
+        if blob == nil {
+            logger.error("Couldn't encode \(side, privacy: .public)/\(tier, privacy: .public) face of card \"\(cardName, privacy: .public)\" in \(id, privacy: .public)")
+        }
+        return blob
+    }
+
+    private nonisolated static func faceMetadata(_ summary: CardSummary, index: Int, count: Int, id: String, tier: String, side: String) -> [String: Any] {
+        [
             WatchRelay.opKey: WatchRelay.opCard,
             WatchRelay.idKey: id,
             WatchRelay.cardNameKey: summary.name,
@@ -344,7 +474,85 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             WatchRelay.cardSideKey: side,
             WatchRelay.cardIndexKey: index,
             WatchRelay.cardCountKey: count,
-        ])
+        ]
+    }
+
+    // MARK: - Delivery
+
+    /// Sends a blob as acknowledged messages if the watch is reachable, falling back to the
+    /// file queue if it isn't, or if any of the messages doesn't get through — so the blob
+    /// always arrives, just sooner when the watch is looking.
+    private nonisolated static func sendPreferringMessages(_ blob: Data, metadata: [String: Any]) async {
+        let deliveredAsMessages = await sendAsMessages(blob, metadata: metadata)
+        guard !deliveredAsMessages else { return }
+        queue(blob, metadata: metadata)
+    }
+
+    /// Sends a blob as one or more messages (see `WatchRelay`'s "Blobs as messages"), each
+    /// acknowledged by the watch before the next goes — which paces the chunks to what the
+    /// link can carry. `false` as soon as one isn't acknowledged, leaving the watch to discard
+    /// whatever part it got.
+    private nonisolated static func sendAsMessages(_ blob: Data, metadata: [String: Any]) async -> Bool {
+        let chunks = WatchMessageChunks.chunks(of: blob, maxChunkSize: WatchRelay.messageChunkSize)
+        let blobID = UUID().uuidString
+        for (index, chunk) in chunks.enumerated() {
+            var message = metadata
+            message[WatchRelay.blobKey] = chunk
+            message[WatchRelay.blobIDKey] = blobID
+            message[WatchRelay.chunkIndexKey] = index
+            message[WatchRelay.chunkCountKey] = chunks.count
+            guard await sendAcknowledgedMessage(message) else { return false }
+        }
+        return true
+    }
+
+    /// `sendMessage` with a reply handler, as one async call: `true` once the watch has
+    /// replied, `false` if it isn't reachable, the message fails, or no answer comes within
+    /// `messageTimeout`.
+    private nonisolated static func sendAcknowledgedMessage(_ message: [String: Any]) async -> Bool {
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return false }
+        return await withCheckedContinuation { continuation in
+            let outcome = MessageOutcome(continuation)
+            session.sendMessage(message, replyHandler: { _ in
+                outcome.resolve(true)
+            }, errorHandler: { error in
+                logger.info("watch message not delivered: \(String(describing: error), privacy: .public)")
+                outcome.resolve(false)
+            })
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + messageTimeout) {
+                outcome.resolve(false)
+            }
+        }
+    }
+
+    /// Resumes a message's continuation exactly once, whichever of its reply handler, error
+    /// handler, or timeout gets there first.
+    private final class MessageOutcome: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) {
+            self.continuation = continuation
+        }
+
+        func resolve(_ delivered: Bool) {
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(returning: delivered)
+        }
+    }
+
+    /// Queues a blob as a file transfer. Its temp file is removed once `WCSession` reports
+    /// the transfer finished (see `session(_:didFinish:error:)`).
+    private nonisolated static func queue(_ blob: Data, metadata: [String: Any]) {
+        do {
+            _ = WCSession.default.transferFile(try writeTempBlob(blob), metadata: metadata)
+        } catch {
+            logger.error("Couldn't write a watch transfer: \(String(describing: error), privacy: .public)")
+        }
     }
 
     private nonisolated static func writeTempBlob(_ data: Data) throws -> URL {

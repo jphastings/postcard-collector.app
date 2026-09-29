@@ -24,6 +24,15 @@ struct PostcardsApp: App {
 
     init() {
         let cloudLibrary = CloudLibrary()
+        // Configured here, before anything can start it, rather than in `LibraryView`'s task:
+        // on iOS the watch relay below starts the library itself, possibly during a background
+        // launch that never shows a view — and a library started unconfigured would
+        // auto-download every iCloud item.
+        cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
+        // Click/tap-to-download: don't pull every iCloud item down automatically — the
+        // sidebar's undownloaded rows download on tap. (iCloud may still fetch some on its
+        // own; those show "Downloading…".)
+        cloudLibrary.shouldAutoDownload = { _ in false }
         _cloudLibrary = State(initialValue: cloudLibrary)
         #if os(iOS)
         // Started here, at process launch, rather than from a view's `.task` — iOS can
@@ -39,14 +48,7 @@ struct PostcardsApp: App {
     var body: some Scene {
         WindowGroup {
             LibraryView(library: library, cloudLibrary: cloudLibrary)
-                .task {
-                    cloudLibrary.invalidateSource = { await GoCore.shared.invalidateSource(at: $0) }
-                    // Click/tap-to-download: don't pull every iCloud item down automatically — the
-                    // sidebar's undownloaded rows download on tap. (iCloud may still fetch some on
-                    // its own; those show "Downloading…".)
-                    cloudLibrary.shouldAutoDownload = { _ in false }
-                    await cloudLibrary.start()
-                }
+                .task { await cloudLibrary.start() }
         }
         #if os(macOS)
         .commands {

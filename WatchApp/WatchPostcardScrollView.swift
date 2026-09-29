@@ -7,10 +7,11 @@ import SwiftUI
 /// Progressive streaming means the manifest (every card's slot) typically lands well before
 /// every card's faces do, so this view renders a slot per `WatchCardMeta` the moment
 /// `library.manifest(for: id)` is non-nil — each `WatchCardView` independently shows a
-/// placeholder until its own screen-tier faces arrive. If the manifest itself hasn't landed
-/// yet, this asks `library` to fetch it from a reachable iPhone and waits, reacting to
-/// `library.manifests` the moment it lands and to `library.isPhoneReachable` if the phone
-/// comes back within range mid-wait.
+/// placeholder until its own screen-tier faces arrive, the first within a second or two. If
+/// the manifest itself hasn't landed yet, this asks `library` to fetch it from a reachable
+/// iPhone and waits, reacting to the collection appearing in `library` the moment it lands
+/// and to `library.isPhoneReachable` if the phone comes back within range mid-wait. While
+/// open, a partly-downloaded collection that stops arriving is asked for again.
 struct WatchPostcardScrollView: View {
     let library: WatchLibrary
     let id: String
@@ -32,6 +33,9 @@ struct WatchPostcardScrollView: View {
     /// state — the phone may just be slow to notice the request (e.g. it woke from a
     /// background launch and is still spinning up `CloudLibrary`), not gone for good.
     private static let maxDownloadStrikes = 3
+    /// How long a partly-downloaded collection can go with nothing new arriving before it's
+    /// asked for again — the phone app may have been suspended mid-stream.
+    private static let stallInterval: TimeInterval = 30
 
     @State private var phase: Phase = .loading
     @State private var timedOut = false
@@ -45,6 +49,8 @@ struct WatchPostcardScrollView: View {
     /// Consecutive timeouts within the current download attempt, reset whenever `beginLoading`
     /// runs afresh (a new request, or the phase actually leaving `.downloading`).
     @State private var timeoutStrikes = 0
+    /// The card whose info page is showing, if any.
+    @State private var infoCard: WatchCardMeta?
 
     private var manifest: [WatchCardMeta]? { library.manifest(for: id) }
     private var title: String? { library.catalog.first { $0.id == id }?.title }
@@ -53,10 +59,14 @@ struct WatchPostcardScrollView: View {
         content
             .navigationTitle(title ?? "")
             .task(id: id) { beginLoading() }
-            .onChange(of: library.manifests) { _, _ in beginLoading() }
+            .task(id: id) { await watchForStalls() }
+            .onChange(of: library.isPresent(id)) { _, _ in beginLoading() }
             .onChange(of: library.isPhoneReachable) { _, reachable in
                 guard reachable else { return }
                 beginLoading()
+            }
+            .sheet(item: $infoCard) { meta in
+                WatchCardInfoView(library: library, collectionID: id, meta: meta)
             }
     }
 
@@ -94,8 +104,14 @@ struct WatchPostcardScrollView: View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(manifest) { meta in
-                    WatchCardView(library: library, collectionID: id, meta: meta, zoomedCardID: $zoomedCardID)
-                        .containerRelativeFrame(.vertical)
+                    WatchCardView(
+                        library: library,
+                        collectionID: id,
+                        meta: meta,
+                        zoomedCardID: $zoomedCardID,
+                        onShowInfo: { infoCard = meta }
+                    )
+                    .containerRelativeFrame(.vertical)
                 }
             }
             .scrollTargetLayout()
@@ -111,8 +127,8 @@ struct WatchPostcardScrollView: View {
 
     /// Loads from the cache if the manifest is already there; otherwise requests it (if
     /// reachable) or shows the unavailable state. Safe to call repeatedly — e.g. from both the
-    /// initial `.task` and every subsequent `manifests`/`isPhoneReachable` change — since it's
-    /// a no-op once loaded.
+    /// initial `.task` and every subsequent presence/reachability change — since the library
+    /// drops a request that's already on its way.
     private func beginLoading() {
         // Any fresh call represents progress — either the collection is now present, or
         // something changed (a new request, a reachability flap) worth giving a full set of
@@ -139,17 +155,29 @@ struct WatchPostcardScrollView: View {
     /// Fires once per `downloadTimeout` while still `.downloading`. The phone may simply be
     /// slow to notice the request (e.g. it woke from a background launch and is still
     /// spinning up `CloudLibrary`), so the first couple of strikes just re-send the request
-    /// and re-arm rather than failing permanently — only the last strike shows `.failed`.
+    /// and re-arm rather than failing permanently — only the last strike shows the failure.
     private func watchForTimeout(attempt: Int) async {
         try? await Task.sleep(for: Self.downloadTimeout)
         guard !Task.isCancelled, attempt == downloadAttempt, case .downloading = phase else { return }
 
         timeoutStrikes += 1
         guard timeoutStrikes >= Self.maxDownloadStrikes else {
-            library.requestDownloadIfNeeded(id: id)
+            library.requestDownloadIfNeeded(id: id, force: true)
             await watchForTimeout(attempt: attempt)
             return
         }
         timedOut = true
+    }
+
+    /// While the collection is open, re-asks for it whenever it's incomplete and has gone
+    /// `stallInterval` with nothing arriving. Ends when the view goes away.
+    private func watchForStalls() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(Self.stallInterval))
+            guard !Task.isCancelled else { return }
+            if library.isPresent(id), library.isPhoneReachable {
+                library.requestDownloadIfStalled(id: id, interval: Self.stallInterval)
+            }
+        }
     }
 }

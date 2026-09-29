@@ -151,15 +151,30 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   populates), and `transferFile` is a slow FIFO (dedupe re-requests against
   `outstandingFileTransfers` or retries double the backlog).
 - The WCSession delegate must exist from **process launch** (`App.init`), not a view
-  task — background launches deliver queued messages to whoever is listening, or no one.
+  task — on **both** sides — background launches deliver queued messages to whoever is
+  listening, or no one. The watch also holds a `.backgroundTask(.watchConnectivity)` open
+  until `hasContentPending` clears, or a background launch is suspended mid-delivery.
+- The reliable queues are FIFOs shared by everything, so whatever is on screen goes as
+  **messages** when both apps are running (`sendMessage`: immediate, ≤64KB, so blobs are
+  chunked and each chunk acknowledged): requests, manifests, the first two missing cards,
+  details, and `opFocus` (a card scrolled ahead to, or zoomed into). A failed message always
+  falls back to the queue — messages are a speed-up, never the only route. Watch → phone
+  messages also wake the iPhone app, which is how a never-opened phone app gets asked for
+  its catalog (`opHello`).
 - Collections stream progressively: manifest first, then each card *face* as its own
-  ready-to-display image (screen tier for every card, zoom tier trailing). The phone does
-  all pixel work; the watch only decodes small files through an LRU. Keep it that way —
-  per-card decode/rotation on the watch is what made scrolling jerky.
+  ready-to-display image. Every request carries what the watch already has
+  (`WatchDownloadRequest`), so resuming or repeating one only sends the difference. Screen
+  tier for every card; zoom tier (the web format's full 1536px) for every card only when
+  pinned — otherwise per card, on zoom. The phone does all pixel work; the watch only decodes
+  small files through an LRU (zoom faces bypass it). Keep it that way — per-card
+  decode/rotation on the watch is what made scrolling jerky.
+- The phone publishes its catalog only once `CloudLibrary` has gathered (or iCloud is
+  unavailable): an empty pre-gather catalog tells the watch there are no collections.
 - Threading discipline is strict everywhere WCSession appears: `@MainActor @Observable`
-  state, `nonisolated` delegate methods hopping via `Task { @MainActor in }`, and file
-  moves done synchronously before the delegate returns (WCSession reclaims the temp
-  file). This app's history makes off-main state mutation a hard no.
+  state, `nonisolated` delegate methods hopping via `Task { @MainActor in }`, and every
+  arrival (file moves, manifests, catalogs) written to disk synchronously before the
+  delegate returns (WCSession reclaims the temp file; a background launch may be suspended
+  next). This app's history makes off-main state mutation a hard no.
 
 ## UI conventions
 

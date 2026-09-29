@@ -39,6 +39,11 @@ final class CollectionReaderTests: XCTestCase {
         XCTAssertFalse(nativeSummaries.isEmpty)
     }
 
+    func testCardCountMatchesTheSummaries() throws {
+        let reader = try CollectionReader(path: try fixturePath())
+        XCTAssertEqual(try reader.cardCount(), try reader.cardSummaries().count)
+    }
+
     func testCardSummariesOnlySetCoordinatesWhenBothLatitudeAndLongitudePresent() throws {
         let reader = try CollectionReader(path: try fixturePath())
         let summaries = try reader.cardSummaries()

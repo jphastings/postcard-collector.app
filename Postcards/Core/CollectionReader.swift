@@ -122,6 +122,19 @@ final class CollectionReader {
         return summaries
     }
 
+    /// How many cards the collection holds — one `COUNT(*)`, for callers that need only the
+    /// number and not every card's summary.
+    func cardCount() throws -> Int {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        try prepare("SELECT COUNT(*) FROM cards", into: &statement)
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw CollectionReaderError.sqlite(lastErrorMessage())
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
     /// The pre-generated thumbnail of a card's front image (JPEG or PNG bytes, as stored).
     func thumbnail(name: String) throws -> Data {
         try blob(column: "thumb", name: name)

@@ -14,9 +14,9 @@ enum WatchCatalogBuilder {
             return WatchCollectionInfo(id: item.displayName, title: item.displayName, cardCount: 0)
         }
 
-        let summaries = (try? reader.cardSummaries()) ?? []
+        let cardCount = (try? reader.cardCount()) ?? 0
         let title = (try? reader.title()) ?? item.displayName
 
-        return WatchCollectionInfo(id: item.displayName, title: title, cardCount: summaries.count)
+        return WatchCollectionInfo(id: item.displayName, title: title, cardCount: cardCount)
     }
 }

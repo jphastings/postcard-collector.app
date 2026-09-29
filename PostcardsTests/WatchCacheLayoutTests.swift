@@ -15,6 +15,11 @@ final class WatchCacheLayoutTests: XCTestCase {
         XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/manifest.json"))
     }
 
+    func testDetailsURLIsInsideTheCollectionDirectory() {
+        let url = WatchCacheLayout.detailsURL(id: "Trip to Kyoto", in: supportDirectory)
+        XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/details.json"))
+    }
+
     func testCardsDirectoryIsInsideTheCollectionDirectory() {
         let url = WatchCacheLayout.cardsDirectory(id: "Trip to Kyoto", in: supportDirectory)
         XCTAssertEqual(url, supportDirectory.appendingPathComponent("Collections/Trip to Kyoto/cards", isDirectory: true))
