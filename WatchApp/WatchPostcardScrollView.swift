@@ -2,7 +2,9 @@ import SwiftUI
 
 /// The watch's "one view" for an open collection: every card, one to a screen, snapping
 /// vertically as you scroll — the Digital Crown drives this natively, since a Crown turn is
-/// just another vertical scroll input to a paging `ScrollView`.
+/// just another vertical scroll input to a paging `ScrollView`. Swiping up or down pages too,
+/// but through each card's own drag gesture (see `WatchCardView`), which keeps the scroll
+/// view's touch scrolling from starting: the card asks, and this moves `scrolledCardID`.
 ///
 /// Progressive streaming means the manifest (every card's slot) typically lands well before
 /// every card's faces do, so this view renders a slot per `WatchCardMeta` the moment
@@ -43,6 +45,9 @@ struct WatchPostcardScrollView: View {
     /// (`WatchCardView` reports this back). Disables paging while set, so panning a zoomed
     /// card doesn't also flick the scroll view to the next one.
     @State private var zoomedCardID: String?
+    /// The card the scroll view is showing (by `WatchCardMeta.id`), kept up to date as the
+    /// crown scrolls it, and set to page it when a card is swiped. `nil` until it first moves.
+    @State private var scrolledCardID: String?
     /// Bumped every time a download is (re)requested, so a timeout task from an earlier
     /// attempt (e.g. before a reachability flap) recognises it's stale and no-ops.
     @State private var downloadAttempt = 0
@@ -109,7 +114,12 @@ struct WatchPostcardScrollView: View {
                         collectionID: id,
                         meta: meta,
                         zoomedCardID: $zoomedCardID,
-                        onShowInfo: { infoCard = meta }
+                        onShowInfo: { infoCard = meta },
+                        onPage: { step in
+                            if let target = WatchCardInteraction.pageTarget(from: meta.id, step: step, in: manifest.map(\.id)) {
+                                scrolledCardID = target
+                            }
+                        }
                     )
                     .containerRelativeFrame(.vertical)
                 }
@@ -122,6 +132,7 @@ struct WatchPostcardScrollView: View {
         // peeking the next card, so the current card's slot can use all of it instead.
         .ignoresSafeArea(edges: .bottom)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+        .scrollPosition(id: $scrolledCardID)
         .scrollDisabled(zoomedCardID != nil)
     }
 

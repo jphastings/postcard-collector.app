@@ -715,7 +715,12 @@ final class CreatePostcardModelTests: XCTestCase {
         XCTAssertEqual(model.spotlightSide, fresh.spotlightSide)
         XCTAssertEqual(model.canCreate, fresh.canCreate)
 
-        XCTAssertEqual(try model.metadataJSON(), try fresh.metadataJSON())
+        // Parsed, not as strings: `JSONEncoder` promises no key order, so the same payload can
+        // encode to two differently-ordered strings in one run.
+        XCTAssertEqual(
+            try decodeJSONObject(try model.metadataJSON()) as NSDictionary,
+            try decodeJSONObject(try fresh.metadataJSON()) as NSDictionary
+        )
     }
 
     /// After a reset, re-touching a field must behave exactly like it would on a genuinely

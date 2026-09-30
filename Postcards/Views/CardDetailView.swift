@@ -133,12 +133,18 @@ struct CardDetailView: View {
     // Pinch handles magnification directly; drag only pans once zoomed in. Both run alongside
     // `tapGesture` (below), which drives the flip tap that would otherwise compete with
     // FlippableCardView's own internal tap-to-flip gesture — disabled here via `tapToFlip: false`.
+    //
+    // One continuous scale from the at-rest card (1×) up to `maxZoomScale`: pinching past
+    // either end gives a little (`ZoomGeometry.resistedScale`) rather than stopping dead, and
+    // letting go settles back — to the at-rest card, recentred, from below 1×.
     private var magnifyGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                let newScale = min(max(lastZoomScale * value.magnification, minZoomScale), maxZoomScale)
+                let newScale = ZoomGeometry.resistedScale(
+                    lastZoomScale * value.magnification, within: minZoomScale...maxZoomScale
+                )
                 zoomOffset = ZoomGeometry.offset(
-                    keepingAnchor: value.startLocation,
+                    keepingAnchor: pinchAnchor(value),
                     inContentOfSize: contentSize,
                     previousScale: lastZoomScale,
                     previousOffset: lastZoomOffset,
@@ -146,13 +152,41 @@ struct CardDetailView: View {
                 )
                 zoomScale = newScale
             }
-            .onEnded { _ in
-                lastZoomScale = zoomScale
-                lastZoomOffset = zoomOffset
+            .onEnded { value in
                 if zoomScale <= minZoomScale {
                     resetZoom()
+                } else if zoomScale > maxZoomScale {
+                    let settledOffset = ZoomGeometry.offset(
+                        keepingAnchor: pinchAnchor(value),
+                        inContentOfSize: contentSize,
+                        previousScale: zoomScale,
+                        previousOffset: zoomOffset,
+                        newScale: maxZoomScale
+                    )
+                    withAnimation(.snappy) {
+                        zoomScale = maxZoomScale
+                        zoomOffset = settledOffset
+                    }
+                    lastZoomScale = maxZoomScale
+                    lastZoomOffset = settledOffset
+                } else {
+                    lastZoomScale = zoomScale
+                    lastZoomOffset = zoomOffset
                 }
             }
+    }
+
+    /// The point of the card that was under the fingers when the pinch began — which the pinch
+    /// keeps under them. The gesture reports where that was on screen; the card point there
+    /// depends on how zoomed and panned the card already was (`lastZoomScale`/`lastZoomOffset`,
+    /// which only change once a gesture ends).
+    private func pinchAnchor(_ value: MagnifyGesture.Value) -> CGPoint {
+        ZoomGeometry.contentPoint(
+            atScreenPoint: value.startLocation,
+            inContentOfSize: contentSize,
+            scale: lastZoomScale,
+            offset: lastZoomOffset
+        )
     }
 
     private var panGesture: some Gesture {
@@ -188,7 +222,7 @@ struct CardDetailView: View {
     }
 
     private func resetZoom() {
-        withAnimation(.easeOut(duration: 0.25)) {
+        withAnimation(.snappy) {
             zoomScale = 1
             lastZoomScale = 1
             zoomOffset = .zero
@@ -242,6 +276,17 @@ struct CardDetailView: View {
                 tapToFlip: false,
                 isFlipped: $isFlipped
             )
+            // Drag-out export (see `PostcardFileExport`) lifts the card itself, and only at rest.
+            // Once zoomed, `panGesture`'s click-drag recognizer is live and must win every
+            // pointer-down so panning stays responsive — coexisting with `.draggable`'s own
+            // drag-session recognizer risks exactly the kind of gesture-priority fight this
+            // file's other comments describe fixing elsewhere. So while zoomed the card stops
+            // taking hits (the container's `.contentShape` still takes them, for its gestures)
+            // rather than dropping `.draggable`: removing a modifier changes the view's identity,
+            // and doing that as a pinch crossed 1× rebuilt the container mid-gesture — the
+            // pinch popped, and couldn't zoom back out past 1× without letting go.
+            .draggablePostcard(reference)
+            .allowsHitTesting(zoomScale <= minZoomScale)
             // At-rest (scale 1) inset: whichever of `CardFitGeometry`'s regimes fits the card
             // (and its flipped back) biggest while clearing the toolbar's buttons — see
             // `atRestPadding`. Once zoomed, `.scaleEffect` grows the card past this inset toward
@@ -261,15 +306,6 @@ struct CardDetailView: View {
         .gesture(magnifyGesture)
         .simultaneousGesture(panGesture)
         .simultaneousGesture(tapGesture)
-        // Drag-out export (see `PostcardFileExport`) is only offered at rest. Once zoomed,
-        // `panGesture`'s click-drag recognizer is live and must win every pointer-down so
-        // panning stays responsive — coexisting with `.draggable`'s own drag-session
-        // recognizer risks exactly the kind of gesture-priority fight this file's other
-        // comments describe fixing elsewhere, so it's simplest to not attach it at all rather
-        // than reason about who wins. At rest `panGesture` is already a no-op (see its own
-        // `guard zoomScale > minZoomScale`), so there's nothing for `.draggable` to compete
-        // with there.
-        .draggablePostcard(reference, enabled: zoomScale <= minZoomScale)
         // Zoomed/panned content would otherwise spill past the detail pane's bounds.
         .clipped()
         // Lets zoomed content reach the physical screen edges, under the translucent toolbar

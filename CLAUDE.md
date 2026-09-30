@@ -122,13 +122,22 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - **Attach gestures to an untransformed container.** A drag gesture on a view inside its
   own `.scaleEffect`/`.offset` feeds back into its own coordinate space → violent jitter.
   The detail view's stable-outer-container structure is deliberate.
+- **Never add or remove a modifier on a view with a live gesture** (`if enabled {
+  self.draggable(…) } else { self }`): it changes the view's identity, which cancels the
+  gesture in flight. The detail view's drag-out was toggled as zoom crossed 1×, so every pinch
+  popped there and stalled on the way back down. Keep the modifier and gate it by value
+  (`.allowsHitTesting`).
 - **`@FocusState` dies when structural identity changes.** A pane branch-swapping between
   grid and "no results" (or through a momentary nil-results `ProgressView`) tears down a
   `safeAreaInset`-hosted text field mid-keystroke. Keep the host mounted; layer empty
   states in a ZStack; never let async state pass through nil between keystrokes.
 - Single-tap actions must not wait out double-tap disambiguation windows — a flip that
   waits feels broken. If two tap counts are needed on one surface, accept discrete
-  semantics; on iOS/macOS we removed double-tap zoom instead.
+  semantics; on iOS/macOS we removed double-tap zoom instead, and on the watch a single tap
+  does nothing (the flip is a sideways swipe).
+- On the watch, a `DragGesture` on a card inside the paging `ScrollView` stops its touch
+  scrolling (the crown still scrolls), so `WatchCardView`'s one drag also pages the
+  collection itself: a vertical swipe calls `onPage`, which moves `scrollPosition(id:)`.
 - `ToolbarPlacement.navigationBar` is `@available(macOS, unavailable)` — `.toolbar(.hidden,
   for: .navigationBar)` won't compile on macOS. To strip a pushed destination's inline
   back/title band there, use `.navigationBarBackButtonHidden(true)` + `.toolbar(removing:

@@ -68,6 +68,74 @@ final class ZoomGeometryTests: XCTestCase {
         XCTAssertEqual(backToOriginal.height, 0, accuracy: 0.001)
     }
 
+    // MARK: - contentPoint
+
+    func testContentPointInvertsTheScreenMapping() {
+        let contentSize = CGSize(width: 390, height: 844)
+        let point = CGPoint(x: 70, y: 610)
+        let scale: CGFloat = 2.7
+        let offset = CGSize(width: -35, height: 120)
+        let onScreen = screenPos(of: point, contentSize: contentSize, scale: scale, offset: offset)
+
+        let recovered = ZoomGeometry.contentPoint(atScreenPoint: onScreen, inContentOfSize: contentSize, scale: scale, offset: offset)
+
+        XCTAssertEqual(recovered.x, point.x, accuracy: 0.001)
+        XCTAssertEqual(recovered.y, point.y, accuracy: 0.001)
+    }
+
+    func testAtRestTheScreenAndContentPointsCoincide() {
+        let contentSize = CGSize(width: 390, height: 844)
+        let screenPoint = CGPoint(x: 120, y: 300)
+        XCTAssertEqual(
+            ZoomGeometry.contentPoint(atScreenPoint: screenPoint, inContentOfSize: contentSize, scale: 1, offset: .zero),
+            screenPoint
+        )
+    }
+
+    func testAPinchOnAZoomedCardKeepsWhatsUnderTheFingersThere() {
+        // The pinch reports where the fingers are on screen; the card point there has to come
+        // from the zoom and pan it started from, or a second pinch drifts.
+        let contentSize = CGSize(width: 390, height: 844)
+        let fingers = CGPoint(x: 300, y: 200)
+        let startScale: CGFloat = 2
+        let startOffset = CGSize(width: 60, height: -90)
+
+        let anchor = ZoomGeometry.contentPoint(atScreenPoint: fingers, inContentOfSize: contentSize, scale: startScale, offset: startOffset)
+        let newOffset = ZoomGeometry.offset(
+            keepingAnchor: anchor, inContentOfSize: contentSize,
+            previousScale: startScale, previousOffset: startOffset, newScale: 3.5
+        )
+        let after = screenPos(of: anchor, contentSize: contentSize, scale: 3.5, offset: newOffset)
+
+        XCTAssertEqual(after.x, fingers.x, accuracy: 0.001)
+        XCTAssertEqual(after.y, fingers.y, accuracy: 0.001)
+    }
+
+    // MARK: - resistedScale
+
+    func testAScaleWithinRangeIsShownAsIs() {
+        XCTAssertEqual(ZoomGeometry.resistedScale(2.4, within: 1...5), 2.4)
+        XCTAssertEqual(ZoomGeometry.resistedScale(1, within: 1...5), 1)
+        XCTAssertEqual(ZoomGeometry.resistedScale(5, within: 1...5), 5)
+    }
+
+    func testPinchingPastEitherEndGivesOnlyAFraction() {
+        XCTAssertEqual(ZoomGeometry.resistedScale(0.5, within: 1...5), 0.85, accuracy: 0.0001)
+        XCTAssertEqual(ZoomGeometry.resistedScale(7, within: 1...5), 5.6, accuracy: 0.0001)
+    }
+
+    func testTheResistedScaleKeepsFollowingThePinch() {
+        // Continuous across the ends — no jump as the pinch crosses 1× — and still moving the
+        // same way as the fingers beyond them.
+        XCTAssertEqual(ZoomGeometry.resistedScale(0.9999, within: 1...5), 1, accuracy: 0.001)
+        XCTAssertLessThan(ZoomGeometry.resistedScale(0.6, within: 1...5), ZoomGeometry.resistedScale(0.8, within: 1...5))
+        XCTAssertGreaterThan(ZoomGeometry.resistedScale(6, within: 1...5), ZoomGeometry.resistedScale(5.5, within: 1...5))
+    }
+
+    func testTheResistedScaleNeverGoesNegative() {
+        XCTAssertEqual(ZoomGeometry.resistedScale(-100, within: 1...5), 0)
+    }
+
     // MARK: - clampedOffset (watch double-tap zoom pan)
 
     func testClampedOffsetPassesThroughWithinBounds() {

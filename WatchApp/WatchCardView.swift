@@ -1,19 +1,20 @@
 import CoreGraphics
 import SwiftUI
-import WatchKit
 
 /// One postcard, filling one screen of `WatchPostcardScrollView`'s snap-scroll.
 ///
 /// Its gestures all live on one untransformed container — a drag on a view inside its own
 /// scale or offset feeds back into its own coordinate space and jitters:
-/// - **tap** turns the card a quarter turn toward the wearer's hand, and back again — so a
-///   landscape card can fill the tall screen, read with that hand raised;
 /// - **swipe left or right** flips it over, turning the way it was pushed, about the card's
 ///   own hinge (`FlipGeometry`: a book card turns sideways, a calendar card top over bottom);
+/// - **swipe up or down** moves to the next or previous postcard (`onPage`), as the crown does;
 /// - **double tap** zooms in 2.5×, after which a drag pans (paging is disabled meanwhile);
 /// - **long press** opens the card's info page (`onShowInfo`).
-/// A tap waits out the double-tap window before turning the card — the cost of both living on
-/// one surface; the flip, which feels broken when it waits, is a swipe and never does.
+/// A single tap does nothing, so a double tap never waits one out.
+///
+/// The swipes share one drag gesture, which also stops the scroll view's own touch scrolling
+/// from starting — so a vertical swipe pages by asking the scroll view to move, rather than
+/// being left to it. The crown still scrolls natively.
 ///
 /// The card's own image blobs may not have arrived yet — `meta` (from the collection's
 /// manifest) is enough to lay out an aspect-correct placeholder slot immediately, and this
@@ -37,6 +38,10 @@ struct WatchCardView: View {
     @Binding var zoomedCardID: String?
     /// Called on a long press: the scroll view shows this card's info page.
     let onShowInfo: () -> Void
+    /// Called when a vertical swipe asks to move `step` cards through the collection: `1` for
+    /// the next, `-1` for the previous. Made inside an animation, so the scroll view's move
+    /// animates.
+    let onPage: (_ step: Int) -> Void
 
     private static let zoomScale: CGFloat = 2.5
     /// Keeps the resting card clear of the screen's curved left and right edges.
@@ -57,12 +62,14 @@ struct WatchCardView: View {
     @State private var zoomBack: CGImage?
     /// Half turns of flip, signed by the swipes that made them (see `FlippableCardView`).
     @State private var flipHalfTurns = 0
-    @State private var isQuarterTurned = false
     @State private var isZoomed = false
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
     /// `pan` as it was when the current drag began; `nil` between drags.
     @State private var panAtDragStart: CGSize?
+    /// How far the card is following a vertical swipe in progress (see
+    /// `WatchCardInteraction.pageDragOffset`); 0 otherwise.
+    @State private var pageDrag: CGFloat = 0
 
     private var aspectRatio: CGFloat {
         guard meta.frontPxH > 0 else { return 1 }
@@ -74,11 +81,6 @@ struct WatchCardView: View {
     private var frontPixelSize: CGSize { CGSize(width: meta.frontPxW, height: meta.frontPxH) }
 
     private var isShowingFront: Bool { FlipGeometry.showsFront(atDegrees: Double(flipHalfTurns) * 180) }
-
-    private var rotationDegrees: Double {
-        guard isQuarterTurned else { return 0 }
-        return WatchCardInteraction.quarterTurnDegrees(wornOnRightWrist: WKInterfaceDevice.current().wristLocation == .right)
-    }
 
     private var isLoaded: Bool {
         if case .loaded = loadState { return true }
@@ -123,13 +125,14 @@ struct WatchCardView: View {
     var body: some View {
         GeometryReader { proxy in
             card(in: proxy.size)
+                .offset(y: pageDrag)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .contentShape(Rectangle())
-                .gesture(tapsAndLongPress)
+                .gesture(longPressOrDoubleTap)
                 .simultaneousGesture(swipeOrPan(in: proxy.size))
-                // VoiceOver's own swipes and taps can't reach the gestures above.
+                // VoiceOver's own swipes and taps can't reach the gestures above (it scrolls
+                // the collection itself).
                 .accessibilityAction(named: "Flip") { flip(.right) }
-                .accessibilityAction(named: "Turn") { turn() }
                 .accessibilityAction(named: "Zoom") { toggleZoom() }
                 .accessibilityAction(named: "Info") { onShowInfo() }
         }
@@ -158,8 +161,7 @@ struct WatchCardView: View {
                 flip: meta.flip,
                 frontPixelSize: frontPixelSize,
                 tapToFlip: false,
-                flipHalfTurns: flipHalfTurns,
-                rotationDegrees: rotationDegrees
+                flipHalfTurns: flipHalfTurns
             )
             .frame(width: resting.width * zoom, height: resting.height * zoom)
             .offset(pan)
@@ -175,59 +177,63 @@ struct WatchCardView: View {
 
     // MARK: - Gestures
 
-    /// A long press takes precedence over the taps; of the taps, a double (zoom) over a single
-    /// (turn), which therefore waits for the double's window to pass.
-    private var tapsAndLongPress: some Gesture {
+    /// A long press takes precedence over a double tap. There's no single-tap action.
+    private var longPressOrDoubleTap: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .onEnded { _ in onShowInfo() }
-            .exclusively(before: TapGesture(count: 2)
-                .onEnded { toggleZoom() }
-                .exclusively(before: TapGesture(count: 1)
-                    .onEnded { turn() }
-                )
-            )
+            .exclusively(before: TapGesture(count: 2).onEnded { toggleZoom() })
     }
 
-    /// Pans while zoomed; otherwise a sideways swipe flips the card. Simultaneous with the
-    /// scroll view's own paging, which a sideways swipe doesn't move.
+    /// Pans while zoomed. Otherwise the card follows a vertical drag part way, and once the
+    /// drag ends, a sideways swipe flips the card and a vertical one pages through the
+    /// collection — or, if it was neither, the card settles back.
     private func swipeOrPan(in slot: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
-                guard isZoomed else { return }
-                let start = panAtDragStart ?? pan
-                panAtDragStart = start
-                pan = clampedPan(
-                    CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height),
-                    in: slot
-                )
+                if isZoomed {
+                    let start = panAtDragStart ?? pan
+                    panAtDragStart = start
+                    pan = clampedPan(
+                        CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height),
+                        in: slot
+                    )
+                } else if abs(value.translation.height) > abs(value.translation.width) {
+                    pageDrag = WatchCardInteraction.pageDragOffset(
+                        forVerticalTranslation: value.translation.height,
+                        cardHeight: slot.height
+                    )
+                } else if pageDrag != 0 {
+                    withAnimation(.snappy) { pageDrag = 0 }
+                }
             }
             .onEnded { value in
                 guard !isZoomed else {
                     panAtDragStart = nil
                     return
                 }
-                if let direction = WatchCardInteraction.swipeDirection(
+                let direction = WatchCardInteraction.swipeDirection(
                     translation: value.translation,
                     predictedEndTranslation: value.predictedEndTranslation
-                ) {
+                )
+                // One animation for both: the card slides back into its slot as the scroll
+                // view moves on, so the page carries on from where the finger left it.
+                withAnimation(.snappy) {
+                    pageDrag = 0
+                    if let direction, let step = WatchCardInteraction.pageStep(for: direction) {
+                        onPage(step)
+                    }
+                }
+                if let direction {
                     flip(direction)
                 }
             }
     }
 
-    private func turn() {
-        guard isLoaded else { return }
-        withAnimation(.easeInOut(duration: 0.35)) {
-            isQuarterTurned.toggle()
-            pan = .zero
-        }
-        panAtDragStart = nil
-    }
-
+    /// Flips the card the way a sideways swipe went; a vertical one does nothing here.
     private func flip(_ direction: WatchCardInteraction.SwipeDirection) {
-        guard isLoaded, hasBack else { return }
+        guard isLoaded, hasBack, let halfTurns = WatchCardInteraction.flipHalfTurns(for: direction) else { return }
         // FlippableCardView animates its own angle to follow.
-        flipHalfTurns += WatchCardInteraction.flipHalfTurns(for: direction)
+        flipHalfTurns += halfTurns
     }
 
     private func toggleZoom() {
@@ -255,7 +261,6 @@ struct WatchCardView: View {
             frontPixelSize: frontPixelSize,
             flip: meta.flip,
             showingFront: isShowingFront,
-            quarterTurned: isQuarterTurned,
             fittedIn: restingSize(in: slot)
         )
         let zoomedFace = CGSize(width: face.width * zoom, height: face.height * zoom)

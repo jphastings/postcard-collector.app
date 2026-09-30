@@ -42,15 +42,11 @@ struct PostcardFileExport: Transferable {
 }
 
 extension View {
-    /// Attaches `.draggable(...)` for a card's drag-out export (see `PostcardFileExport`),
-    /// conditionally on `enabled`. `CardDetailView` passes `false` while the card is zoomed —
-    /// see its call site for why — grid cells always pass the default `true`.
-    @ViewBuilder
-    func draggablePostcard(_ reference: CardReference, enabled: Bool = true) -> some View {
-        if enabled {
-            self.draggable(PostcardFileExport(reference: reference))
-        } else {
-            self
-        }
+    /// Attaches `.draggable(...)` for a card's drag-out export (see `PostcardFileExport`).
+    /// To offer it only some of the time, stop the view taking hits instead (as
+    /// `CardDetailView` does while zoomed): adding and removing the modifier changes the
+    /// view's identity, which cancels whatever gesture is in flight on it.
+    func draggablePostcard(_ reference: CardReference) -> some View {
+        draggable(PostcardFileExport(reference: reference))
     }
 }
