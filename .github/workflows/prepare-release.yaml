@@ -7,6 +7,12 @@ name: Prepare release
 on:
   push:
     branches: [main]
+  # A release is only tagged once release.yaml has built it, minutes after its pull request
+  # merges, and this waits for that tag (see "Check for a release being cut"). Looking again
+  # when a release finishes picks up anything merged to main in the meantime.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
 
 permissions:
   contents: write
@@ -19,8 +25,8 @@ concurrency:
 jobs:
   prepare-release:
     name: Open or update the release pull request
-    # Merging the release pull request pushes to main too; there's nothing new to prepare then.
-    if: "!contains(github.event.head_commit.message, 'chore: prepare release')"
+    # Release runs for every merged pull request, and skips all but the release one's.
+    if: github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,24 +36,52 @@ jobs:
           fetch-depth: 0
           # Also pushes the `release` branch. With the RELEASE_TOKEN secret set (see
           # docs/RELEASING.md), the pull request it opens runs CI like any other — one opened
-          # with the default token doesn't.
+          # with the default token waits for you to approve its CI.
           token: ${{ secrets.RELEASE_TOKEN || github.token }}
 
+      # Merging the release pull request bumps MARKETING_VERSION on main, but its tag only
+      # appears once release.yaml has built it. Until then Knope would count every commit since
+      # the previous tag again, and propose the next version with the same notes — so there's
+      # nothing to prepare while the version on main is untagged. (The workflow_run trigger
+      # looks again once the release is done.)
+      - name: Check for a release being cut
+        id: pending
+        run: |
+          VERSION=$(sed -n 's/^ *MARKETING_VERSION: "\([0-9.]*\)"$/\1/p' project.yml)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Couldn't read MARKETING_VERSION from project.yml."
+            exit 1
+          fi
+          if ! git rev-parse --quiet --verify "refs/tags/v$VERSION" > /dev/null; then
+            echo "v$VERSION isn't tagged yet, so its release is still being cut. Nothing to prepare until it is."
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure Git
+        if: steps.pending.outputs.pending != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Install Knope
+        if: steps.pending.outputs.pending != 'true'
         uses: knope-dev/action@19617851f9f13ab2f27a05989c55efb18aca3675 # v2.1.2
         with:
           version: 0.23.0
 
+      # Knope stops with `releases::no_release` when nothing since the last release warrants one
+      # (only ci:, docs:, test: commits, say). That's no reason to fail the push; any other error
+      # is.
       - name: Prepare release
-        run: knope prepare-release --verbose
+        if: steps.pending.outputs.pending != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-        # Knope stops with an error when nothing since the last release warrants one (only
-        # docs:, ci:, refactor: commits, say) — no reason to fail the push. Check this step's
-        # log if a release pull request you expected doesn't appear.
-        continue-on-error: true
+        run: |
+          set +e
+          knope prepare-release --verbose 2>&1 | tee "$RUNNER_TEMP/knope.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ] && grep -q 'releases::no_release' "$RUNNER_TEMP/knope.log"; then
+            echo "Nothing to release yet."
+            exit 0
+          fi
+          exit "$status"
