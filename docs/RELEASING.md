@@ -186,7 +186,9 @@ Releases come from [Knope](https://knope.tech) (configured in `knope.toml`), dri
 1. Every push to `main` runs `prepare-release.yaml`, which keeps a **"chore: prepare release
    x.y.z"** pull request open from the `release` branch while there's anything to release. It
    bumps `MARKETING_VERSION` in `project.yml` and adds the release's notes to `CHANGELOG.md`, and
-   it's refreshed as more lands on `main`, so it always previews the next release.
+   it's refreshed as more lands on `main`, so it always previews the next release. It waits
+   while a release is being cut — from merging its pull request until `release.yaml` has tagged
+   it — and looks again once that release finishes.
 2. **Merging it releases that version.** `release.yaml` builds the merge commit, then Knope tags
    it `vx.y.z` and publishes the GitHub Release — `CHANGELOG.md`'s section as the notes, the
    builds attached before it's published, so the latest release always carries the
@@ -204,8 +206,8 @@ either turn on **Settings → Actions → General → Workflow permissions → "
 create and approve pull requests"**, or add a `RELEASE_TOKEN` secret: a
 [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
 for this repository with **Contents** and **Pull requests** read & write. With the token, the
-release pull request also runs CI like any other (GitHub doesn't run workflows on pull requests
-opened with the default token).
+release pull request also runs CI like any other; opened with the default token, its CI waits
+for you to approve it on the pull request.
 
 Each release gets whatever artifacts the available secrets allow:
 
