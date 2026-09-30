@@ -10,8 +10,40 @@ import CoreGraphics
 /// `anchor` and `contentSize` must both be in the SAME unscaled, unpanned coordinate space
 /// (e.g. captured before `.scaleEffect`/`.offset` are applied) — mixing a post-transform
 /// gesture location with a pre-transform size is what makes the anchor drift instead of
-/// holding still.
+/// holding still. A gesture's own location is on screen, so turn it into that space with
+/// `contentPoint(atScreenPoint:…)` first: the two only coincide at rest (scale 1, no pan).
 enum ZoomGeometry {
+    /// The content point (in the unscaled, unpanned space `offset(keepingAnchor:…)` takes)
+    /// currently shown at `screenPoint`, for content scaled by `scale` about its centre and
+    /// then panned by `offset` — the inverse of `center + offset + scale * (P - center)`.
+    static func contentPoint(
+        atScreenPoint screenPoint: CGPoint,
+        inContentOfSize contentSize: CGSize,
+        scale: CGFloat,
+        offset: CGSize
+    ) -> CGPoint {
+        let center = CGPoint(x: contentSize.width / 2, y: contentSize.height / 2)
+        let scale = max(scale, .ulpOfOne)
+        return CGPoint(
+            x: center.x + (screenPoint.x - center.x - offset.width) / scale,
+            y: center.y + (screenPoint.y - center.y - offset.height) / scale
+        )
+    }
+
+    /// The scale to show for a pinch that's asking for `proposed`: `proposed` itself within
+    /// `range`, and beyond it only `resistance` of the overshoot — the give that says you've
+    /// reached the end, rather than a hard stop, which the pinch's end then settles back into
+    /// `range`. Never below 0.
+    static func resistedScale(_ proposed: CGFloat, within range: ClosedRange<CGFloat>, resistance: CGFloat = 0.3) -> CGFloat {
+        if proposed < range.lowerBound {
+            return max(range.lowerBound - (range.lowerBound - proposed) * resistance, 0)
+        }
+        if proposed > range.upperBound {
+            return range.upperBound + (proposed - range.upperBound) * resistance
+        }
+        return proposed
+    }
+
     static func offset(
         keepingAnchor anchor: CGPoint,
         inContentOfSize contentSize: CGSize,

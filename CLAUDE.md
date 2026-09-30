@@ -122,6 +122,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - **Attach gestures to an untransformed container.** A drag gesture on a view inside its
   own `.scaleEffect`/`.offset` feeds back into its own coordinate space → violent jitter.
   The detail view's stable-outer-container structure is deliberate.
+- **Never add or remove a modifier on a view with a live gesture** (`if enabled {
+  self.draggable(…) } else { self }`): it changes the view's identity, which cancels the
+  gesture in flight. The detail view's drag-out was toggled as zoom crossed 1×, so every pinch
+  popped there and stalled on the way back down. Keep the modifier and gate it by value
+  (`.allowsHitTesting`).
 - **`@FocusState` dies when structural identity changes.** A pane branch-swapping between
   grid and "no results" (or through a momentary nil-results `ProgressView`) tears down a
   `safeAreaInset`-hosted text field mid-keystroke. Keep the host mounted; layer empty
