@@ -65,11 +65,6 @@ struct FlippableCardView: View {
     /// or takes away one per swipe), which `isFlipped`'s front/back toggle can't express.
     /// Positive turns send the card's right edge away (`ParallaxGeometry`'s sign convention).
     var flipHalfTurns: Int? = nil
-    /// Turns the whole card in the plane of the screen, in multiples of 90°. The card fits its
-    /// turned bounding box into the space it's given — so a landscape card turned a quarter
-    /// fills a tall frame — and turns beneath the parallax lean and shadow, which stay
-    /// screen-relative. Defaults to 0.
-    var rotationDegrees: Double = 0
 
     @State private var angleDegrees: Double
     @State private var parallax = ParallaxModel()
@@ -83,8 +78,7 @@ struct FlippableCardView: View {
         initialAngleDegrees: Double = 0,
         tapToFlip: Bool = true,
         isFlipped: Binding<Bool>? = nil,
-        flipHalfTurns: Int? = nil,
-        rotationDegrees: Double = 0
+        flipHalfTurns: Int? = nil
     ) {
         self.front = front
         self.back = back
@@ -96,7 +90,6 @@ struct FlippableCardView: View {
         self.tapToFlip = tapToFlip
         self.isFlipped = isFlipped
         self.flipHalfTurns = flipHalfTurns
-        self.rotationDegrees = rotationDegrees
         let initialAngle: Double
         if let flipHalfTurns {
             initialAngle = Double(flipHalfTurns) * 180
@@ -112,13 +105,6 @@ struct FlippableCardView: View {
 
     private var boundingSize: CGSize {
         FlipGeometry.boundingSize(forFrontSize: frontPixelSize, flip: flip)
-    }
-
-    /// `boundingSize` as laid out on screen: turned with the card when `rotationDegrees` is an
-    /// odd number of quarter turns.
-    private var layoutBoundingSize: CGSize {
-        let size = boundingSize
-        return Int((rotationDegrees / 90).rounded()) % 2 != 0 ? CGSize(width: size.height, height: size.width) : size
     }
 
     var body: some View {
@@ -138,7 +124,7 @@ struct FlippableCardView: View {
                 }
                 #endif
         }
-        .aspectRatio(layoutBoundingSize.width / layoutBoundingSize.height, contentMode: .fit)
+        .aspectRatio(boundingSize.width / boundingSize.height, contentMode: .fit)
         .accessibilityAddTraits(axis == nil ? [] : .isButton)
         .accessibilityLabel(
             FlipGeometry.showsFront(atDegrees: angleDegrees) ? "Front of postcard" : "Back of postcard"
@@ -171,7 +157,7 @@ struct FlippableCardView: View {
         // ONE scale, from fitting the bounding box (not each side independently): both
         // sides display at this same scale, so a hand flip's portrait back has exactly
         // the landscape front's area with the dimensions swapped.
-        let scale = min(available.width / layoutBoundingSize.width, available.height / layoutBoundingSize.height)
+        let scale = min(available.width / boundingSize.width, available.height / boundingSize.height)
         let frontSize = CGSize(width: frontPixelSize.width * scale, height: frontPixelSize.height * scale)
         let backSize = FlipGeometry.backSize(forFrontSize: frontSize, flip: flip)
         let axis = axis ?? FlipAxis(x: 0, y: 1, z: 0)
@@ -182,9 +168,6 @@ struct FlippableCardView: View {
                 face(back, size: backSize, angleDegrees: angleDegrees + 180, axis: axis)
             }
         }
-        // Turning the card turns its hinge with it: the flip above happens in the card's own
-        // frame, so a turned book card still opens along its own spine.
-        .rotationEffect(.degrees(rotationDegrees))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Parallax tilts both faces together as one rigid object, as an extra rotation on
         // top of the flip rather than folded into `angleDegrees` — it never touches the

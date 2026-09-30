@@ -133,7 +133,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   states in a ZStack; never let async state pass through nil between keystrokes.
 - Single-tap actions must not wait out double-tap disambiguation windows — a flip that
   waits feels broken. If two tap counts are needed on one surface, accept discrete
-  semantics; on iOS/macOS we removed double-tap zoom instead.
+  semantics; on iOS/macOS we removed double-tap zoom instead, and on the watch a single tap
+  does nothing (the flip is a sideways swipe).
+- On the watch, a `DragGesture` on a card inside the paging `ScrollView` stops its touch
+  scrolling (the crown still scrolls), so `WatchCardView`'s one drag also pages the
+  collection itself: a vertical swipe calls `onPage`, which moves `scrollPosition(id:)`.
 - `ToolbarPlacement.navigationBar` is `@available(macOS, unavailable)` — `.toolbar(.hidden,
   for: .navigationBar)` won't compile on macOS. To strip a pushed destination's inline
   back/title band there, use `.navigationBarBackButtonHidden(true)` + `.toolbar(removing:
