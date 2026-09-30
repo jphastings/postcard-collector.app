@@ -19,10 +19,39 @@ enum WatchCardImage {
     /// fails.
     static func encodedFace(_ image: CGImage, maxPixelSize: Int, quality: CGFloat) -> Data? {
         guard maxPixelSize > 0, let resized = resized(image, maxPixelSize: maxPixelSize) else { return nil }
-        if let heic = encode(resized, as: .heic, quality: quality), preservesAlpha(heic) {
+        if let heic = encode(resized, as: .heic, quality: quality),
+           heicAlpha.isConfirmed || heicAlpha.confirm(preservesAlpha(heic)) {
             return heic
         }
         return encode(resized, as: .png, quality: quality)
+    }
+
+    /// Whether this device's HEIC encoder has been seen to keep an alpha channel. Once it has,
+    /// later faces skip the check — a full decode of every face — since keeping alpha is a
+    /// property of the encoder, and every face is drawn into the same premultiplied-RGBA
+    /// context before encoding. Only a success is remembered: an encoder that drops alpha
+    /// might do so only for some images (fully opaque ones, say), so a failure is re-checked
+    /// face by face, each falling back to PNG as before.
+    private static let heicAlpha = HEICAlphaConfirmation()
+
+    private final class HEICAlphaConfirmation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var confirmed = false
+
+        var isConfirmed: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return confirmed
+        }
+
+        /// Records a check that succeeded; returns the check's result either way.
+        func confirm(_ keepsAlpha: Bool) -> Bool {
+            guard keepsAlpha else { return false }
+            lock.lock()
+            defer { lock.unlock() }
+            confirmed = true
+            return true
+        }
     }
 
     /// Draws `image` into a fresh premultiplied-alpha RGBA8 context scaled so its longest side

@@ -99,6 +99,9 @@ final class CloudLibrary {
 
     private(set) var containerState: ContainerState = .resolving
     private(set) var items: [CloudItem] = []
+    /// Whether the iCloud query has finished its initial gather and `items` reflects it —
+    /// until then, an empty `items` means "not looked yet" rather than "nothing there".
+    private(set) var hasGatheredItems = false
     /// The container's Documents folder (the visible "Postcards" folder in iCloud Drive),
     /// once resolved — where the "New collection…" flow creates files when iCloud is
     /// available, so they sync like any other dropped-in collection.
@@ -123,9 +126,8 @@ final class CloudLibrary {
     var invalidateSource: @Sendable (String) async -> Void = { _ in }
 
     /// Whether a not-yet-current item should be downloaded automatically as soon as it's
-    /// seen. Defaults to true (today's iOS/macOS behavior: download everything). The watch
-    /// app overrides this to only auto-download pinned collections, since it can't assume
-    /// the same storage/bandwidth budget as a phone or Mac.
+    /// seen. Defaults to true (download everything); `PostcardsApp` turns it off for the
+    /// click/tap-to-download sidebar. Set it before `start()`: the first gather applies it.
     var shouldAutoDownload: (CloudItem) -> Bool = { _ in true }
 
     init(containerIdentifier: String = "iCloud.org.dotpostcard.collector") {
@@ -208,6 +210,7 @@ final class CloudLibrary {
         // Skip the reassignment (and its @Observable invalidation) when nothing actually
         // changed — e.g. a query update that only touched an item we don't surface.
         if sorted != items { items = sorted }
+        if !hasGatheredItems, !query.isGathering { hasGatheredItems = true }
     }
 
     private static func makeCloudItem(from item: NSMetadataItem) -> CloudItem? {

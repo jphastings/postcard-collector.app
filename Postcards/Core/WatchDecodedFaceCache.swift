@@ -60,14 +60,21 @@ actor WatchDecodedFaceCache {
     /// resizes/crops/rotates: every face the phone sends is already ready to display.
     func decodedFace(_ key: WatchFaceKey, at url: URL) -> CGImage? {
         if let cached = cache.value(for: key) { return cached }
-        guard
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(
-                source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
-            )
-        else { return nil }
+        guard let image = Self.decode(at: url) else { return nil }
         cache.setValue(image, for: key)
         return image
+    }
+
+    /// Decodes without caching — for zoom-tier faces, which run to several megabytes decoded
+    /// and are only needed while their card stays zoomed: cached, a few of them would push
+    /// out the screen-tier faces this cache exists to keep.
+    func decodedFaceUncached(at url: URL) -> CGImage? {
+        Self.decode(at: url)
+    }
+
+    private static func decode(at url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
     }
 
     /// Drops every decoded face belonging to `collectionID` — called when its download is
