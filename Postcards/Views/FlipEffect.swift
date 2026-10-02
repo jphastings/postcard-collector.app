@@ -43,7 +43,8 @@ struct FlipFace: ViewModifier, Animatable {
 /// single display scale derived from the front: a hand flip's back renders at exactly the
 /// front's dimensions swapped — same area, same physical card — centred on the same point
 /// so the diagonal turn carries one rectangle onto the other. The view reserves the
-/// bounding box of both orientations (a square, for hand flips) so neither overflows.
+/// bounding box of both orientations (a square, for hand flips) so neither overflows —
+/// unless it's fitting the front alone (`fitsFrontOnly`), until the card first flips.
 struct FlippableCardView: View {
     let front: CGImage
     let back: CGImage?
@@ -65,6 +66,19 @@ struct FlippableCardView: View {
     /// or takes away one per swipe), which `isFlipped`'s front/back toggle can't express.
     /// Positive turns send the card's right edge away (`ParallaxGeometry`'s sign convention).
     var flipHalfTurns: Int? = nil
+    /// Fits the card by its front alone, as if its back were the same shape, instead of by the
+    /// bounding box of both sides: a portrait front on a hand flip then shows as big as a plain
+    /// portrait card's. Its owner clears this as the card first flips, with `frontFitRelease`
+    /// (see `FlipGeometry.startsFittedToFront`). Defaults to `false`.
+    var fitsFrontOnly: Bool = false
+
+    /// How long a flip takes.
+    private static let flipDuration: TimeInterval = 1
+
+    /// How an owner clears `fitsFrontOnly` as it flips the card: over the flip's first half, so
+    /// the card has zoomed out by the time it turns edge-on, and the back arrives already
+    /// fitted rather than overflowing.
+    static let frontFitRelease: Animation = .easeInOut(duration: flipDuration / 2)
 
     @State private var angleDegrees: Double
     @State private var parallax = ParallaxModel()
@@ -78,7 +92,8 @@ struct FlippableCardView: View {
         initialAngleDegrees: Double = 0,
         tapToFlip: Bool = true,
         isFlipped: Binding<Bool>? = nil,
-        flipHalfTurns: Int? = nil
+        flipHalfTurns: Int? = nil,
+        fitsFrontOnly: Bool = false
     ) {
         self.front = front
         self.back = back
@@ -90,6 +105,7 @@ struct FlippableCardView: View {
         self.tapToFlip = tapToFlip
         self.isFlipped = isFlipped
         self.flipHalfTurns = flipHalfTurns
+        self.fitsFrontOnly = fitsFrontOnly
         let initialAngle: Double
         if let flipHalfTurns {
             initialAngle = Double(flipHalfTurns) * 180
@@ -103,8 +119,10 @@ struct FlippableCardView: View {
 
     private var axis: FlipAxis? { back != nil ? FlipGeometry.axis(for: flip) : nil }
 
-    private var boundingSize: CGSize {
-        FlipGeometry.boundingSize(forFrontSize: frontPixelSize, flip: flip)
+    /// The box the card fits itself to: both sides' bounding box, or just the front while
+    /// `fitsFrontOnly`.
+    private var fitSize: CGSize {
+        FlipGeometry.fitSize(forFrontSize: frontPixelSize, flip: flip, fitsFrontOnly: fitsFrontOnly)
     }
 
     var body: some View {
@@ -124,7 +142,7 @@ struct FlippableCardView: View {
                 }
                 #endif
         }
-        .aspectRatio(boundingSize.width / boundingSize.height, contentMode: .fit)
+        .aspectRatio(fitSize.width / fitSize.height, contentMode: .fit)
         .accessibilityAddTraits(axis == nil ? [] : .isButton)
         .accessibilityLabel(
             FlipGeometry.showsFront(atDegrees: angleDegrees) ? "Front of postcard" : "Back of postcard"
@@ -140,13 +158,13 @@ struct FlippableCardView: View {
         }
         .onChange(of: isFlipped?.wrappedValue) { _, newValue in
             guard let newValue else { return }
-            withAnimation(.easeInOut(duration: 1)) {
+            withAnimation(.easeInOut(duration: Self.flipDuration)) {
                 angleDegrees = newValue ? 180 : 0
             }
         }
         .onChange(of: flipHalfTurns) { _, newValue in
             guard let newValue else { return }
-            withAnimation(.easeInOut(duration: 1)) {
+            withAnimation(.easeInOut(duration: Self.flipDuration)) {
                 angleDegrees = Double(newValue) * 180
             }
         }
@@ -156,8 +174,9 @@ struct FlippableCardView: View {
     private func faces(fittedIn available: CGSize) -> some View {
         // ONE scale, from fitting the bounding box (not each side independently): both
         // sides display at this same scale, so a hand flip's portrait back has exactly
-        // the landscape front's area with the dimensions swapped.
-        let scale = min(available.width / boundingSize.width, available.height / boundingSize.height)
+        // the landscape front's area with the dimensions swapped. While `fitsFrontOnly`, the
+        // box is the front alone, and the back would overflow it.
+        let scale = min(available.width / fitSize.width, available.height / fitSize.height)
         let frontSize = CGSize(width: frontPixelSize.width * scale, height: frontPixelSize.height * scale)
         let backSize = FlipGeometry.backSize(forFrontSize: frontSize, flip: flip)
         let axis = axis ?? FlipAxis(x: 0, y: 1, z: 0)
@@ -190,7 +209,7 @@ struct FlippableCardView: View {
         if tapToFlip {
             stack.onTapGesture {
                 guard self.axis != nil else { return }
-                withAnimation(.easeInOut(duration: 1)) {
+                withAnimation(.easeInOut(duration: Self.flipDuration)) {
                     angleDegrees += 180
                 }
             }

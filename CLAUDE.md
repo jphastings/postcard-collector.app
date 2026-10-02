@@ -199,6 +199,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - The at-rest postcard sizing is a fit-regime model (`CardFitGeometry`): centred, always
   a margin on all four sides, between-the-toolbar-buttons for tall cards vs below-the-band
   for wide ones, inset-aware (the macOS inspector arrives as a trailing safe-area inset).
+  It fits both sides' bounding box, except that a portrait front on a hand flip starts fitted
+  by itself each time it's opened or scrolled to, until it's flipped
+  (`FlipGeometry.startsFittedToFront`, `fitsFrontOnly`). Anything new that flips a card must
+  release that with `FlippableCardView.frontFitRelease`, half the flip's length, so the
+  landscape back never shows overflowing.
 - Exports must be byte-faithful: dragging a card out writes the Go core's raw stored
   bytes (image + embedded XMP), never a re-encode.
 - Country codes are ISO 3166-1 alpha-3 (Spain = ESP); `CountryFlags` holds the only

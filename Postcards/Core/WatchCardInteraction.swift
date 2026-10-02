@@ -83,18 +83,20 @@ enum WatchCardInteraction {
     }
 
     /// The on-screen size of whichever face is showing, fitted into `available` the way
-    /// `FlippableCardView` fits it: one scale for both faces, from their shared bounding box.
-    /// For clamping a zoomed card's pan to the card itself rather than to the screen.
+    /// `FlippableCardView` fits it: one scale for both faces, from their shared bounding box —
+    /// or from the front alone, while `fitsFrontOnly`. For clamping a zoomed card's pan to the
+    /// card itself rather than to the screen.
     static func visibleFaceSize(
         frontPixelSize: CGSize,
         flip: Flip,
+        fitsFrontOnly: Bool = false,
         showingFront: Bool,
         fittedIn available: CGSize
     ) -> CGSize {
         guard frontPixelSize.width > 0, frontPixelSize.height > 0, available.width > 0, available.height > 0 else {
             return .zero
         }
-        let bounding = FlipGeometry.boundingSize(forFrontSize: frontPixelSize, flip: flip)
+        let bounding = FlipGeometry.fitSize(forFrontSize: frontPixelSize, flip: flip, fitsFrontOnly: fitsFrontOnly)
         let scale = min(available.width / bounding.width, available.height / bounding.height)
         let front = CGSize(width: frontPixelSize.width * scale, height: frontPixelSize.height * scale)
         return showingFront ? front : FlipGeometry.backSize(forFrontSize: front, flip: flip)

@@ -16,6 +16,10 @@ import SwiftUI
 /// from starting — so a vertical swipe pages by asking the scroll view to move, rather than
 /// being left to it. The crown still scrolls natively.
 ///
+/// A portrait front on a hand flip starts fitted by itself, as big as a plain portrait card's,
+/// each time it's scrolled to, and zooms out to fit its landscape back with the first flip
+/// (`fitsFrontOnly`).
+///
 /// The card's own image blobs may not have arrived yet — `meta` (from the collection's
 /// manifest) is enough to lay out an aspect-correct placeholder slot immediately, and this
 /// view reacts the moment `library.hasScreenFaces(...)` goes true; if a card sits on screen
@@ -62,6 +66,8 @@ struct WatchCardView: View {
     @State private var zoomBack: CGImage?
     /// Half turns of flip, signed by the swipes that made them (see `FlippableCardView`).
     @State private var flipHalfTurns = 0
+    /// Whether the card has been flipped since it was scrolled to (see `fitsFrontOnly`).
+    @State private var hasFlipped = false
     @State private var isZoomed = false
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -81,6 +87,13 @@ struct WatchCardView: View {
     private var frontPixelSize: CGSize { CGSize(width: meta.frontPxW, height: meta.frontPxH) }
 
     private var isShowingFront: Bool { FlipGeometry.showsFront(atDegrees: Double(flipHalfTurns) * 180) }
+
+    /// A portrait front on a hand flip is fitted by itself, rather than with its landscape
+    /// back, each time the card is scrolled to, until it's flipped (see
+    /// `FlipGeometry.startsFittedToFront`).
+    private var fitsFrontOnly: Bool {
+        !hasFlipped && FlipGeometry.startsFittedToFront(frontSize: frontPixelSize, flip: meta.flip)
+    }
 
     private var isLoaded: Bool {
         if case .loaded = loadState { return true }
@@ -139,6 +152,12 @@ struct WatchCardView: View {
         .zIndex(isZoomed ? 1 : 0)
         .task(id: isReceived) { await loadScreenFaces() }
         .task(id: zoomLoadTrigger) { await loadZoomFacesIfNeeded() }
+        // Scrolled away: the next time it's scrolled to, a card fitted by its front alone
+        // starts that way again — unless it was left showing its back, which it comes back to
+        // as it was.
+        .onDisappear {
+            if isShowingFront { hasFlipped = false }
+        }
     }
 
     @ViewBuilder
@@ -161,7 +180,8 @@ struct WatchCardView: View {
                 flip: meta.flip,
                 frontPixelSize: frontPixelSize,
                 tapToFlip: false,
-                flipHalfTurns: flipHalfTurns
+                flipHalfTurns: flipHalfTurns,
+                fitsFrontOnly: fitsFrontOnly
             )
             .frame(width: resting.width * zoom, height: resting.height * zoom)
             .offset(pan)
@@ -229,11 +249,15 @@ struct WatchCardView: View {
             }
     }
 
-    /// Flips the card the way a sideways swipe went; a vertical one does nothing here.
+    /// Flips the card the way a sideways swipe went; a vertical one does nothing here. The
+    /// first flip also zooms a card fitted by its front alone out to fit both sides, for good.
     private func flip(_ direction: WatchCardInteraction.SwipeDirection) {
         guard isLoaded, hasBack, let halfTurns = WatchCardInteraction.flipHalfTurns(for: direction) else { return }
         // FlippableCardView animates its own angle to follow.
         flipHalfTurns += halfTurns
+        if !hasFlipped {
+            withAnimation(FlippableCardView.frontFitRelease) { hasFlipped = true }
+        }
     }
 
     private func toggleZoom() {
@@ -260,6 +284,7 @@ struct WatchCardView: View {
         let face = WatchCardInteraction.visibleFaceSize(
             frontPixelSize: frontPixelSize,
             flip: meta.flip,
+            fitsFrontOnly: fitsFrontOnly,
             showingFront: isShowingFront,
             fittedIn: restingSize(in: slot)
         )

@@ -137,6 +137,22 @@ final class WatchCardInteractionTests: XCTestCase {
         XCTAssertEqual(back.height, front.width, accuracy: 0.001)
     }
 
+    func testAPortraitHandFlipFittedToItsFrontUsesTheSpacesHeight() {
+        let alone = WatchCardInteraction.visibleFaceSize(
+            frontPixelSize: CGSize(width: 200, height: 300), flip: .rightHand, fitsFrontOnly: true,
+            showingFront: true, fittedIn: CGSize(width: 180, height: 240)
+        )
+        let bounded = WatchCardInteraction.visibleFaceSize(
+            frontPixelSize: CGSize(width: 200, height: 300), flip: .rightHand,
+            showingFront: true, fittedIn: CGSize(width: 180, height: 240)
+        )
+        XCTAssertEqual(alone.width, 160, accuracy: 0.001)
+        XCTAssertEqual(alone.height, 240, accuracy: 0.001)
+        // Held to the space's width by the 300-point square its landscape back needs.
+        XCTAssertEqual(bounded.width, 120, accuracy: 0.001)
+        XCTAssertEqual(bounded.height, 180, accuracy: 0.001)
+    }
+
     func testDegenerateSizesGiveZero() {
         XCTAssertEqual(
             WatchCardInteraction.visibleFaceSize(

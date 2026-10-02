@@ -35,6 +35,10 @@ struct CardDetailView: View {
     // so this view's `tapGesture` — attached to the outer, untransformed container alongside
     // the pan/magnify gestures — owns the tap instead.
     @State private var isFlipped = false
+    /// Whether this card has been flipped since it was shown — until it has, a portrait front
+    /// on a hand flip is fitted by itself rather than with its landscape back (see
+    /// `fitsFrontOnly`).
+    @State private var hasFlipped = false
 
     private let minZoomScale: CGFloat = 1
     private let maxZoomScale: CGFloat = 5
@@ -214,11 +218,29 @@ struct CardDetailView: View {
     // so the flip isn't held up waiting out a double-tap window.
     private var tapGesture: some Gesture {
         TapGesture()
-            .onEnded { if canFlip { isFlipped.toggle() } }
+            .onEnded {
+                guard canFlip else { return }
+                isFlipped.toggle()
+                if !hasFlipped {
+                    withAnimation(FlippableCardView.frontFitRelease) { hasFlipped = true }
+                }
+            }
     }
 
     private var canFlip: Bool {
         splitImage?.back != nil && reference.summary.flip != .none
+    }
+
+    private var frontPixelSize: CGSize {
+        CGSize(width: CGFloat(reference.summary.frontPxW), height: CGFloat(reference.summary.frontPxH))
+    }
+
+    /// A portrait front on a hand flip starts as big as a plain portrait card's, fitted as if
+    /// its back were portrait too, and zooms out to fit its landscape back with the first flip.
+    /// It stays zoomed out for the rest of that viewing, so flipping back doesn't zoom in
+    /// again; opening the card again does.
+    private var fitsFrontOnly: Bool {
+        !hasFlipped && FlipGeometry.startsFittedToFront(frontSize: frontPixelSize, flip: reference.summary.flip)
     }
 
     private func resetZoom() {
@@ -269,12 +291,10 @@ struct CardDetailView: View {
                 front: splitImage.front,
                 back: splitImage.back,
                 flip: reference.summary.flip,
-                frontPixelSize: CGSize(
-                    width: CGFloat(reference.summary.frontPxW),
-                    height: CGFloat(reference.summary.frontPxH)
-                ),
+                frontPixelSize: frontPixelSize,
                 tapToFlip: false,
-                isFlipped: $isFlipped
+                isFlipped: $isFlipped,
+                fitsFrontOnly: fitsFrontOnly
             )
             // Drag-out export (see `PostcardFileExport`) lifts the card itself, and only at rest.
             // Once zoomed, `panGesture`'s click-drag recognizer is live and must win every
@@ -350,11 +370,13 @@ struct CardDetailView: View {
     /// The at-rest inset for the card: whatever padding lands the aspect-fit, centred bounding
     /// box (front AND back — see `FlipGeometry.boundingSize`) in whichever of
     /// `CardFitGeometry`'s regimes fits it biggest, clear of the toolbar's button clusters. See
-    /// `toolbarGeometry(insets:)` for how those clusters are estimated.
+    /// `toolbarGeometry(insets:)` for how those clusters are estimated. While the card is fitted
+    /// by its front alone (`fitsFrontOnly`), the box is just the front, landing it where a plain
+    /// portrait card's would be; the first flip zooms out to the full box before the back shows
+    /// (`FlippableCardView.frontFitRelease`), so the back still never pokes under a button.
     private func atRestPadding(screen: CGSize, insets: EdgeInsets) -> EdgeInsets {
-        let bounding = FlipGeometry.boundingSize(
-            forFrontSize: CGSize(width: CGFloat(reference.summary.frontPxW), height: CGFloat(reference.summary.frontPxH)),
-            flip: reference.summary.flip
+        let bounding = FlipGeometry.fitSize(
+            forFrontSize: frontPixelSize, flip: reference.summary.flip, fitsFrontOnly: fitsFrontOnly
         )
         return CardFitGeometry.atRestPadding(
             paneSize: screen,
@@ -425,6 +447,7 @@ struct CardDetailView: View {
         zoomOffset = .zero
         lastZoomOffset = .zero
         isFlipped = false
+        hasFlipped = false
         let flip = reference.summary.flip
         do {
             async let imageData = GoCore.shared.image(for: reference)
