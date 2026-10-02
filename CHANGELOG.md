@@ -4,6 +4,13 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.3 (2026-10-02)
+
+### Features
+
+- start a portrait-fronted hand-flip postcard zoomed to its front
+- swipe from the top of the watch screen to hide or bring back the controls
+
 ## 0.7.2 (2026-09-30)
 
 ### Features
