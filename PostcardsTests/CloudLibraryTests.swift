@@ -81,6 +81,54 @@ final class CloudLibraryTests: XCTestCase {
         )
     }
 
+    func testATappedDownloadShowsAsDownloadingBeforeAnyProgress() {
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(
+                status: NSMetadataUbiquitousItemDownloadingStatusNotDownloaded, percentDownloaded: nil, isRequested: true
+            ),
+            .downloading(percent: nil)
+        )
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(status: nil, percentDownloaded: 0, isRequested: true),
+            .downloading(percent: nil)
+        )
+    }
+
+    func testICloudsOwnDownloadingFlagCountsAsDownloadingToo() {
+        // A download asked for in an earlier launch, or by the system, that hasn't reported
+        // progress yet.
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(
+                status: NSMetadataUbiquitousItemDownloadingStatusNotDownloaded, percentDownloaded: nil, isDownloading: true
+            ),
+            .downloading(percent: nil)
+        )
+    }
+
+    func testProgressShowsOnceICloudReportsIt() {
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(
+                status: NSMetadataUbiquitousItemDownloadingStatusNotDownloaded, percentDownloaded: 42, isRequested: true
+            ),
+            .downloading(percent: 42)
+        )
+    }
+
+    func testAFinishedDownloadStaysFullUntilConfirmedCurrent() {
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(
+                status: NSMetadataUbiquitousItemDownloadingStatusDownloaded, percentDownloaded: 100, isDownloading: true
+            ),
+            .downloading(percent: 100)
+        )
+        XCTAssertEqual(
+            CloudItemAttributes.downloadState(
+                status: NSMetadataUbiquitousItemDownloadingStatusCurrent, percentDownloaded: 100, isRequested: true
+            ),
+            .current
+        )
+    }
+
     // MARK: - Content-change detection (drives the invalidate-and-reopen path)
 
     func testFirstSightingIsNeverAChange() {

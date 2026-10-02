@@ -30,7 +30,9 @@ they need must be added to their lists by hand (and one they can't compile must 
 - Writes are transient package functions (open → one operation → close). After any
   write to a path, call `GoCore.invalidateSource(at:)` so read handles reopen. iCloud
   paths get coordinated reads/writes (`CloudLibrary`); only hand fully-downloaded
-  files to Go.
+  files to Go. A collection is one SQLite file, which iCloud only hands over complete, so
+  unlike the watch (streamed card by card from the phone) none of it can be shown sooner:
+  the collection list shows iCloud's own byte progress instead (`CloudItem.DownloadState`).
 - **The Go toolchain version is load-bearing.** go 1.25.0 miscompiled the gomobile
   library: heap corruption whose crashes surfaced in *random Apple frameworks*
   (AttributeGraph, CoreAnimation, UIKit pointer interactions), only in CI/archived
