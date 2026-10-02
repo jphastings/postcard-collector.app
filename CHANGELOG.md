@@ -4,6 +4,12 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.4 (2026-10-02)
+
+### Features
+
+- show a tapped iCloud collection downloading at once, with a progress ring
+
 ## 0.7.3 (2026-10-02)
 
 ### Features
