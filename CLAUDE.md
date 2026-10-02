@@ -138,6 +138,10 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - On the watch, a `DragGesture` on a card inside the paging `ScrollView` stops its touch
   scrolling (the crown still scrolls), so `WatchCardView`'s one drag also pages the
   collection itself: a vertical swipe calls `onPage`, which moves `scrollPosition(id:)`.
+  A vertical swipe from the top edge hides or restores the controls instead
+  (`WatchCardInteraction.togglesFullScreen`). Every slot is the whole screen either way, with
+  the card keeping clear of the controls itself (`controlsHeight`): resizing the slots as the
+  controls come and go would move every card's place in the scroll, and with it the current one.
 - `ToolbarPlacement.navigationBar` is `@available(macOS, unavailable)` — `.toolbar(.hidden,
   for: .navigationBar)` won't compile on macOS. To strip a pushed destination's inline
   back/title band there, use `.navigationBarBackButtonHidden(true)` + `.toolbar(removing:
@@ -199,6 +203,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - The at-rest postcard sizing is a fit-regime model (`CardFitGeometry`): centred, always
   a margin on all four sides, between-the-toolbar-buttons for tall cards vs below-the-band
   for wide ones, inset-aware (the macOS inspector arrives as a trailing safe-area inset).
+  It fits both sides' bounding box, except that a portrait front on a hand flip starts fitted
+  by itself each time it's opened or scrolled to, until it's flipped
+  (`FlipGeometry.startsFittedToFront`, `fitsFrontOnly`). Anything new that flips a card must
+  release that with `FlippableCardView.frontFitRelease`, half the flip's length, so the
+  landscape back never shows overflowing.
 - Exports must be byte-faithful: dragging a card out writes the Go core's raw stored
   bytes (image + embedded XMP), never a re-encode.
 - Country codes are ISO 3166-1 alpha-3 (Spain = ESP); `CountryFlags` holds the only

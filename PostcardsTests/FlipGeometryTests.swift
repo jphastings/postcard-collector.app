@@ -83,6 +83,45 @@ final class FlipGeometryTests: XCTestCase {
         XCTAssertEqual(FlipGeometry.boundingSize(forFrontSize: front, flip: .none), front)
     }
 
+    // MARK: - Fitting the front alone
+
+    func testOnlyAPortraitFrontOnAHandFlipStartsFittedToItsFront() {
+        let portrait = CGSize(width: 200, height: 300)
+        XCTAssertTrue(FlipGeometry.startsFittedToFront(frontSize: portrait, flip: .leftHand))
+        XCTAssertTrue(FlipGeometry.startsFittedToFront(frontSize: portrait, flip: .rightHand))
+
+        // Its back is portrait too, so the bounding box is already just the front.
+        XCTAssertFalse(FlipGeometry.startsFittedToFront(frontSize: portrait, flip: .book))
+        XCTAssertFalse(FlipGeometry.startsFittedToFront(frontSize: portrait, flip: .calendar))
+        XCTAssertFalse(FlipGeometry.startsFittedToFront(frontSize: portrait, flip: .none))
+
+        XCTAssertFalse(FlipGeometry.startsFittedToFront(frontSize: CGSize(width: 300, height: 200), flip: .leftHand))
+        XCTAssertFalse(FlipGeometry.startsFittedToFront(frontSize: CGSize(width: 300, height: 300), flip: .rightHand))
+    }
+
+    func testFittingTheFrontAloneFitsItAsIfTheBackWereTheSameShape() {
+        let front = CGSize(width: 200, height: 300)
+        XCTAssertEqual(FlipGeometry.fitSize(forFrontSize: front, flip: .leftHand, fitsFrontOnly: true), front)
+        XCTAssertEqual(
+            FlipGeometry.fitSize(forFrontSize: front, flip: .leftHand, fitsFrontOnly: false),
+            CGSize(width: 300, height: 300)
+        )
+        XCTAssertEqual(FlipGeometry.fitSize(forFrontSize: front, flip: .book, fitsFrontOnly: false), front)
+    }
+
+    func testAPortraitHandFlipFittedToItsFrontIsBiggerOnATallScreen() {
+        // The point of it: on a phone-shaped space the square bounding box is held to the
+        // screen's width, while the front alone can use the height.
+        let front = CGSize(width: 200, height: 300)
+        let screen = CGSize(width: 390, height: 760)
+        func scale(fitting box: CGSize) -> CGFloat { min(screen.width / box.width, screen.height / box.height) }
+
+        let alone = scale(fitting: FlipGeometry.fitSize(forFrontSize: front, flip: .leftHand, fitsFrontOnly: true))
+        let bounded = scale(fitting: FlipGeometry.fitSize(forFrontSize: front, flip: .leftHand, fitsFrontOnly: false))
+
+        XCTAssertEqual(alone / bounded, 1.5, accuracy: 0.001)
+    }
+
     // MARK: - The stage's flip-axis demo
 
     func testContinuousAngleDegreesIsZeroAtTheStartOfEachRevolution() {

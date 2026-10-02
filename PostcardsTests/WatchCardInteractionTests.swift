@@ -110,6 +110,37 @@ final class WatchCardInteractionTests: XCTestCase {
         XCTAssertEqual(WatchCardInteraction.pageDragOffset(forVerticalTranslation: 400, cardHeight: 240), 60, accuracy: 0.001)
     }
 
+    // MARK: - togglesFullScreen
+
+    func testASwipeUpFromTheTopHidesTheControls() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 20, spaceHeight: 200, isFullScreen: false))
+    }
+
+    func testASwipeDownFromTheTopBringsThemBack() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 30, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testASwipeFromFurtherDownStillPages() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 120, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 150, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testASwipeFromTheTopPushingTheWayTheControlsAlreadyAreStillPages() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 10, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 10, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testTheTopEdgeIsTheTopQuarterOfTheSpace() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 50, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 50.5, spaceHeight: 200, isFullScreen: false))
+    }
+
+    func testSidewaysSwipesAndEmptySpacesNeverToggleFullScreen() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .left, startY: 10, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .right, startY: 10, spaceHeight: 200, isFullScreen: true))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 0, spaceHeight: 0, isFullScreen: false))
+    }
+
     // MARK: - visibleFaceSize
 
     func testALandscapeCardFitsTheWidthOfATallSpace() {
@@ -135,6 +166,22 @@ final class WatchCardInteractionTests: XCTestCase {
         XCTAssertEqual(front.height, 133.333, accuracy: 0.001)
         XCTAssertEqual(back.width, front.height, accuracy: 0.001)
         XCTAssertEqual(back.height, front.width, accuracy: 0.001)
+    }
+
+    func testAPortraitHandFlipFittedToItsFrontUsesTheSpacesHeight() {
+        let alone = WatchCardInteraction.visibleFaceSize(
+            frontPixelSize: CGSize(width: 200, height: 300), flip: .rightHand, fitsFrontOnly: true,
+            showingFront: true, fittedIn: CGSize(width: 180, height: 240)
+        )
+        let bounded = WatchCardInteraction.visibleFaceSize(
+            frontPixelSize: CGSize(width: 200, height: 300), flip: .rightHand,
+            showingFront: true, fittedIn: CGSize(width: 180, height: 240)
+        )
+        XCTAssertEqual(alone.width, 160, accuracy: 0.001)
+        XCTAssertEqual(alone.height, 240, accuracy: 0.001)
+        // Held to the space's width by the 300-point square its landscape back needs.
+        XCTAssertEqual(bounded.width, 120, accuracy: 0.001)
+        XCTAssertEqual(bounded.height, 180, accuracy: 0.001)
     }
 
     func testDegenerateSizesGiveZero() {

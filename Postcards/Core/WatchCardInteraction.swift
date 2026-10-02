@@ -2,9 +2,10 @@ import CoreGraphics
 import Foundation
 
 /// The pure decisions behind the watch card's gestures (see `WatchCardView`): what a finished
-/// drag was — a sideways swipe flips the card, a vertical one pages through the collection —
-/// how far the card follows a vertical drag while it's in progress, and how big the showing
-/// face is on screen. Kept free of SwiftUI so they're unit-testable.
+/// drag was — a sideways swipe flips the card, a vertical one pages through the collection,
+/// unless it's from the top edge and hides or brings back the controls — how far the card
+/// follows a vertical drag while it's in progress, and how big the showing face is on screen.
+/// Kept free of SwiftUI so they're unit-testable.
 enum WatchCardInteraction {
     enum SwipeDirection: Equatable {
         case left
@@ -82,19 +83,47 @@ enum WatchCardInteraction {
         return min(max(translation * 0.4, -limit), limit)
     }
 
+    // MARK: - Full screen
+
+    /// How far down the card's space, as a fraction of its height, a vertical swipe can start
+    /// and still count as one from the top edge (see `togglesFullScreen`).
+    static let topEdgeFraction: CGFloat = 0.25
+
+    /// Whether a vertical swipe hides or brings back the collection's controls (its back button
+    /// and title) instead of paging: one starting at the top of the card's space that pushes up
+    /// while they're showing, off the top of the screen, or pulls down while they're hidden.
+    /// Any other vertical swipe pages, including one from the top that pushes the way they
+    /// already are. `startY` is measured from the top of the card's space, which starts below
+    /// the controls while they're showing and at the top of the screen once they're not.
+    static func togglesFullScreen(
+        direction: SwipeDirection,
+        startY: CGFloat,
+        spaceHeight: CGFloat,
+        isFullScreen: Bool
+    ) -> Bool {
+        guard spaceHeight > 0, startY <= spaceHeight * topEdgeFraction else { return false }
+        switch direction {
+        case .up: return !isFullScreen
+        case .down: return isFullScreen
+        case .left, .right: return false
+        }
+    }
+
     /// The on-screen size of whichever face is showing, fitted into `available` the way
-    /// `FlippableCardView` fits it: one scale for both faces, from their shared bounding box.
-    /// For clamping a zoomed card's pan to the card itself rather than to the screen.
+    /// `FlippableCardView` fits it: one scale for both faces, from their shared bounding box —
+    /// or from the front alone, while `fitsFrontOnly`. For clamping a zoomed card's pan to the
+    /// card itself rather than to the screen.
     static func visibleFaceSize(
         frontPixelSize: CGSize,
         flip: Flip,
+        fitsFrontOnly: Bool = false,
         showingFront: Bool,
         fittedIn available: CGSize
     ) -> CGSize {
         guard frontPixelSize.width > 0, frontPixelSize.height > 0, available.width > 0, available.height > 0 else {
             return .zero
         }
-        let bounding = FlipGeometry.boundingSize(forFrontSize: frontPixelSize, flip: flip)
+        let bounding = FlipGeometry.fitSize(forFrontSize: frontPixelSize, flip: flip, fitsFrontOnly: fitsFrontOnly)
         let scale = min(available.width / bounding.width, available.height / bounding.height)
         let front = CGSize(width: frontPixelSize.width * scale, height: frontPixelSize.height * scale)
         return showingFront ? front : FlipGeometry.backSize(forFrontSize: front, flip: flip)

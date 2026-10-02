@@ -70,6 +70,21 @@ enum FlipGeometry {
         return CGSize(width: side, height: side)
     }
 
+    /// Whether a card starts fitted by its front alone (`FlippableCardView.fitsFrontOnly`), as
+    /// if its back were the same shape: a portrait front on a hand flip, whose landscape back
+    /// would otherwise set a square `boundingSize` and leave the front much smaller than a
+    /// plain portrait card's on a tall screen. Its first flip zooms out to the bounding box,
+    /// for good. A landscape front already spans a tall screen's width, so gains nothing.
+    static func startsFittedToFront(frontSize: CGSize, flip: Flip) -> Bool {
+        flip.isHeteroriented && frontSize.height > frontSize.width
+    }
+
+    /// The box a card fits itself into at rest: its `boundingSize`, or just the front while
+    /// it's fitted to that alone (see `startsFittedToFront`).
+    static func fitSize(forFrontSize size: CGSize, flip: Flip, fitsFrontOnly: Bool) -> CGSize {
+        fitsFrontOnly ? size : boundingSize(forFrontSize: size, flip: flip)
+    }
+
     // MARK: - The stage's flip-axis demo
 
     /// The flip angle for `FlipAxisDemo`'s never-pausing rotation: 360° every `period`
