@@ -9,7 +9,9 @@ import Observation
 struct CloudItem: Identifiable, Hashable, Sendable {
     enum DownloadState: Hashable, Sendable {
         case current
-        case downloading(percent: Double)
+        /// `nil` until iCloud reports how much has arrived, which can take a few seconds after
+        /// the download's asked for.
+        case downloading(percent: Double?)
         case remote
     }
 
@@ -59,13 +61,28 @@ enum CloudItemAttributes {
     }
 
     /// Maps the raw `NSMetadataUbiquitousItemDownloadingStatusKey` value (and, while a
-    /// download is in flight, the percent-downloaded attribute) to a download state.
-    static func downloadState(status: String?, percentDownloaded: Double?) -> CloudItem.DownloadState {
+    /// download is in flight, the percent-downloaded attribute) to a download state. An item
+    /// that's been asked for (`isRequested`), or that iCloud says is downloading, counts as
+    /// downloading straight away, before iCloud has reported any progress — and stays so at
+    /// 100% until the status confirms it's current. Without either, 100% is still `.remote`:
+    /// nothing says a download is under way.
+    static func downloadState(
+        status: String?,
+        percentDownloaded: Double?,
+        isDownloading: Bool = false,
+        isRequested: Bool = false
+    ) -> CloudItem.DownloadState {
         if status == NSMetadataUbiquitousItemDownloadingStatusCurrent {
             return .current
         }
         if let percentDownloaded, percentDownloaded > 0, percentDownloaded < 100 {
             return .downloading(percent: percentDownloaded)
+        }
+        if isDownloading || isRequested {
+            if let percentDownloaded, percentDownloaded >= 100 {
+                return .downloading(percent: 100)
+            }
+            return .downloading(percent: nil)
         }
         return .remote
     }
@@ -118,6 +135,10 @@ final class CloudLibrary {
     /// Set while a coalesced `items` rebuild is already scheduled, so a burst of iCloud query
     /// notifications collapses into a single update (see `handleQueryUpdate`).
     private var itemsRebuildScheduled = false
+    /// The paths asked for with `download(_:)` that aren't current yet. They show as
+    /// downloading from the moment they're tapped, rather than once iCloud's first progress
+    /// report arrives, which can take a few seconds.
+    private var requestedDownloads: Set<String> = []
 
     /// Called when a previously-current path picks up newer content on disk, so any cached
     /// handle on it can be dropped. Defaults to a no-op — the Go core can't be linked on
@@ -199,13 +220,21 @@ final class CloudLibrary {
         defer { query.enableUpdates() }
 
         var updated: [CloudItem] = []
+        var stillRequested: Set<String> = []
         for case let metadataItem as NSMetadataItem in query.results {
-            guard let item = Self.makeCloudItem(from: metadataItem) else { continue }
+            guard let made = Self.makeCloudItem(from: metadataItem, requested: requestedDownloads) else { continue }
+            let (item, downloadFailed) = made
             updated.append(item)
+            // A request lasts until the item's current, or until iCloud gives up on it — the
+            // row then offers the download again.
+            if requestedDownloads.contains(item.path), item.downloadState != .current, !downloadFailed {
+                stillRequested.insert(item.path)
+            }
 
             if shouldAutoDownload(item) { downloadIfNeeded(item) }
             reopenIfContentChanged(item, contentChangeDate: metadataItem.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date)
         }
+        requestedDownloads = stillRequested
         let sorted = updated.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         // Skip the reassignment (and its @Observable invalidation) when nothing actually
         // changed — e.g. a query update that only touched an item we don't surface.
@@ -213,7 +242,8 @@ final class CloudLibrary {
         if !hasGatheredItems, !query.isGathering { hasGatheredItems = true }
     }
 
-    private static func makeCloudItem(from item: NSMetadataItem) -> CloudItem? {
+    /// The item, and whether iCloud reports its download as having failed.
+    private static func makeCloudItem(from item: NSMetadataItem, requested: Set<String>) -> (CloudItem, Bool)? {
         guard let filename = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else { return nil }
         let kind = CloudItemAttributes.kind(forFilename: filename)
         guard kind != .other else { return nil }
@@ -221,13 +251,21 @@ final class CloudLibrary {
 
         let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String
         let percent = item.value(forAttribute: NSMetadataUbiquitousItemPercentDownloadedKey) as? Double
+        let isDownloading = item.value(forAttribute: NSMetadataUbiquitousItemIsDownloadingKey) as? Bool ?? false
+        let downloadFailed = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingErrorKey) != nil
 
-        return CloudItem(
+        let cloudItem = CloudItem(
             path: url.path,
             displayName: CloudItemAttributes.displayName(forFilename: filename),
             isCollection: kind == .collection,
-            downloadState: CloudItemAttributes.downloadState(status: status, percentDownloaded: percent)
+            downloadState: CloudItemAttributes.downloadState(
+                status: status,
+                percentDownloaded: percent,
+                isDownloading: isDownloading && !downloadFailed,
+                isRequested: requested.contains(url.path) && !downloadFailed
+            )
         )
+        return (cloudItem, downloadFailed)
     }
 
     private func downloadIfNeeded(_ item: CloudItem) {
@@ -236,9 +274,19 @@ final class CloudLibrary {
     }
 
     /// Starts downloading an item on demand — the sidebar's click/tap-to-download action for
-    /// undownloaded iCloud rows. A no-op if it's already current.
+    /// undownloaded iCloud rows — and shows it downloading at once. A no-op if it's already
+    /// current.
     func download(_ item: CloudItem) {
-        downloadIfNeeded(item)
+        guard item.downloadState != .current else { return }
+        do {
+            try FileManager.default.startDownloadingUbiquitousItem(at: URL(fileURLWithPath: item.path))
+        } catch {
+            return
+        }
+        requestedDownloads.insert(item.path)
+        if let index = items.firstIndex(where: { $0.path == item.path }), items[index].downloadState == .remote {
+            items[index].downloadState = .downloading(percent: nil)
+        }
     }
 
     /// Collections and bare files can be replaced wholesale by iCloud sync at any time —

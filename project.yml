@@ -222,6 +222,7 @@ targets:
       - path: Postcards/Core/ZoomGeometry.swift
       - path: Postcards/Motion/ParallaxGeometry.swift
       - path: Postcards/Motion/ParallaxModel.swift
+      - path: Postcards/Views/DownloadRings.swift
       - path: Postcards/Views/FlipEffect.swift
     # No iCloud/ubiquity entitlements: the watch never touches iCloud directly (watchOS can't
     # open iCloud Drive documents). It receives collections from the iPhone over

@@ -870,6 +870,10 @@ private struct CompactDetailPush: ViewModifier {
 /// placeholder with progress while the file is still being fetched. Fully-downloaded
 /// collections show their stored title like local sources do; anything not yet local
 /// keeps the filename stem — reading a title must never trigger a download.
+///
+/// A collection downloads as one file, which iCloud hands over only once all of it has
+/// arrived — so unlike the watch, which the phone streams card by card, nothing in it can be
+/// shown before then.
 private struct CloudItemRow: View {
     let item: CloudItem
     var refreshToken: Int = 0
@@ -886,22 +890,29 @@ private struct CloudItemRow: View {
     }()
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title ?? item.displayName)
-                switch item.downloadState {
-                case .current:
-                    EmptyView()
-                case .downloading:
-                    Text("Downloading…").font(.caption).foregroundStyle(.secondary)
-                case .remote:
-                    Text(Self.downloadPrompt).font(.caption).foregroundStyle(.secondary)
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title ?? item.displayName)
+                    switch item.downloadState {
+                    case .current:
+                        EmptyView()
+                    case .downloading:
+                        Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+                    case .remote:
+                        Text(Self.downloadPrompt).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+            } icon: {
+                Image(systemName: item.isCollection ? "photo.stack" : "photo")
             }
-        } icon: {
-            Image(systemName: item.isCollection ? "photo.stack" : "photo")
+            .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
+            // A downloaded row's navigation chevron takes this place.
+            if item.downloadState != .current {
+                Spacer(minLength: 8)
+                CloudDownloadGlyph(state: item.downloadState)
+            }
         }
-        .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
         // Keyed on the whole item (plus the rename-refresh token) so the title is fetched
         // once the download completes or a rename lands.
         .task(id: "\(item.id)#\(refreshToken)") { await loadTitle() }
@@ -911,6 +922,43 @@ private struct CloudItemRow: View {
         guard item.isCollection, item.downloadState == .current else { return }
         if let fetched = try? await GoCore.shared.title(ofCollectionAt: item.path), !fetched.isEmpty {
             title = fetched
+        }
+    }
+}
+
+/// The trailing glyph on an iCloud row that isn't downloaded yet, in the watch's collection
+/// list style: a cloud to tap, a spinner from the moment it's tapped until iCloud reports
+/// progress, then a ring filling as the file arrives. Each draws in the same fixed square, so
+/// the glyphs line up down the rows whatever state each is in.
+private struct CloudDownloadGlyph: View {
+    let state: CloudItem.DownloadState
+
+    private static let side: CGFloat = 20
+
+    var body: some View {
+        glyph
+            .frame(width: Self.side, height: Self.side)
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch state {
+        case .current:
+            EmptyView()
+        case .downloading(let percent?):
+            ProgressRing(fraction: percent / 100)
+                .animation(.easeOut(duration: 0.3), value: percent)
+                .accessibilityLabel("Progress")
+                .accessibilityValue(Text(percent / 100, format: .percent.precision(.fractionLength(0))))
+        case .downloading(nil):
+            // The row's caption already says it's downloading.
+            SpinningRing()
+                .accessibilityHidden(true)
+        case .remote:
+            // As does "Tap to download", for this one.
+            Image(systemName: "icloud.and.arrow.down")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
     }
 }
