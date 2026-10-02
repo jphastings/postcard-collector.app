@@ -4,7 +4,8 @@ import SwiftUI
 /// vertically as you scroll — the Digital Crown drives this natively, since a Crown turn is
 /// just another vertical scroll input to a paging `ScrollView`. Swiping up or down pages too,
 /// but through each card's own drag gesture (see `WatchCardView`), which keeps the scroll
-/// view's touch scrolling from starting: the card asks, and this moves `scrolledCardID`.
+/// view's touch scrolling from starting: the card asks, and this moves `scrolledCardID`. A
+/// swipe from the top of a card hides or brings back the controls (`isFullScreen`) instead.
 ///
 /// Progressive streaming means the manifest (every card's slot) typically lands well before
 /// every card's faces do, so this view renders a slot per `WatchCardMeta` the moment
@@ -48,6 +49,10 @@ struct WatchPostcardScrollView: View {
     /// The card the scroll view is showing (by `WatchCardMeta.id`), kept up to date as the
     /// crown scrolls it, and set to page it when a card is swiped. `nil` until it first moves.
     @State private var scrolledCardID: String?
+    /// Whether the collection's controls — its back button and title — are hidden, giving the
+    /// cards the whole screen. A swipe up from the top of a card hides them, and a swipe down
+    /// from the top of the screen brings them back (see `WatchCardView`).
+    @State private var isFullScreen = false
     /// Bumped every time a download is (re)requested, so a timeout task from an earlier
     /// attempt (e.g. before a reachability flap) recognises it's stale and no-ops.
     @State private var downloadAttempt = 0
@@ -106,34 +111,45 @@ struct WatchPostcardScrollView: View {
     }
 
     private func loadedScroll(_ manifest: [WatchCardMeta]) -> some View {
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                ForEach(manifest) { meta in
-                    WatchCardView(
-                        library: library,
-                        collectionID: id,
-                        meta: meta,
-                        zoomedCardID: $zoomedCardID,
-                        onShowInfo: { infoCard = meta },
-                        onPage: { step in
-                            if let target = WatchCardInteraction.pageTarget(from: meta.id, step: step, in: manifest.map(\.id)) {
-                                scrolledCardID = target
-                            }
-                        }
-                    )
-                    .containerRelativeFrame(.vertical)
+        // Read within the safe area, for the controls' height: the scroll view ignores it, so
+        // every card's slot is the whole screen whether or not the controls are showing, and
+        // each card keeps clear of them itself. Hiding them then only re-centres the card in
+        // its slot — resizing every slot instead would move every card's place in the scroll,
+        // and with it which card is showing.
+        GeometryReader { screen in
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    ForEach(manifest) { meta in
+                        WatchCardView(
+                            library: library,
+                            collectionID: id,
+                            meta: meta,
+                            zoomedCardID: $zoomedCardID,
+                            isFullScreen: isFullScreen,
+                            controlsHeight: screen.safeAreaInsets.top,
+                            onShowInfo: { infoCard = meta },
+                            onPage: { step in
+                                if let target = WatchCardInteraction.pageTarget(from: meta.id, step: step, in: manifest.map(\.id)) {
+                                    scrolledCardID = target
+                                }
+                            },
+                            onFullScreen: { isFullScreen = $0 }
+                        )
+                        .containerRelativeFrame(.vertical)
+                    }
                 }
+                .scrollTargetLayout()
             }
-            .scrollTargetLayout()
+            // Both edges, so the slots run to the physical screen's: the bottom reclaims the
+            // space that used to be spent peeking the next card, and the top runs under the
+            // controls (the previous card scrolls up beneath them) or, in full screen, where
+            // they were.
+            .ignoresSafeArea(edges: .vertical)
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollPosition(id: $scrolledCardID)
+            .scrollDisabled(zoomedCardID != nil)
         }
-        // Only the bottom: the top edge stays under the nav bar's safe area so the
-        // previous card keeps scrolling up under the translucent controls. Extending the
-        // bottom to the physical screen edge reclaims the space that used to be spent
-        // peeking the next card, so the current card's slot can use all of it instead.
-        .ignoresSafeArea(edges: .bottom)
-        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-        .scrollPosition(id: $scrolledCardID)
-        .scrollDisabled(zoomedCardID != nil)
+        .toolbar(isFullScreen ? .hidden : .automatic, for: .navigationBar)
     }
 
     /// Loads from the cache if the manifest is already there; otherwise requests it (if

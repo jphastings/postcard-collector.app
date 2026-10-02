@@ -8,6 +8,9 @@ import SwiftUI
 /// - **swipe left or right** flips it over, turning the way it was pushed, about the card's
 ///   own hinge (`FlipGeometry`: a book card turns sideways, a calendar card top over bottom);
 /// - **swipe up or down** moves to the next or previous postcard (`onPage`), as the crown does;
+/// - **swipe up from the top** of the card pushes the collection's controls (back button and
+///   title) off the screen, giving the card all of it, and **swipe down from the top** of the
+///   screen brings them back (`onFullScreen`);
 /// - **double tap** zooms in 2.5×, after which a drag pans (paging is disabled meanwhile);
 /// - **long press** opens the card's info page (`onShowInfo`).
 /// A single tap does nothing, so a double tap never waits one out.
@@ -16,6 +19,8 @@ import SwiftUI
 /// from starting — so a vertical swipe pages by asking the scroll view to move, rather than
 /// being left to it. The crown still scrolls natively.
 ///
+/// The card's slot is always the whole screen; while the controls are showing, the card keeps
+/// to the space below them (`controlsHeight`), so hiding them re-centres it in the full slot.
 /// A portrait front on a hand flip starts fitted by itself, as big as a plain portrait card's,
 /// each time it's scrolled to, and zooms out to fit its landscape back with the first flip
 /// (`fitsFrontOnly`).
@@ -40,12 +45,20 @@ struct WatchCardView: View {
     /// Reported up to the scroll view so it can disable paging while this card is zoomed —
     /// set to this card's name while zoomed, `nil` once the zoom resets.
     @Binding var zoomedCardID: String?
+    /// Whether the collection's controls are hidden, giving the card the whole screen.
+    let isFullScreen: Bool
+    /// The height the collection's controls take at the top of the screen while they're
+    /// showing, which the card keeps clear of.
+    let controlsHeight: CGFloat
     /// Called on a long press: the scroll view shows this card's info page.
     let onShowInfo: () -> Void
     /// Called when a vertical swipe asks to move `step` cards through the collection: `1` for
     /// the next, `-1` for the previous. Made inside an animation, so the scroll view's move
     /// animates.
     let onPage: (_ step: Int) -> Void
+    /// Called when a swipe from the top asks to hide the collection's controls (`true`) or
+    /// bring them back (`false`). Made inside an animation.
+    let onFullScreen: (_ fullScreen: Bool) -> Void
 
     private static let zoomScale: CGFloat = 2.5
     /// Keeps the resting card clear of the screen's curved left and right edges.
@@ -137,17 +150,22 @@ struct WatchCardView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            card(in: proxy.size)
+            let space = cardSpace(in: proxy.size)
+            card(in: space)
                 .offset(y: pageDrag)
-                .frame(width: proxy.size.width, height: proxy.size.height)
+                .frame(width: space.width, height: space.height)
                 .contentShape(Rectangle())
                 .gesture(longPressOrDoubleTap)
-                .simultaneousGesture(swipeOrPan(in: proxy.size))
+                .simultaneousGesture(swipeOrPan(in: space))
                 // VoiceOver's own swipes and taps can't reach the gestures above (it scrolls
                 // the collection itself).
                 .accessibilityAction(named: "Flip") { flip(.right) }
                 .accessibilityAction(named: "Zoom") { toggleZoom() }
                 .accessibilityAction(named: "Info") { onShowInfo() }
+                .accessibilityAction(named: Text(isFullScreen ? "Show Controls" : "Full Screen")) {
+                    withAnimation(.snappy) { onFullScreen(!isFullScreen) }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
         }
         .zIndex(isZoomed ? 1 : 0)
         .task(id: isReceived) { await loadScreenFaces() }
@@ -161,7 +179,7 @@ struct WatchCardView: View {
     }
 
     @ViewBuilder
-    private func card(in slot: CGSize) -> some View {
+    private func card(in space: CGSize) -> some View {
         switch loadState {
         case .waiting:
             ProgressView()
@@ -173,7 +191,7 @@ struct WatchCardView: View {
                 description: Text(message)
             )
         case .loaded(let front, let back):
-            let resting = restingSize(in: slot)
+            let resting = restingSize(in: space)
             FlippableCardView(
                 front: zoomFront ?? front,
                 back: zoomBack ?? back,
@@ -188,11 +206,17 @@ struct WatchCardView: View {
         }
     }
 
-    /// The space the card fits itself into at rest: the whole slot, bar the edge inset. No
-    /// vertical inset — the slot runs to the physical screen edge, and the card should use all
-    /// of that height (it aspect-fits itself).
-    private func restingSize(in slot: CGSize) -> CGSize {
-        CGSize(width: max(slot.width - 2 * Self.horizontalInset, 1), height: max(slot.height, 1))
+    /// The part of the slot the card has to itself, at its bottom: all of it in full screen,
+    /// and otherwise all but the controls' height at the top. Its gestures measure from here.
+    private func cardSpace(in slot: CGSize) -> CGSize {
+        CGSize(width: slot.width, height: max(slot.height - (isFullScreen ? 0 : controlsHeight), 1))
+    }
+
+    /// The space the card fits itself into at rest: the whole of its space, bar the edge inset.
+    /// No vertical inset — the space runs to the physical screen edge, and the card should use
+    /// all of that height (it aspect-fits itself).
+    private func restingSize(in space: CGSize) -> CGSize {
+        CGSize(width: max(space.width - 2 * Self.horizontalInset, 1), height: max(space.height, 1))
     }
 
     // MARK: - Gestures
@@ -206,8 +230,10 @@ struct WatchCardView: View {
 
     /// Pans while zoomed. Otherwise the card follows a vertical drag part way, and once the
     /// drag ends, a sideways swipe flips the card and a vertical one pages through the
-    /// collection — or, if it was neither, the card settles back.
-    private func swipeOrPan(in slot: CGSize) -> some Gesture {
+    /// collection — unless it's from the top, and hides or brings back the controls instead
+    /// (`WatchCardInteraction.togglesFullScreen`), which the card doesn't follow. A drag that
+    /// was neither lets the card settle back.
+    private func swipeOrPan(in space: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
                 if isZoomed {
@@ -215,12 +241,13 @@ struct WatchCardView: View {
                     panAtDragStart = start
                     pan = clampedPan(
                         CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height),
-                        in: slot
+                        in: space
                     )
-                } else if abs(value.translation.height) > abs(value.translation.width) {
+                } else if abs(value.translation.height) > abs(value.translation.width),
+                          !togglesFullScreen(value.translation.height < 0 ? .up : .down, from: value.startLocation, in: space) {
                     pageDrag = WatchCardInteraction.pageDragOffset(
                         forVerticalTranslation: value.translation.height,
-                        cardHeight: slot.height
+                        cardHeight: space.height
                     )
                 } else if pageDrag != 0 {
                     withAnimation(.snappy) { pageDrag = 0 }
@@ -235,6 +262,13 @@ struct WatchCardView: View {
                     translation: value.translation,
                     predictedEndTranslation: value.predictedEndTranslation
                 )
+                if let direction, togglesFullScreen(direction, from: value.startLocation, in: space) {
+                    withAnimation(.snappy) {
+                        pageDrag = 0
+                        onFullScreen(!isFullScreen)
+                    }
+                    return
+                }
                 // One animation for both: the card slides back into its slot as the scroll
                 // view moves on, so the page carries on from where the finger left it.
                 withAnimation(.snappy) {
@@ -247,6 +281,14 @@ struct WatchCardView: View {
                     flip(direction)
                 }
             }
+    }
+
+    private func togglesFullScreen(
+        _ direction: WatchCardInteraction.SwipeDirection, from start: CGPoint, in space: CGSize
+    ) -> Bool {
+        WatchCardInteraction.togglesFullScreen(
+            direction: direction, startY: start.y, spaceHeight: space.height, isFullScreen: isFullScreen
+        )
     }
 
     /// Flips the card the way a sideways swipe went; a vertical one does nothing here. The
@@ -280,16 +322,16 @@ struct WatchCardView: View {
 
     /// Keeps the zoomed card's showing face covering the screen along any axis it overflows,
     /// and centred along any it doesn't.
-    private func clampedPan(_ proposed: CGSize, in slot: CGSize) -> CGSize {
+    private func clampedPan(_ proposed: CGSize, in space: CGSize) -> CGSize {
         let face = WatchCardInteraction.visibleFaceSize(
             frontPixelSize: frontPixelSize,
             flip: meta.flip,
             fitsFrontOnly: fitsFrontOnly,
             showingFront: isShowingFront,
-            fittedIn: restingSize(in: slot)
+            fittedIn: restingSize(in: space)
         )
         let zoomedFace = CGSize(width: face.width * zoom, height: face.height * zoom)
-        return ZoomGeometry.clampedOffset(proposed, contentSize: zoomedFace, containerSize: slot)
+        return ZoomGeometry.clampedOffset(proposed, contentSize: zoomedFace, containerSize: space)
     }
 
     // MARK: - Loading

@@ -138,6 +138,10 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
 - On the watch, a `DragGesture` on a card inside the paging `ScrollView` stops its touch
   scrolling (the crown still scrolls), so `WatchCardView`'s one drag also pages the
   collection itself: a vertical swipe calls `onPage`, which moves `scrollPosition(id:)`.
+  A vertical swipe from the top edge hides or restores the controls instead
+  (`WatchCardInteraction.togglesFullScreen`). Every slot is the whole screen either way, with
+  the card keeping clear of the controls itself (`controlsHeight`): resizing the slots as the
+  controls come and go would move every card's place in the scroll, and with it the current one.
 - `ToolbarPlacement.navigationBar` is `@available(macOS, unavailable)` — `.toolbar(.hidden,
   for: .navigationBar)` won't compile on macOS. To strip a pushed destination's inline
   back/title band there, use `.navigationBarBackButtonHidden(true)` + `.toolbar(removing:

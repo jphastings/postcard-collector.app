@@ -110,6 +110,37 @@ final class WatchCardInteractionTests: XCTestCase {
         XCTAssertEqual(WatchCardInteraction.pageDragOffset(forVerticalTranslation: 400, cardHeight: 240), 60, accuracy: 0.001)
     }
 
+    // MARK: - togglesFullScreen
+
+    func testASwipeUpFromTheTopHidesTheControls() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 20, spaceHeight: 200, isFullScreen: false))
+    }
+
+    func testASwipeDownFromTheTopBringsThemBack() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 30, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testASwipeFromFurtherDownStillPages() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 120, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 150, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testASwipeFromTheTopPushingTheWayTheControlsAlreadyAreStillPages() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .down, startY: 10, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 10, spaceHeight: 240, isFullScreen: true))
+    }
+
+    func testTheTopEdgeIsTheTopQuarterOfTheSpace() {
+        XCTAssertTrue(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 50, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 50.5, spaceHeight: 200, isFullScreen: false))
+    }
+
+    func testSidewaysSwipesAndEmptySpacesNeverToggleFullScreen() {
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .left, startY: 10, spaceHeight: 200, isFullScreen: false))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .right, startY: 10, spaceHeight: 200, isFullScreen: true))
+        XCTAssertFalse(WatchCardInteraction.togglesFullScreen(direction: .up, startY: 0, spaceHeight: 0, isFullScreen: false))
+    }
+
     // MARK: - visibleFaceSize
 
     func testALandscapeCardFitsTheWidthOfATallSpace() {
