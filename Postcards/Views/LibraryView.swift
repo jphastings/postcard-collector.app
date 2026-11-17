@@ -25,6 +25,8 @@ import UIKit
 /// switcher all live in the sidebar's own toolbar, in the titlebar, clickable, with nothing
 /// else sharing that section. See `CollectionBrowser` and `CollectionModeSwitcher`.
 struct LibraryView: View {
+    static let windowID = "library"
+
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
 
@@ -42,6 +44,10 @@ struct LibraryView: View {
     /// iPad's "Create Postcard…" presentation (macOS opens a real `Window` scene instead —
     /// see `presentCreatePostcard()`); always `false` on iPhone, which has no entry point.
     @State private var isPresentingCreateForm = false
+    #if os(iOS)
+    /// An opened bare card, shown full screen (macOS opens a window instead — see `open(_:)`).
+    @State private var presentedCardURL: URL?
+    #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
@@ -58,6 +64,9 @@ struct LibraryView: View {
     /// title instead of showing the stale cached one (their `.task(id:)` doesn't otherwise
     /// change just because the title changed underneath them).
     @State private var titleRefreshTokens: [String: Int] = [:]
+    /// The outdated collection whose upgrade dialog is showing.
+    @State private var upgradeRequest: LibrarySource?
+    @State private var upgradeError: String?
 
     /// The collection browser's grid/map toggle, lifted here (out of each pane) because the
     /// sidebar column's own width now depends on it too — see `SidebarWidths`. Reset to
@@ -73,6 +82,13 @@ struct LibraryView: View {
     /// The split view's column visibility, tracked so the back/switcher toolbar items can hide
     /// when the sidebar is collapsed (they act on a sidebar that isn't on screen).
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    #if os(macOS)
+    /// Set when the sidebar was collapsed because the window got too narrow, so widening the
+    /// window brings it back (see `SidebarFit`).
+    @State private var sidebarAutoCollapsed = false
+    /// An open inspector's width, reported by `CardDetailView`.
+    @State private var detailExtraWidth: CGFloat = 0
+    #endif
 
     /// Whether the sidebar's own toolbar buttons (back, grid/map switcher) should show: hidden on
     /// macOS while the sidebar is collapsed; always shown elsewhere.
@@ -130,14 +146,15 @@ struct LibraryView: View {
                         searchRequest: searchRequest,
                         contentGeneration: library.contentGeneration,
                         onCreateCollection: { try await createCollection(titled: $0) },
-                        onFileConsumed: { library.remove(path: $0) },
                         onImport: { isImporting = true },
                         onCreate: presentCreatePostcard,
-                        collectionPaths: writableCollections.map(\.path),
-                        barePaths: barePaths(for: source)
+                        collectionPaths: writableCollections.map(\.path)
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
+                    // After the fill, so it's placed against the whole column even when the pane
+                    // is only as tall as its content (loading, an error).
+                    .modifier(FloatingBack { sidebarPath.removeLast() })
                     #endif
                 }
             }
@@ -148,7 +165,7 @@ struct LibraryView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    Task { await library.importSources(from: urls) }
+                    Task { await open(urls) }
                 case .failure(let error):
                     library.importError = error.localizedDescription
                 }
@@ -211,7 +228,17 @@ struct LibraryView: View {
             // sidebar column (e.g. that it widens in map mode).
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("DetailPane")
+            #if os(macOS)
+            .navigationSplitViewColumnWidth(min: SidebarFit.detailMinWidth + detailExtraWidth, ideal: SidebarFit.detailMinWidth + detailExtraWidth)
+            .onPreferenceChange(DetailExtraWidthKey.self) { detailExtraWidth = $0 }
+            #endif
         }
+        #if os(macOS)
+        .modifier(SidebarFitting(
+            columnVisibility: $columnVisibility, autoCollapsed: $sidebarAutoCollapsed,
+            mode: viewMode, detailExtra: detailExtraWidth
+        ))
+        #endif
         // Drives the macOS window title from the sidebar's own push state. A pushed
         // `NavigationStack` destination's `.navigationTitle` (e.g. one set inside
         // `CollectionBrowser`) does NOT reach the window title bar — confirmed empirically in
@@ -225,10 +252,9 @@ struct LibraryView: View {
         // would mean lifting the fetched title into `LibraryView` too.
         .navigationTitle(sidebarPath.last.map(\.displayName) ?? "Postcards")
         #if os(macOS)
-        // The sidebar's width now ranges up to 700 (map mode) on its own — 800 is comfortably
-        // above that plus a usable detail column, and below the old 3-column minimum of 900
-        // now that the content column is gone.
-        .frame(minWidth: 800, minHeight: 500)
+        // Narrow enough for the postcard pane alone: below what the sidebar needs alongside it,
+        // `SidebarFitting` collapses the sidebar rather than let it slide off the left edge.
+        .frame(minWidth: SidebarFit.detailMinWidth + detailExtraWidth + SidebarFit.chrome, minHeight: 500)
         #endif
         // The window toolbar's background is hidden PERMANENTLY on macOS (15+), not just
         // while a card is selected: macOS only turns the toolbar to liquid glass by itself
@@ -236,15 +262,32 @@ struct LibraryView: View {
         // the titlebar band (its top would be clipped by an opaque strip otherwise).
         // NSToolbar is one shared bar for the whole window, so this is necessarily global.
         .transparentWindowToolbarBackground()
+        .postcardExporting(openCard: selectedCard)
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
-            Task { await library.importSources(from: urls) }
+            Task { await open(urls) }
             return true
         }
         // Double-click / "Open With" documents (see CFBundleDocumentTypes in project.yml).
+        #if os(macOS)
+        .opensPostcardFiles(library: library)
+        #else
         .onOpenURL { url in
-            Task { await library.importSources(from: [url]) }
+            Task { await open([url]) }
         }
+        .fullScreenCover(isPresented: Binding(get: { presentedCardURL != nil }, set: { if !$0 { presentedCardURL = nil } })) {
+            if let presentedCardURL {
+                NavigationStack {
+                    SinglePostcardView(url: presentedCardURL, library: library, cloudLibrary: cloudLibrary)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { self.presentedCardURL = nil }
+                            }
+                        }
+                }
+            }
+        }
+        #endif
         #if os(iOS)
         // iPad only in practice: `AddMenu` never sets this on iPhone, which keeps the plain
         // import button. macOS opens a real `Window` scene instead — see `presentCreatePostcard()`.
@@ -286,6 +329,23 @@ struct LibraryView: View {
         .onChange(of: cloudLibrary.items, initial: true) { _, _ in
             Task { await syncLibrarySearchSources() }
         }
+        .onChange(of: library.outdatedCollectionPaths) { _, _ in
+            Task { await syncLibrarySearchSources() }
+        }
+        .task(id: library.knownCollectionPaths(with: cloudLibrary)) { await refreshSchemaStatuses() }
+        .sheet(item: $upgradeRequest) { source in
+            UpgradeCollectionDialog(offersAll: library.outdatedCollectionPaths.count > 1) { all in
+                Task { await upgrade(source, all: all) }
+            }
+        }
+        .alert(
+            "Couldn't upgrade collection",
+            isPresented: Binding(get: { upgradeError != nil }, set: { if !$0 { upgradeError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(upgradeError ?? "")
+        }
         // On iPhone (compact width), a search preset from `CardInfoPanel`'s "More from…"
         // menu should land the user back on the grid of results, not leave them stuck on
         // the detail view they tapped the preset from — popping `selectedCard` collapses
@@ -316,27 +376,32 @@ struct LibraryView: View {
                 }
                 .accessibilityIdentifier("All collections")
             }
-            if !importedCollectionSources.isEmpty || !localBarePaths.isEmpty {
+            if !importedCollectionSources.isEmpty {
                 Section(header: sectionHeader("Local")) {
                     ForEach(importedCollectionSources) { source in
-                        NavigationLink(value: source) {
-                            SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                        let row = SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                        Group {
+                            if library.outdatedCollectionPaths.contains(source.path) {
+                                outdatedRow(row, source: source)
+                            } else {
+                                NavigationLink(value: source) { row }
+                            }
                         }
                         .contextMenu { importedCollectionMenu(for: source) }
                     }
-                    // Bare local files aggregate into an "Individual postcards" row at the bottom
-                    // of the section they're stored in.
-                    if !localBarePaths.isEmpty {
-                        individualPostcardsRow(scope: .local)
-                    }
                 }
             }
-            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty || !cloudBarePaths.isEmpty {
+            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty {
                 Section(header: sectionHeader("iCloud")) {
                     ForEach(cloudSidebarItems) { item in
                         if item.downloadState == .current {
-                            NavigationLink(value: item.librarySource) {
-                                CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
+                            let row = CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
+                            Group {
+                                if library.outdatedCollectionPaths.contains(item.path) {
+                                    outdatedRow(row, source: item.librarySource)
+                                } else {
+                                    NavigationLink(value: item.librarySource) { row }
+                                }
                             }
                             .contextMenu { cloudCollectionMenu(for: item) }
                         } else if item.downloadState == .remote {
@@ -353,19 +418,9 @@ struct LibraryView: View {
                             CloudItemRow(item: item, refreshToken: 0)
                         }
                     }
-                    if !cloudBarePaths.isEmpty {
-                        individualPostcardsRow(scope: .cloud)
-                    }
                 }
             }
         }
-    }
-
-    private func individualPostcardsRow(scope: SinglePostcardsScope) -> some View {
-        NavigationLink(value: LibrarySource.singlePostcards(scope)) {
-            Label("Individual postcards", systemImage: "photo.on.rectangle.angled")
-        }
-        .accessibilityIdentifier("Individual postcards (\(scope.rawValue))")
     }
 
     /// A section subheading a little larger than SwiftUI's default sidebar header, sitting below
@@ -388,7 +443,7 @@ struct LibraryView: View {
     }
 
     private var hasAnySources: Bool {
-        !library.sources.isEmpty || !cloudLibrary.items.isEmpty
+        !library.sources.isEmpty || !cloudSidebarItems.isEmpty
     }
 
     /// The "Library" sidebar section's rows: imported collections, minus any whose path is
@@ -401,52 +456,57 @@ struct LibraryView: View {
         }
     }
 
-    /// The "iCloud" sidebar section's rows: fully-downloaded bare files move into "Single
-    /// postcards" below instead (aggregating them before they exist locally would just mean
-    /// showing progress rows in two places), so only collections and not-yet-downloaded bare
-    /// files stay here.
+    /// The "iCloud" sidebar section's rows. Bare card files in iCloud Drive aren't listed:
+    /// they open in their own window from Finder/Files like any other.
     private var cloudSidebarItems: [CloudItem] {
-        cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }
+        cloudLibrary.items.filter(\.isCollection)
     }
 
-    /// Bare `.postcard.*` files opened locally (imported) — the Local "Individual postcards" row.
-    private var localBarePaths: [String] {
-        library.sources.compactMap { source -> String? in
-            if case .cardFile(let path, _) = source { return path }
-            return nil
-        }
-    }
-
-    /// Bare `.postcard.*` files synced from iCloud, only the fully-downloaded ones (see the iCloud
-    /// section comment) — the iCloud "Individual postcards" row.
-    private var cloudBarePaths: [String] {
-        cloudLibrary.items
-            .filter { !$0.isCollection && $0.downloadState == .current }
-            .map(\.path)
-    }
-
-    /// Every bare file the app knows about, local + iCloud — the union "All collections" searches.
-    private var allBarePaths: [String] { localBarePaths + cloudBarePaths }
-
-    /// The bare-file subset a pushed destination should show: the local or iCloud aggregate for an
-    /// "Individual postcards" row, the full union for "All collections".
-    private func barePaths(for source: LibrarySource) -> [String] {
-        switch source {
-        case .singlePostcards(.local): return localBarePaths
-        case .singlePostcards(.cloud): return cloudBarePaths
-        default: return allBarePaths
-        }
-    }
-
-    /// Every collection the app currently knows about — imported plus fully-downloaded
-    /// iCloud ones — for the grid cells' "Move to Collection…"/"Copy to Collection…" menus.
-    /// Deduplicated by path: a just-created iCloud collection can briefly be in both
-    /// `library.sources` (registered for instant visibility) and `cloudLibrary.items`.
     private var writableCollections: [WritableCollection] {
-        let downloaded = cloudLibrary.items
-            .filter { $0.isCollection && $0.downloadState == .current }
-            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
-        return WritableCollection.known(sources: library.sources, downloaded: downloaded)
+        library.writableCollections(with: cloudLibrary)
+    }
+
+    /// A collection on an older schema: it can't open until upgraded, so the row offers the
+    /// upgrade instead, flagged where download glyphs sit.
+    private func outdatedRow(_ row: some View, source: LibrarySource) -> some View {
+        Button { upgradeRequest = source } label: {
+            HStack {
+                row
+                Spacer(minLength: 8)
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.yellow)
+                    .frame(width: 20, height: 20)
+                    .accessibilityLabel("Needs upgrading")
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("This collection is in an old format")
+    }
+
+    private func refreshSchemaStatuses() async {
+        var outdated: Set<String> = []
+        for path in library.knownCollectionPaths(with: cloudLibrary) {
+            if (try? await GoCore.shared.schemaStatus(ofCollectionAt: path)) == .outdated {
+                outdated.insert(path)
+            }
+        }
+        library.outdatedCollectionPaths = outdated
+    }
+
+    private func upgrade(_ source: LibrarySource, all: Bool) async {
+        let paths = all ? library.outdatedCollectionPaths : [source.path]
+        for path in paths {
+            do {
+                try await GoCore.shared.migrateCollection(at: path)
+                library.outdatedCollectionPaths.remove(path)
+                titleRefreshTokens[path, default: 0] += 1
+            } catch {
+                upgradeError = error.localizedDescription
+                return
+            }
+        }
+        sidebarPath = [source]
     }
 
     // MARK: - Sidebar row actions (Feature 3)
@@ -457,6 +517,8 @@ struct LibraryView: View {
             renameText = source.displayName
             renamingSource = source
         }
+        // Writing the title would upgrade the file without asking.
+        .disabled(library.outdatedCollectionPaths.contains(source.path))
         if cloudLibrary.containerState == .available {
             Button("Add to iCloud…") {
                 Task { await addToICloud(source) }
@@ -484,6 +546,7 @@ struct LibraryView: View {
             renameText = item.displayName
             renamingSource = item.librarySource
         }
+        .disabled(library.outdatedCollectionPaths.contains(item.path))
         // For iCloud items this reveals the LOCAL ubiquity URL — the synced file under
         // ~/Library/Mobile Documents, which Finder presents as the iCloud Drive folder.
         revealInFinderButton(path: item.path)
@@ -607,6 +670,18 @@ struct LibraryView: View {
         return WritableCollection(path: url.path, displayName: CollectionNaming.stem(forTitle: title))
     }
 
+    /// Collections join the library; bare cards open on their own — a window on macOS, full
+    /// screen on iOS.
+    private func open(_ urls: [URL]) async {
+        #if os(macOS)
+        await openPostcardFiles(urls, library: library, openWindow: openWindow)
+        #else
+        for card in await library.importSources(from: urls) {
+            presentedCardURL = card
+        }
+        #endif
+    }
+
     // MARK: - Create a Postcard
 
     /// `AddMenu`'s "Create Postcard…" action: a real `Window` scene on macOS, a full-screen
@@ -629,29 +704,11 @@ struct LibraryView: View {
         #endif
     }
 
-    /// Replaces the Go `Library`'s source set with every collection/bare file currently
-    /// known — imported and fully-downloaded cloud items — so "All collections" search
-    /// fans out across all of them (see `AllCollectionsView`).
+    /// Replaces the Go `Library`'s source set with every collection currently known —
+    /// imported and fully-downloaded cloud items — so "All collections" search fans out
+    /// across all of them (see `AllCollectionsView`).
     private func syncLibrarySearchSources() async {
-        var collections: [String] = []
-        var cardFiles: [String] = []
-
-        for source in library.sources {
-            switch source {
-            case .collection(let path, _): collections.append(path)
-            case .cardFile(let path, _): cardFiles.append(path)
-            case .singlePostcards, .allCollections: break
-            }
-        }
-        for item in cloudLibrary.items where item.downloadState == .current {
-            if item.isCollection {
-                collections.append(item.path)
-            } else {
-                cardFiles.append(item.path)
-            }
-        }
-
-        try? await GoCore.shared.setLibrarySources(collections: collections, cardFiles: cardFiles)
+        try? await GoCore.shared.setLibrarySources(collections: writableCollections.map(\.path), cardFiles: [])
     }
 }
 
@@ -677,11 +734,9 @@ private struct CollectionBrowser: View {
     /// reload picks up the new card without the user reselecting the collection.
     var contentGeneration = 0
     var onCreateCollection: ((String) async throws -> WritableCollection)?
-    var onFileConsumed: (String) -> Void = { _ in }
     var onImport: () -> Void
     var onCreate: () -> Void
     let collectionPaths: [String]
-    let barePaths: [String]
 
     /// Pops this destination off the sidebar's `NavigationStack` (used by the top-left back
     /// button on macOS, since the framework's own inline back button is hidden).
@@ -702,38 +757,9 @@ private struct CollectionBrowser: View {
                     contentGeneration: contentGeneration,
                     onCreateCollection: onCreateCollection
                 )
-            case .cardFile(let path, _):
-                // A bare file reached directly (not via "Single postcards") still routes
-                // through the same aggregate grid, just scoped to its own path, so it gets
-                // the identical browsing UI (search, context menu, map) as any other bare
-                // file rather than a bespoke one-card view.
-                SinglePostcardsGridView(
-                    paths: [path],
-                    selection: $selectedCard,
-                    viewMode: $viewMode,
-                    hasAnyLocation: $hasAnyLocation,
-                    writableCollections: writableCollections,
-                    cloudLibrary: cloudLibrary,
-                    searchRequest: searchRequest,
-                    onFileConsumed: onFileConsumed,
-                    onCreateCollection: onCreateCollection
-                )
-            case .singlePostcards:
-                SinglePostcardsGridView(
-                    paths: barePaths,
-                    selection: $selectedCard,
-                    viewMode: $viewMode,
-                    hasAnyLocation: $hasAnyLocation,
-                    writableCollections: writableCollections,
-                    cloudLibrary: cloudLibrary,
-                    searchRequest: searchRequest,
-                    onFileConsumed: onFileConsumed,
-                    onCreateCollection: onCreateCollection
-                )
             case .allCollections:
                 AllCollectionsView(
                     collectionPaths: collectionPaths,
-                    barePaths: barePaths,
                     selection: $selectedCard,
                     viewMode: $viewMode,
                     hasAnyLocation: $hasAnyLocation,
@@ -761,16 +787,6 @@ private struct CollectionBrowser: View {
             // chevron, but placed it past the sidebar/detail split instead — `.primaryAction`
             // for both is the more predictable, adjacent pairing.)
             ToolbarItemGroup(placement: .primaryAction) {
-                #if os(macOS)
-                // Back lives here, as a real toolbar item, because it's the only reliably
-                // clickable control in the titlebar band (see CLAUDE.md) — the framework's own
-                // inline back button is hidden. Popping the sidebar stack via `dismiss()`.
-                // Hidden while the sidebar is collapsed (nothing to go back within).
-                if sidebarVisible {
-                    Button("Back", systemImage: "chevron.backward") { dismiss() }
-                        .accessibilityIdentifier("SidebarBack")
-                }
-                #endif
                 AddMenu(onCreate: onCreate, onOpen: onImport)
                 // The grid/map switcher acts on the sidebar's browser, so it hides with the sidebar.
                 if sidebarVisible {
@@ -779,10 +795,11 @@ private struct CollectionBrowser: View {
             }
         }
         #if os(macOS)
-        // Hide this pushed destination's own inline back button + title band — the back button
-        // moves to a real toolbar item (see the `ToolbarItemGroup` above), the collection name
-        // into the scrollable grid, and hiding the band lets the grid/map fill the column to the
-        // very top (see `SidebarDestinationFill`).
+        // Hide this pushed destination's own inline back button + title band — back moves
+        // beside the collection name in the scrollable grid (`ScrollingCollectionTitle`), or
+        // floats under the traffic lights wherever that title isn't showing (the map, loading,
+        // an error — see `FloatingBack`), and hiding the band lets the grid/map
+        // fill the column to the very top (see `SidebarDestinationFill`).
         .modifier(HideInlineNavBar())
         #endif
     }
@@ -837,10 +854,17 @@ private struct SourceRow: View {
 
     private func loadTitle() async {
         guard source.isCollection else { return }
-        if let fetched = try? await GoCore.shared.title(ofCollectionAt: source.path), !fetched.isEmpty {
+        if let fetched = await collectionTitle(at: source.path), !fetched.isEmpty {
             title = fetched
         }
     }
+}
+
+/// A collection's user-set title. An outdated collection can't be opened by the Go core until
+/// it's upgraded, but `CollectionReader` reads older schemas, so its row still shows its title.
+private func collectionTitle(at path: String) async -> String? {
+    if let title = try? await GoCore.shared.title(ofCollectionAt: path) { return title }
+    return await Task.detached { try? CollectionReader(path: path).title() }.value
 }
 
 /// On compact-width devices (iPhone), a `NavigationSplitView`'s "detail" column is never made
@@ -920,7 +944,7 @@ private struct CloudItemRow: View {
 
     private func loadTitle() async {
         guard item.isCollection, item.downloadState == .current else { return }
-        if let fetched = try? await GoCore.shared.title(ofCollectionAt: item.path), !fetched.isEmpty {
+        if let fetched = await collectionTitle(at: item.path), !fetched.isEmpty {
             title = fetched
         }
     }
@@ -1011,6 +1035,132 @@ private struct TransparentWindowToolbarBackground: ViewModifier {
 /// Hides a pushed destination's inline back button + title band. `toolbar(removing: .title)` needs
 /// macOS 15; below that only the back button is hidden (the inline title stays — an acceptable
 /// degradation, as the Liquid-Glass sidebar this targets is a macOS 26 concern anyway).
+/// Applies `SidebarFit` to the window hosting the split view: collapses the sidebar as the
+/// window narrows past what both panes need, restores it as it widens, and grows the window
+/// when the sidebar is shown (or switched to the wider map) without room for it.
+private struct SidebarFitting: ViewModifier {
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+    @Binding var autoCollapsed: Bool
+    let mode: CollectionViewMode
+    let detailExtra: CGFloat
+
+    @State private var width: CGFloat = 0
+    @State private var window: NSWindow?
+
+    private var sidebarShown: Bool { columnVisibility != .detailOnly }
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.onChange(of: proxy.size.width, initial: true) { old, new in
+                        width = new
+                        apply(SidebarFit.afterResize(
+                            from: old, to: new, mode: mode, detailExtra: detailExtra,
+                            sidebarShown: sidebarShown, autoCollapsed: autoCollapsed
+                        ))
+                    }
+                }
+                .ignoresSafeArea()
+            }
+            .background(WindowReader(window: $window))
+            .onChange(of: columnVisibility) {
+                if sidebarShown { autoCollapsed = false }
+                makeRoom()
+            }
+            .onChange(of: mode) { makeRoom() }
+            .onChange(of: detailExtra) { makeRoom() }
+    }
+
+    private func makeRoom() {
+        apply(SidebarFit.afterSidebarChange(width: width, mode: mode, detailExtra: detailExtra, sidebarShown: sidebarShown))
+    }
+
+    private func apply(_ action: SidebarFit.Action) {
+        switch action {
+        case .none:
+            break
+        case .collapseSidebar:
+            autoCollapsed = true
+            withAnimation { columnVisibility = .detailOnly }
+        case .restoreSidebar:
+            autoCollapsed = false
+            withAnimation { columnVisibility = .all }
+        case .growWindow(let shortfall):
+            guard let window else { return }
+            var frame = window.frame
+            frame.size.width += shortfall
+            if let screen = window.screen?.visibleFrame {
+                frame.size.width = min(frame.width, screen.width)
+                frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width)
+            }
+            // Already as wide as the screen allows: make room the other way.
+            if frame.width - window.frame.width < shortfall {
+                apply(.collapseSidebar)
+                return
+            }
+            window.setFrame(frame, display: true, animate: true)
+        }
+    }
+}
+
+/// Hands back the `NSWindow` a view lives in.
+private struct WindowReader: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: NSViewRepresentableContext<WindowReader>) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { window = view.window }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: NSViewRepresentableContext<WindowReader>) {
+        if window !== nsView.window {
+            DispatchQueue.main.async { window = nsView.window }
+        }
+    }
+}
+
+/// "‹ Back" floating under the traffic lights, for a pushed browser that isn't showing
+/// `ScrollingCollectionTitle`'s own (the map, loading, an error).
+private struct FloatingBack: ViewModifier {
+    let action: () -> Void
+    @State private var inlineBackShown = false
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(ShowsInlineBackKey.self) { inlineBackShown = $0 }
+            .overlay(alignment: .topLeading) {
+                ZStack(alignment: .topLeading) {
+                    Color.clear
+                    if !inlineBackShown {
+                        Button("Back", systemImage: "chevron.backward", action: action)
+                            .modifier(GlassButtonStyle())
+                            .keyboardShortcut("[", modifiers: .command)
+                            .accessibilityIdentifier("SidebarBack")
+                            // Measured from the sidebar's top edge rather than below the toolbar
+                            // band: the traffic lights end 25pt down with an 11pt gap above them,
+                            // so the same gap below them lands Back at 36pt.
+                            .padding(.leading, 12)
+                            .padding(.top, 36)
+                    }
+                }
+                .ignoresSafeArea(.container, edges: .top)
+            }
+    }
+}
+
+/// Liquid Glass where the SDK and OS have it, a bordered button before that.
+private struct GlassButtonStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+    }
+}
+
 private struct HideInlineNavBar: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 15, *) {
@@ -1025,8 +1175,8 @@ private struct HideInlineNavBar: ViewModifier {
 }
 #endif
 
-private extension View {
-    /// See the call site in `LibraryView.body` for why this is applied app-wide.
+extension View {
+    /// See the call site in `LibraryView.body` for why this is applied to every window.
     func transparentWindowToolbarBackground() -> some View {
         #if os(macOS)
         modifier(TransparentWindowToolbarBackground())

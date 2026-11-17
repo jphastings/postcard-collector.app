@@ -161,12 +161,9 @@ final class CloudLibraryTests: XCTestCase {
 
     // MARK: - CloudItem -> LibrarySource
 
-    func testLibrarySourceReflectsTheItemsKind() {
+    func testLibrarySourceIsTheCollection() {
         let collection = CloudItem(path: "/cloud/trip.postcards", displayName: "trip", isCollection: true, downloadState: .current)
         XCTAssertEqual(collection.librarySource, .collection(path: "/cloud/trip.postcards", displayName: "trip"))
-
-        let card = CloudItem(path: "/cloud/card.postcard.webp", displayName: "card", isCollection: false, downloadState: .current)
-        XCTAssertEqual(card.librarySource, .cardFile(path: "/cloud/card.postcard.webp", displayName: "card"))
     }
 
     // MARK: - CardReference from a cross-source LibraryHit

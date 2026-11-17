@@ -311,7 +311,7 @@ final class CreatePostcardModelTests: XCTestCase {
         XCTAssertTrue(model.blockingIssues.contains(.missingFrontImage))
 
         try model.setFront(data: makeImageData(width: 200, height: 100, dpi: nil, utType: "public.png"), filename: "front.png")
-        XCTAssertTrue(model.canCreate, "a nil destination is itself valid — \"Individual postcards\", not an unset choice")
+        XCTAssertTrue(model.canCreate, "a nil destination is itself valid — \"Save as file…\", not an unset choice")
         XCTAssertNil(model.destinationCollectionPath)
 
         model.destinationCollectionPath = "/tmp/whatever.postcards"

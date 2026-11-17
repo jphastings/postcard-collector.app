@@ -45,22 +45,34 @@ struct PostcardsApp: App {
         #endif
     }
 
+    private var libraryView: some View {
+        LibraryView(library: library, cloudLibrary: cloudLibrary)
+            .task { await cloudLibrary.start() }
+    }
+
     var body: some Scene {
-        WindowGroup {
-            LibraryView(library: library, cloudLibrary: cloudLibrary)
-                .task { await cloudLibrary.start() }
-        }
         #if os(macOS)
+        // One collections window: a `Window`, not a `WindowGroup` (which ⌘N, or a file opened
+        // while no window could take it, would multiply). Postcard windows are many, below.
+        Window("Postcards", id: LibraryView.windowID) {
+            libraryView
+        }
         .commands {
             CommandGroup(replacing: .newItem) {
                 NewPostcardCommand()
-                Button("Open…") { presentOpenPanel() }
-                    .keyboardShortcut("o", modifiers: .command)
+                OpenCommand(library: library)
+            }
+            CommandGroup(after: .saveItem) {
+                ExportPostcardCommand()
             }
             // Sparkle's conventional placement: directly below "About Postcard Collector".
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updater: updaterController.updater)
             }
+        }
+        #else
+        WindowGroup {
+            libraryView
         }
         #endif
 
@@ -72,11 +84,43 @@ struct PostcardsApp: App {
         Window("Create a Postcard", id: "create-postcard") {
             CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
         }
+
+        // One window per opened bare `.postcard.*` file — see `SinglePostcardView`.
+        WindowGroup("Postcard", id: SinglePostcardView.windowID, for: URL.self) { $url in
+            if let url {
+                SinglePostcardView(url: url, library: library, cloudLibrary: cloudLibrary)
+                    .opensPostcardFiles(library: library)
+                    .transparentWindowToolbarBackground()
+                    .frame(minWidth: 500, minHeight: 400)
+            }
+        }
         #endif
     }
+}
 
-    #if os(macOS)
-    @MainActor
+#if os(macOS)
+/// "New Postcard…" needs `@Environment(\.openWindow)`, which — unlike inside a plain view's
+/// body — isn't available directly inside a `CommandGroup` closure attached to `App`; wrapping
+/// it in this small `View` gives the environment somewhere to resolve.
+private struct NewPostcardCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("New Postcard…") { openWindow(id: "create-postcard") }
+            .keyboardShortcut("n", modifiers: .command)
+    }
+}
+
+/// "Open…" (⌘O): collections join the library, bare cards open in their own windows.
+private struct OpenCommand: View {
+    let library: LibraryModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open…", action: presentOpenPanel)
+            .keyboardShortcut("o", modifiers: .command)
+    }
+
     private func presentOpenPanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -91,28 +135,11 @@ struct PostcardsApp: App {
         // too, despite conforming to public.data rather than public.image.
         panel.allowedContentTypes = [.database, .data, .image, UTType(exportedAs: "org.dotpostcard.postcard")]
 
-        let library = library
         panel.begin { response in
             guard response == .OK else { return }
             let urls = panel.urls
-            Task { @MainActor in
-                await library.importSources(from: urls)
-            }
+            Task { await openPostcardFiles(urls, library: library, openWindow: openWindow) }
         }
-    }
-    #endif
-}
-
-#if os(macOS)
-/// "New Postcard…" needs `@Environment(\.openWindow)`, which — unlike inside a plain view's
-/// body — isn't available directly inside a `CommandGroup` closure attached to `App`; wrapping
-/// it in this small `View` gives the environment somewhere to resolve.
-private struct NewPostcardCommand: View {
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Button("New Postcard…") { openWindow(id: "create-postcard") }
-            .keyboardShortcut("n", modifiers: .command)
     }
 }
 

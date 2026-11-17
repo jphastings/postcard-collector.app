@@ -1,8 +1,7 @@
 import SwiftUI
 
 /// The content pane for the sidebar's synthetic "All collections" row: the union of every
-/// card from every known source — collections and Single-postcards bare files alike — in
-/// the same masonry grid / map UI the per-collection views use. The sidebar picks the
+/// card from every known collection, in the same masonry grid / map UI the per-collection views use. The sidebar picks the
 /// SCOPE; this pane lists the matching postcards; the detail pane shows the tapped one.
 ///
 /// Search fans out through the Go `Library` (`GoCore.searchLibrary` — the same sources
@@ -11,8 +10,6 @@ import SwiftUI
 struct AllCollectionsView: View {
     /// Paths of every known, openable collection (imported + fully-downloaded iCloud).
     let collectionPaths: [String]
-    /// Paths of every known bare `.postcard.*` file.
-    let barePaths: [String]
     @Binding var selection: CardReference?
     /// Grid/map toggle, lifted to `LibraryView` and owned by its `CollectionBrowser`
     /// destination wrapper — see that type's doc comment.
@@ -53,12 +50,11 @@ struct AllCollectionsView: View {
 
     private struct SourcesKey: Equatable {
         var collections: [String]
-        var bare: [String]
         var generation: Int
     }
 
     private var sourcesKey: SourcesKey {
-        SourcesKey(collections: collectionPaths, bare: barePaths, generation: contentGeneration)
+        SourcesKey(collections: collectionPaths, generation: contentGeneration)
     }
 
     /// What both the grid and the map show: search hits while a query is active, the full
@@ -169,15 +165,6 @@ struct AllCollectionsView: View {
                 continue
             }
         }
-        for path in barePaths {
-            do {
-                try await primeIfCloudBacked(path)
-                let summary = try await GoCore.shared.summary(ofCardFileAt: path)
-                union.append(MapCardEntry(summary: summary, reference: .bareFile(path: path, summary: summary)))
-            } catch {
-                continue
-            }
-        }
         entries = union
         hasAnyLocation = CollectionMapGating.isEnabled(for: union.map(\.summary))
     }
@@ -275,13 +262,14 @@ private struct SearchInputKey: Equatable {
 /// A thumbnail cell that works for either kind of reference: collection cards use the Go
 /// core's pre-generated thumbnail (like `GridCell`), bare files split the full image's
 /// front (like `BareGridCell`) — both through the same `ThumbnailCache` keys those cells
-/// use, so nothing already cached is decoded twice. No context menu here: move/copy/remove
-/// actions belong to the per-source views, where "which collection is this card in" is
-/// unambiguous.
+/// use, so nothing already cached is decoded twice. Its context menu only exports:
+/// move/copy/remove actions belong to the per-source views, where "which collection is this
+/// card in" is unambiguous.
 private struct UnionGridCell: View {
     let entry: MapCardEntry
     var isSelected: Bool = false
 
+    @Environment(\.exportPostcard) private var exportPostcard
     @State private var thumbnail: PlatformImage?
 
     var body: some View {
@@ -302,6 +290,9 @@ private struct UnionGridCell: View {
         .accessibilityLabel(entry.summary.name)
         .accessibilityIdentifier(entry.summary.name)
         .task(id: entry.id) { await loadThumbnail() }
+        .contextMenu {
+            Button("Export…") { exportPostcard?(entry.reference) }
+        }
     }
 
     private func loadThumbnail() async {

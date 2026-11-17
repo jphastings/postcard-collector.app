@@ -20,6 +20,12 @@ they need must be added to their lists by hand (and one they can't compile must 
   `addCard`'s own decode-on-write for thumbnailing. Everything else still holds: no other
   runtime path decodes pixels in Go.
 - All Appcore calls are blocking — only call through the `GoCore` actor, never on main.
+- Collection schemas move on: a collection on an older schema can't be opened read-only
+  until it's migrated. Migration is the user's call, never automatic — a migrated file can't
+  be read by app builds on an older Go core (their other devices). The sidebar flags outdated
+  collections (`GoCore.schemaStatus`) and offers the upgrade (`GoCore.migrateCollection`, one
+  coordinated write). `CollectionReader` (QuickLook) never migrates, so it reads every schema
+  version whose columns it selects.
 - JSON contract: list/search results are always arrays, never `null` (enforced Go-side;
   a `null` here once broke search with "data couldn't be read because it is missing").
 - **Every search path routes through the Go core** (collection FTS or the Library
@@ -55,6 +61,12 @@ Two-column `NavigationSplitView`: a sidebar hosting a `NavigationStack` (collect
 → the chosen collection's postcard browser, grid or map) and the postcard detail pane
 (with its info inspector/sheet). The sidebar column widens in map mode (`SidebarWidths`).
 On iPhone the same stack collapses to collections → postcards → postcard.
+
+The library holds collections only. A bare `.postcard.*` file is never kept: opening one
+(⌘O, drop, Finder) shows it in a `SinglePostcardView`, its own window on macOS (full screen
+on iOS) with "Add to Collection". macOS has exactly one collections window (a `Window`
+scene, not a `WindowGroup`) and any number of postcard windows; route every file-open
+through `openPostcardFiles` so cards and collections land in the right one.
 
 This replaced a 3-column layout after its middle column's toolbar items drifted **four
 times**. The lessons, which the architecture now encodes:
@@ -198,7 +210,7 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   decode an image for layout.
 - Postcards can be non-rectangular with fibrous, ragged edges — that is a *feature* of
   the format. Never clip, round, smooth, or put background plates behind card thumbnails
-  or the flip view; alpha is only ever *read* (e.g. the selection glow masks by it).
+  or the flip view; alpha is only ever *read* (e.g. the selection outline traces it).
 - The flip is physically accurate: axis semantics come from dotpostcard's
   `formats/web/postcards.css`; visibility is a hard cut at edge-on driven by the live
   animated angle (`FlipGeometry.showsFront`), never a crossfade.

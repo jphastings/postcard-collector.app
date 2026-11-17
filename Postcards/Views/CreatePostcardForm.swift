@@ -1,6 +1,7 @@
 import Foundation
 import MapKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// "Create a Postcard": `PostcardStage` (the preview hero) beside or above a `Form` of metadata
 /// fields, compiling straight into a collection. Thin over `CreatePostcardModel`, which owns
@@ -49,7 +50,7 @@ struct CreatePostcardForm: View {
     /// `LocationPickerMap.recenterRegion`'s doc comment.
     @State private var locationRecenterRegion: MKCoordinateRegion?
     /// Set right after a successful create, alongside clearing the form — "Added to <destination
-    /// name>" / "Saved to Individual postcards" — and cleared automatically ~2.5s later (see
+    /// name>" / "Saved <filename>" — and cleared automatically ~2.5s later (see
     /// `successToast`). The window no longer dismisses on success (scanning a stack into one
     /// collection is the core loop), so this is what tells the user their card actually saved
     /// rather than the form just having gone blank.
@@ -59,7 +60,20 @@ struct CreatePostcardForm: View {
     /// second line rather than its own alert, since it must never block or overshadow the
     /// create having otherwise fully succeeded.
     @State private var sidecarWriteFailed = false
+    /// A compiled card waiting on the "Save as file…" panel; the form resets once it's saved
+    /// (a cancelled panel leaves it, harmlessly, until the next save replaces it).
+    @State private var pendingSave: PendingSave?
+    @State private var isSaving = false
     @Environment(\.dismiss) private var dismiss
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
+
+    private struct PendingSave {
+        var document: PostcardFileDocument
+        var filename: String
+        var metadataJSON: String
+    }
 
     /// Below this width the stage sits above a scrolling fields column instead of beside it —
     /// roughly separates iPad portrait (≤834pt) from iPad landscape/a macOS window, without
@@ -165,7 +179,19 @@ struct CreatePostcardForm: View {
             } message: {
                 Text(alertMessage ?? "")
             }
+            .fileExporter(
+                isPresented: $isSaving,
+                document: pendingSave?.document,
+                contentType: pendingSaveContentType,
+                defaultFilename: pendingSave?.filename,
+                onCompletion: finishSave
+            )
             .task { await peopleDirectory.refresh(cloudItems: cloudLibrary.items) }
+            .onChange(of: library.pendingCreateImport, initial: true) { _, urls in
+                guard !urls.isEmpty else { return }
+                library.pendingCreateImport = []
+                importURLs(urls)
+            }
         }
         #if os(macOS)
         .frame(minWidth: 860, minHeight: 640)
@@ -426,13 +452,13 @@ struct CreatePostcardForm: View {
 
     // MARK: - Destination
 
-    /// "Individual postcards" (a bare file, `destinationCollectionPath == nil`) leads and is
+    /// "Save as file…" (a bare file, `destinationCollectionPath == nil`) leads and is
     /// the default — creating with zero collections is fine — with any writable collections
     /// listed after it.
     private var destinationSection: some View {
         Section("Destination") {
             Picker("Add to", selection: $model.destinationCollectionPath) {
-                Text("Individual postcards").tag(nil as String?)
+                Text("Save as file…").tag(nil as String?)
                 ForEach(writableCollections) { collection in
                     Text(collection.displayName).tag(collection.path as String?)
                 }
@@ -440,13 +466,8 @@ struct CreatePostcardForm: View {
         }
     }
 
-    /// The same "known writable collections" rule `LibraryView.writableCollections` uses (see
-    /// `WritableCollection.known(sources:downloaded:)`), so both build the identical list.
     private var writableCollections: [WritableCollection] {
-        let downloaded = cloudLibrary.items
-            .filter { $0.isCollection && $0.downloadState == .current }
-            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
-        return WritableCollection.known(sources: library.sources, downloaded: downloaded)
+        library.writableCollections(with: cloudLibrary)
     }
 
     // MARK: - Blocking issues / success
@@ -557,32 +578,55 @@ struct CreatePostcardForm: View {
                 removeBorder: model.removeBorder,
                 archival: model.archival
             )
-            // `nil` is "Individual postcards" — a bare file — not an unset destination; see
+            // `nil` is "Save as file…" — a bare file — not an unset destination; see
             // `CreatePostcardModel.destinationCollectionPath`.
-            let destinationMessage: String
-            if let destination = model.destinationCollectionPath {
-                if isCloudBacked(destination) {
-                    try await CloudLibrary.primeForGoCoreWrite(path: destination)
-                }
-                try await GoCore.shared.addCard(filename: compiled.filename, data: compiled.data, toCollectionAt: destination)
-                destinationMessage = "Added to \(destinationDisplayName(for: destination))"
-            } else {
-                _ = try library.addBareCard(filename: compiled.filename, data: compiled.data)
-                destinationMessage = "Saved to Individual postcards"
+            guard let destination = model.destinationCollectionPath else {
+                pendingSave = PendingSave(
+                    document: PostcardFileDocument(data: compiled.data),
+                    filename: compiled.filename,
+                    metadataJSON: metadataJSON
+                )
+                isSaving = true
+                return
             }
+            if isCloudBacked(destination) {
+                try await CloudLibrary.primeForGoCoreWrite(path: destination)
+            }
+            try await GoCore.shared.addCard(filename: compiled.filename, data: compiled.data, toCollectionAt: destination)
             library.contentGeneration += 1
-
-            // Uses the SAME metadataJSON just compiled from, per `ComponentProvenance
-            // .writeSidecar`'s contract. `nil` (no provenance) means this card didn't come from
-            // component files, so there's nothing to write back and nothing to report.
-            let sidecarOutcome = await model.componentProvenance?.writeSidecar(metadataJSON: metadataJSON)
-
-            performReset(keepingDestination: true)
-            sidecarWriteFailed = sidecarOutcome == false
-            successMessage = destinationMessage
+            await finishCreate(message: "Added to \(destinationDisplayName(for: destination))", metadataJSON: metadataJSON)
         } catch {
             mapCreateError(error)
         }
+    }
+
+    private var pendingSaveContentType: UTType {
+        guard let filename = pendingSave?.filename else { return .image }
+        return UTType(filenameExtension: URL(fileURLWithPath: filename).pathExtension) ?? .image
+    }
+
+    private func finishSave(_ result: Result<URL, Error>) {
+        guard let metadataJSON = pendingSave?.metadataJSON else { return }
+        pendingSave = nil
+        switch result {
+        case .success(let url):
+            #if os(macOS)
+            openWindow(id: SinglePostcardView.windowID, value: url)
+            #endif
+            Task { await finishCreate(message: "Saved \(url.lastPathComponent)", metadataJSON: metadataJSON) }
+        case .failure(let error):
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    /// Writes back the sidecar (with the SAME metadataJSON just compiled from, per
+    /// `ComponentProvenance.writeSidecar`'s contract — `nil` provenance means there's nothing to
+    /// write back), then clears the form for the next card, keeping the destination.
+    private func finishCreate(message: String, metadataJSON: String) async {
+        let sidecarOutcome = await model.componentProvenance?.writeSidecar(metadataJSON: metadataJSON)
+        performReset(keepingDestination: true)
+        sidecarWriteFailed = sidecarOutcome == false
+        successMessage = message
     }
 
     private func destinationDisplayName(for path: String) -> String {

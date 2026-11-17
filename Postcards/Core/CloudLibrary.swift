@@ -22,10 +22,10 @@ struct CloudItem: Identifiable, Hashable, Sendable {
 
     var id: String { path }
 
-    /// The existing library source this maps onto. `LibraryView`/`CollectionGridView`
+    /// The library source a collection item maps onto. `LibraryView`/`CollectionGridView`
     /// don't need to know a source came from iCloud rather than the file importer.
     var librarySource: LibrarySource {
-        isCollection ? .collection(path: path, displayName: displayName) : .cardFile(path: path, displayName: displayName)
+        .collection(path: path, displayName: displayName)
     }
 }
 

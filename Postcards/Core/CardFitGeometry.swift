@@ -127,6 +127,22 @@ enum CardFitGeometry {
     /// `padding` is subtracted from each edge — i.e. how "big" the card gets under this
     /// regime's padding. Zero (never the winning regime) if the padding leaves no positive
     /// space to fit into.
+    /// Where the at-rest card actually sits: `boundingSize` aspect-fitted and centred inside
+    /// the area `padding` leaves. That area is only the space the card may use — on the axis
+    /// it doesn't fill, the card is narrower than it.
+    static func cardFrame(paneSize: CGSize, padding: EdgeInsets, boundingSize: CGSize) -> CGRect {
+        let area = CGRect(
+            x: padding.leading,
+            y: padding.top,
+            width: paneSize.width - padding.leading - padding.trailing,
+            height: paneSize.height - padding.top - padding.bottom
+        )
+        guard boundingSize.width > 0, boundingSize.height > 0 else { return area }
+        let scale = fitScale(paneSize: paneSize, padding: padding, boundingSize: boundingSize)
+        let size = CGSize(width: boundingSize.width * scale, height: boundingSize.height * scale)
+        return CGRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height)
+    }
+
     private static func fitScale(paneSize: CGSize, padding: EdgeInsets, boundingSize: CGSize) -> CGFloat {
         let availableWidth = paneSize.width - padding.leading - padding.trailing
         let availableHeight = paneSize.height - padding.top - padding.bottom

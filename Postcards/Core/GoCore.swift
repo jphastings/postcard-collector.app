@@ -2,6 +2,10 @@ import Foundation
 import Postcards
 
 /// Errors surfaced by `GoCore`, wrapping failures from the Go core or its JSON payloads.
+enum CollectionSchemaStatus: String, Sendable {
+    case current, outdated, newer
+}
+
 enum GoCoreError: LocalizedError {
     case openFailed(String)
     case missingData(String)
@@ -53,7 +57,8 @@ actor GoCore {
 
     // MARK: - Collections
 
-    /// Opens (or reuses a cached handle to) the collection at `path`.
+    /// Opens (or reuses a cached handle to) the collection at `path`. A collection on an
+    /// older schema fails to open until it's migrated (see `migrateCollection(at:)`).
     private func collection(at path: String) throws -> AppcoreCollection {
         if let existing = collections[path] { return existing }
         guard let opened = try Self.call({ AppcoreOpenCollection(path, $0) }) else {
@@ -61,6 +66,31 @@ actor GoCore {
         }
         collections[path] = opened
         return opened
+    }
+
+    /// Whether the collection at `path` is on this build's schema, an older one
+    /// (`migrateCollection(at:)` can upgrade it), or a newer one (the app needs updating).
+    /// Reads only, and cheaply.
+    func schemaStatus(ofCollectionAt path: String) throws -> CollectionSchemaStatus {
+        let status = try Self.call({ AppcoreCollectionSchemaStatus(path, $0) })
+        return CollectionSchemaStatus(rawValue: status) ?? .current
+    }
+
+    /// Upgrades the collection at `path` to this build's schema, losslessly and in one
+    /// transaction, inside a coordinated write so iCloud doesn't sync it mid-way. Once
+    /// upgraded, app builds on an older Go core can no longer open it.
+    func migrateCollection(at path: String) throws {
+        var coordinationError: NSError?
+        var migrationError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: URL(fileURLWithPath: path), options: [], error: &coordinationError) { url in
+            do {
+                _ = try Self.call({ AppcoreMigrateCollection(url.path, $0) })
+            } catch {
+                migrationError = error
+            }
+        }
+        if let error = coordinationError ?? migrationError { throw error }
+        invalidateSource(at: path)
     }
 
     /// The collection's user-set title, or "" if none has been set.

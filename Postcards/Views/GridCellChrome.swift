@@ -1,45 +1,66 @@
 import SwiftUI
 
 /// The standard "this card is open in the detail pane" treatment for a masonry grid cell
-/// (`CollectionGridView`/`SinglePostcardsGridView`/`AllCollectionsView`): a soft accent glow
-/// that follows the thumbnail's own alpha, rather than a crisp rectangular outline.
-/// Deliberately NOT a background plate — postcards can have real transparency (die-cut/torn
-/// scans), so a filled plate behind a transparent silhouette would show through as a fake
-/// rectangular border (see `GridCell`'s doc comment); masking the glow to the image's alpha
-/// keeps it hugging the postcard's actual shape instead. Identical on iOS and macOS.
+/// (`CollectionGridView`/`SinglePostcardsGridView`/`AllCollectionsView`): the Photos-style
+/// crisp accent outline, traced around the thumbnail's own silhouette so die-cut cards are
+/// outlined along their real edge (opaque cards come out as a box). The ring is the image's
+/// alpha dilated by `gap + lineWidth`, minus it dilated by `gap` — so it never tints soft,
+/// fibrous edges, and the image is never clipped, plated or reshaped. `MasonryGrid`'s padding and
+/// spacing leave room for it. Identical on iOS and macOS.
 private struct GridSelectionHighlight: ViewModifier {
     let isSelected: Bool
     let image: PlatformImage?
 
+    private let lineWidth: CGFloat = 3
+    private let gap: CGFloat = 1.5
+    private let dilationSteps = 16
+
     func body(content: Content) -> some View {
         content
-            .background {
-                if isSelected {
-                    Group {
-                        if let image {
-                            // .mask only ever READS this image's existing alpha channel — it
-                            // must never threshold or reshape it, since postcards' soft
-                            // fibrous/die-cut edges are load-bearing detail, not noise.
-                            // Opaque thumbnails (no alpha) mask to the full rectangle, so
-                            // collection cards still get today's rectangular glow.
-                            Color.accentColor
-                                .mask {
-                                    Image(platformImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                }
-                        } else {
-                            // Thumbnail still loading: fall back to a plain rounded-rect glow
-                            // until the real alpha shape is available to mask against.
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.accentColor)
-                        }
-                    }
-                    .blur(radius: 8)
-                    .opacity(0.8)
-                }
+            .overlay {
+                outline
+                    .opacity(isSelected ? 1 : 0)
+                    .allowsHitTesting(false)
             }
             .animation(.easeInOut(duration: 0.15), value: isSelected)
+    }
+
+    @ViewBuilder
+    private var outline: some View {
+        if let image {
+            ZStack {
+                dilated(image, by: gap + lineWidth)
+                ZStack {
+                    silhouette(of: image)
+                    dilated(image, by: gap)
+                }
+                .blendMode(.destinationOut)
+            }
+            .compositingGroup()
+        } else {
+            RoundedRectangle(cornerRadius: lineWidth)
+                .inset(by: -(gap + lineWidth / 2))
+                .stroke(Color.accentColor, lineWidth: lineWidth)
+        }
+    }
+
+    private func dilated(_ image: PlatformImage, by radius: CGFloat) -> some View {
+        ZStack {
+            ForEach(0..<dilationSteps, id: \.self) { step in
+                let angle = Double(step) / Double(dilationSteps) * 2 * .pi
+                silhouette(of: image)
+                    .offset(x: cos(angle) * radius, y: sin(angle) * radius)
+            }
+        }
+    }
+
+    /// Must match the cell's own `.resizable().scaledToFill()` so the ring lines up.
+    private func silhouette(of image: PlatformImage) -> some View {
+        Color.accentColor.mask {
+            Image(platformImage: image)
+                .resizable()
+                .scaledToFill()
+        }
     }
 }
 
@@ -84,8 +105,8 @@ private struct ThumbnailHoverParallax: ViewModifier {
 #endif
 
 extension View {
-    /// See `GridSelectionHighlight`. `image` should be the same thumbnail the cell displays,
-    /// so the glow's mask lines up with what's on screen; pass `nil` while it's still loading.
+    /// See `GridSelectionHighlight`. `image` should be the thumbnail the cell displays, so
+    /// the outline traces what's on screen; pass `nil` while it's still loading.
     func gridSelectionHighlight(_ isSelected: Bool, image: PlatformImage?) -> some View {
         modifier(GridSelectionHighlight(isSelected: isSelected, image: image))
     }

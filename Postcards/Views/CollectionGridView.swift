@@ -415,6 +415,7 @@ private struct GridCell: View {
     var onNewCollection: (CardSummary, CardTransferAction) -> Void = { _, _ in }
     var onRemove: (CardSummary) -> Void = { _ in }
 
+    @Environment(\.exportPostcard) private var exportPostcard
     @State private var thumbnail: PlatformImage?
     @State private var frontDescription: String?
     @State private var confirmingRemoval = false
@@ -454,6 +455,7 @@ private struct GridCell: View {
                     Button(target.displayName) { onCopy(card, target) }
                 }
             }
+            Button("Export…") { exportPostcard?(.inCollection(path: source.path, summary: card)) }
             Divider()
             Button("Remove from Collection…", role: .destructive) { confirmingRemoval = true }
         }

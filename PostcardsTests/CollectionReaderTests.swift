@@ -11,6 +11,11 @@ final class CollectionReaderTests: XCTestCase {
         ).path
     }
 
+    func testReadsCollectionsTheAppHasNotMigratedYet() throws {
+        let v2 = try XCTUnwrap(Bundle(for: CollectionReaderTests.self).url(forResource: "fixture-v2", withExtension: "postcards"))
+        XCTAssertEqual(try CollectionReader(path: v2.path).cardSummaries().count, 5)
+    }
+
     func testTitleMatchesGoCore() async throws {
         let path = try fixturePath()
         let reader = try CollectionReader(path: path)

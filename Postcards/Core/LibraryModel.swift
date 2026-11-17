@@ -1,9 +1,10 @@
 import Foundation
 import Observation
 
-/// The local sources shown in `LibraryView`'s "Local" section: whatever the user has opened
+/// The local collections shown in `LibraryView`'s "Local" section: whatever the user has opened
 /// (file importer, ⌘O, drag-and-drop, or Open With). Nothing is bundled — a fresh install starts
-/// empty (see `LibraryView`'s empty-library state).
+/// empty (see `LibraryView`'s empty-library state). Bare `.postcard.*` files are never kept:
+/// opening one validates it and hands it back to the caller to show in its own window.
 ///
 /// **macOS opens files in place.** The app references the original on disk (the Mac isn't
 /// sandboxed, so no security scope is needed) and remembers each one by a bookmark stored in
@@ -34,6 +35,15 @@ final class LibraryModel {
     /// without the user having to reselect the collection.
     var contentGeneration = 0
 
+    /// Component-bundle files (`{name}-front/back/only.<img>`, `{name}-meta.yaml`) opened from
+    /// outside "Create a Postcard", waiting for that window to take them in and prefill from.
+    var pendingCreateImport: [URL] = []
+
+    /// Collections on an older schema, which can't be opened until the user upgrades them
+    /// (see `GoCore.schemaStatus`). Kept out of `writableCollections`: writing to one would
+    /// migrate it as a side effect, without asking.
+    var outdatedCollectionPaths: Set<String> = []
+
     private static let collectionSuffix = ".postcards"
     private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png", ".postcard"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes
@@ -44,10 +54,6 @@ final class LibraryModel {
 
     #if os(macOS)
     private let defaults: UserDefaults
-    /// Where `addBareCard` writes — defaults to `localBareCardsDirectory`, injectable so tests
-    /// don't write into the real Application Support directory (mirrors iOS's `importDirectory`
-    /// injection below).
-    private let bareCardsDirectory: URL
     private static let bookmarksKey = "localSourceBookmarks"
 
     /// Where "New collection…" writes a brand-new local collection when iCloud isn't available.
@@ -56,16 +62,8 @@ final class LibraryModel {
         URL.applicationSupportDirectory.appending(path: "Collections", directoryHint: .isDirectory)
     }
 
-    /// Sibling of `localCollectionsDirectory`: where `addBareCard` writes a freshly compiled
-    /// card when the create-postcard flow's destination is "Individual postcards" rather than
-    /// a collection. Also app-authored, also bookmarked (see `addBareCard`).
-    nonisolated static var localBareCardsDirectory: URL {
-        URL.applicationSupportDirectory.appending(path: "Individual Postcards", directoryHint: .isDirectory)
-    }
-
-    init(defaults: UserDefaults = .standard, bareCardsDirectory: URL = LibraryModel.localBareCardsDirectory) {
+    init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.bareCardsDirectory = bareCardsDirectory
         restoreBookmarkedSources()
     }
     #else
@@ -82,16 +80,32 @@ final class LibraryModel {
     #endif
 
     /// Opens each picked file. Shared by every entry point: file importer, macOS ⌘O open panel,
-    /// drag-and-drop, and onOpenURL. macOS references the file in place; iOS copies it in.
-    func importSources(from urls: [URL]) async {
+    /// drag-and-drop, and onOpenURL. Collections become sources (macOS references them in place;
+    /// iOS copies them in). Bare card files are only validated, and returned — as URLs the app
+    /// can read for as long as it shows them — for the caller to open in their own window.
+    @discardableResult
+    func importSources(from urls: [URL]) async -> [URL] {
         var failures: [String] = []
+        var cards: [URL] = []
         for url in urls {
             do {
+                try Self.requireKnownSuffix(url)
                 #if os(macOS)
-                try await openInPlace(url)
+                if isCollectionFile(url) {
+                    try await openInPlace(url)
+                } else {
+                    _ = try await GoCore.shared.summary(ofCardFileAt: url.path)
+                    cards.append(url)
+                }
                 #else
-                let copied = try await copyIntoContainer(url)
-                try await addValidatedSource(at: copied)
+                if isCollectionFile(url) {
+                    let copied = try await Self.copy(url, into: importDirectory)
+                    try await addValidatedSource(at: copied)
+                } else {
+                    let copied = try await Self.copy(url, into: Self.openedCardsDirectory)
+                    _ = try await GoCore.shared.summary(ofCardFileAt: copied.path)
+                    cards.append(copied)
+                }
                 #endif
             } catch {
                 failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
@@ -99,6 +113,24 @@ final class LibraryModel {
         }
         if !failures.isEmpty {
             importError = failures.joined(separator: "\n")
+        }
+        return cards
+    }
+
+    /// Throws unless the collection opens — or is on an older schema, which the sidebar then
+    /// offers to upgrade rather than refusing it here.
+    private static func validateCollection(at path: String) async throws {
+        do {
+            _ = try await GoCore.shared.cardSummaries(inCollectionAt: path)
+        } catch {
+            guard (try? await GoCore.shared.schemaStatus(ofCollectionAt: path)) == .outdated else { throw error }
+        }
+    }
+
+    private static func requireKnownSuffix(_ url: URL) throws {
+        let filename = url.lastPathComponent.lowercased()
+        guard knownSuffixes.contains(where: { filename.hasSuffix($0) }) else {
+            throw ImportError(errorDescription: "Not a postcard file (expected \(knownSuffixes.joined(separator: ", "))).")
         }
     }
 
@@ -143,52 +175,8 @@ final class LibraryModel {
         url.lastPathComponent.lowercased().hasSuffix(Self.collectionSuffix)
     }
 
-    /// Writes a freshly compiled bare postcard file — the "Create a Postcard" flow's default
-    /// destination when no collection is chosen (`CreatePostcardModel.destinationCollectionPath
-    /// == nil`, "Individual postcards") — to this platform's app-owned bare-card location, and
-    /// registers it as a source so it shows up immediately (`SinglePostcardsGridView` refreshes
-    /// off `sources`, which this mutates via `addSource(for:)`). Returns the path actually
-    /// written to, which may differ from `filename` if it collided (see `uniqueURL(for:in:)`).
-    func addBareCard(filename: String, data: Data) throws -> String {
-        #if os(macOS)
-        let directory = bareCardsDirectory
-        #else
-        let directory = importDirectory
-        #endif
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let url = Self.uniqueURL(for: filename, in: directory)
-        try data.write(to: url)
-
-        #if os(macOS)
-        rememberBookmark(for: url)
-        #endif
-        addSource(for: url)
-        return url.path
-    }
-
-    /// Appends " 2", " 3", … before the known `.postcard.*` suffix until `directory` has no
-    /// file at that name — e.g. `"card.postcard.jpg"` colliding becomes `"card 2.postcard.jpg"`,
-    /// not `"card.postcard 2.jpg"`.
-    private static func uniqueURL(for filename: String, in directory: URL) -> URL {
-        let suffix = cardSuffixes.first { filename.lowercased().hasSuffix($0) } ?? ""
-        let stem = String(filename.dropLast(suffix.count))
-        var candidate = filename
-        var attempt = 1
-        while FileManager.default.fileExists(atPath: directory.appending(path: candidate).path) {
-            attempt += 1
-            candidate = "\(stem) \(attempt)\(suffix)"
-        }
-        return directory.appending(path: candidate)
-    }
-
     private func addSource(for url: URL) {
-        let name = Self.displayName(for: url)
-        if isCollectionFile(url) {
-            upsert(.collection(path: url.path, displayName: name))
-        } else {
-            upsert(.cardFile(path: url.path, displayName: name))
-        }
+        upsert(.collection(path: url.path, displayName: Self.displayName(for: url)))
     }
 
     #if os(macOS)
@@ -196,17 +184,9 @@ final class LibraryModel {
     // MARK: - Open in place (macOS)
 
     private func openInPlace(_ url: URL) async throws {
-        let filename = url.lastPathComponent
-        guard Self.knownSuffixes.contains(where: { filename.lowercased().hasSuffix($0) }) else {
-            throw ImportError(errorDescription: "Not a postcard file (expected \(Self.knownSuffixes.joined(separator: ", "))).")
-        }
         // Validate it opens via the Go core at its real path, so a corrupt/non-postcard file is
         // reported now instead of leaving a dead grid.
-        if isCollectionFile(url) {
-            _ = try await GoCore.shared.cardSummaries(inCollectionAt: url.path)
-        } else {
-            _ = try await GoCore.shared.summary(ofCardFileAt: url.path)
-        }
+        try await Self.validateCollection(at: url.path)
         rememberBookmark(for: url)
         addSource(for: url)
     }
@@ -241,7 +221,8 @@ final class LibraryModel {
 
     /// On launch, resolve every remembered bookmark: keep those that still resolve — updating the
     /// reference to the file's current location and refreshing a stale bookmark — and drop those
-    /// whose file can no longer be found. Rewrites the stored set so the drops/refreshes persist.
+    /// whose file can no longer be found, along with any bare card files earlier versions kept.
+    /// Rewrites the stored set so the drops/refreshes persist.
     private func restoreBookmarkedSources() {
         var kept: [Data] = []
         var seen = Set<String>()
@@ -250,7 +231,7 @@ final class LibraryModel {
             guard let url = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
                 continue // file gone — drop it
             }
-            guard seen.insert(url.path).inserted else { continue } // de-duplicate by resolved path
+            guard isCollectionFile(url), seen.insert(url.path).inserted else { continue }
             kept.append(stale ? (makeBookmark(for: url) ?? bookmark) : bookmark)
             addSource(for: url)
         }
@@ -261,14 +242,14 @@ final class LibraryModel {
 
     // MARK: - Copy into container (iOS)
 
-    private func copyIntoContainer(_ url: URL) async throws -> URL {
-        let filename = url.lastPathComponent
-        guard Self.knownSuffixes.contains(where: { filename.lowercased().hasSuffix($0) }) else {
-            throw ImportError(errorDescription: "Not a postcard file (expected \(Self.knownSuffixes.joined(separator: ", "))).")
-        }
+    /// Where an opened bare card is copied so it stays readable while it's shown. Temporary:
+    /// cards are never kept in-app.
+    nonisolated static var openedCardsDirectory: URL {
+        FileManager.default.temporaryDirectory.appending(path: "OpenedPostcards", directoryHint: .isDirectory)
+    }
 
-        let destination = importDirectory.appending(path: filename)
-        let directory = importDirectory
+    private static func copy(_ url: URL, into directory: URL) async throws -> URL {
+        let destination = directory.appending(path: url.lastPathComponent)
 
         await GoCore.shared.invalidateSource(at: destination.path)
 
@@ -302,11 +283,7 @@ final class LibraryModel {
 
     private func addValidatedSource(at url: URL) async throws {
         do {
-            if isCollectionFile(url) {
-                _ = try await GoCore.shared.cardSummaries(inCollectionAt: url.path)
-            } else {
-                _ = try await GoCore.shared.summary(ofCardFileAt: url.path)
-            }
+            try await Self.validateCollection(at: url.path)
             addSource(for: url)
         } catch {
             try? FileManager.default.removeItem(at: url)
@@ -319,12 +296,32 @@ final class LibraryModel {
             return
         }
         for url in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let filename = url.lastPathComponent.lowercased()
-            if filename.hasSuffix(Self.collectionSuffix) || Self.cardSuffixes.contains(where: filename.hasSuffix) {
+            if isCollectionFile(url) {
                 addSource(for: url)
             }
         }
     }
 
     #endif
+}
+
+extension LibraryModel {
+    /// Every collection a card can be added to — imported plus fully-downloaded iCloud ones,
+    /// deduplicated by path (see `WritableCollection.known(sources:downloaded:)`). A
+    /// just-created iCloud collection can briefly be in both `sources` and `cloudLibrary.items`.
+    func writableCollections(with cloudLibrary: CloudLibrary) -> [WritableCollection] {
+        let downloaded = cloudLibrary.items
+            .filter { $0.isCollection && $0.downloadState == .current }
+            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
+        return WritableCollection.known(sources: sources, downloaded: downloaded)
+            .filter { !outdatedCollectionPaths.contains($0.path) }
+    }
+
+    /// Every openable-or-upgradable collection path, for checking which are outdated.
+    func knownCollectionPaths(with cloudLibrary: CloudLibrary) -> [String] {
+        let downloaded = cloudLibrary.items
+            .filter { $0.isCollection && $0.downloadState == .current }
+            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
+        return WritableCollection.known(sources: sources, downloaded: downloaded).map(\.path)
+    }
 }

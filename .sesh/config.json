@@ -1,0 +1,5 @@
+{
+  "setup": "xcodegen generate",
+  "copy": ["Frameworks/*"],
+  "ports": 0
+}
