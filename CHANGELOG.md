@@ -4,6 +4,19 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.5 (2026-11-17)
+
+### Features
+
+- outline the selected grid card along its own silhouette
+- export a postcard's stored file with File ▸ Export… (⇧⌘S)
+- open individual postcards in their own window
+- keep a zoomed postcard from being panned off screen
+- open component bundles into Create a Postcard
+- put Back beside the collection name, freeing the sidebar to narrow
+- keep the sidebar on screen in narrow windows
+- update dotpostcard to v0.50.0 and offer to upgrade old collections
+
 ## 0.7.4 (2026-10-02)
 
 ### Features
