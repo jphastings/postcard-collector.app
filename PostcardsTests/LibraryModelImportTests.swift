@@ -110,6 +110,22 @@ final class LibraryModelImportTests: XCTestCase {
         XCTAssertEqual(model.sources.count, countAfterFirst)
     }
 
+    func testOpenedCardFileIsHandedBackButNeverKept() async throws {
+        let collection = try stagePickedCollection()
+        let cards = try await GoCore.shared.cardSummaries(inCollectionAt: collection.path)
+        let card = try XCTUnwrap(cards.first)
+        let picked = pickedDirectory.appending(path: "loose.postcard.\(PostcardExportNaming.fileExtension(forMimetype: card.mimetype))")
+        try await GoCore.shared.image(forCard: card.name, inCollectionAt: collection.path).write(to: picked)
+        let model = LibraryModel(defaults: defaults)
+
+        let opened = await model.importSources(from: [picked])
+
+        XCTAssertNil(model.importError)
+        XCTAssertEqual(opened, [picked])
+        XCTAssertTrue(model.sources.isEmpty)
+        XCTAssertTrue(LibraryModel(defaults: defaults).sources.isEmpty, "a card must not come back on relaunch")
+    }
+
     func testNonPostcardFileIsRejectedWithAVisibleError() async throws {
         let junk = pickedDirectory.appending(path: "notes.txt")
         try Data("hello".utf8).write(to: junk)

@@ -275,8 +275,8 @@ final class CreatePostcardModel {
     var backSecrets: [SecretRegion] = []
 
     /// Preselected from `LibraryModel.lastSelectedCollectionPath` by the (out-of-scope) form
-    /// view. `nil` is itself a valid destination — "Individual postcards," a bare file (see
-    /// `LibraryModel.addBareCard`) — not an unset one, so it never blocks `canCreate`.
+    /// view. `nil` is itself a valid destination — "Save as file…", a bare file the user saves
+    /// wherever they like — not an unset one, so it never blocks `canCreate`.
     var destinationCollectionPath: String?
 
     // MARK: - Component provenance
@@ -381,7 +381,7 @@ final class CreatePostcardModel {
     /// Postcard" form's clear-on-success flow (`CreatePostcardForm.create()`), where scanning a
     /// whole stack into one collection is the core loop: the destination is UI state, not
     /// postcard content (see that property's and `isPristine`'s doc comments), so a card's
-    /// success shouldn't reset it back to "Individual postcards" for the next one.
+    /// success shouldn't reset it back to "Save as file…" for the next one.
     func resetKeepingDestination() {
         let destination = destinationCollectionPath
         reset()
@@ -814,8 +814,8 @@ final class CreatePostcardModel {
 
     // MARK: - Create gating
 
-    /// `destinationCollectionPath == nil` is a valid destination ("Individual postcards", a
-    /// bare file — see `LibraryModel.addBareCard`), not a missing one, so it never blocks.
+    /// `destinationCollectionPath == nil` is a valid destination ("Save as file…", a bare
+    /// file), not a missing one, so it never blocks.
     var blockingIssues: [CreateIssue] {
         var issues: [CreateIssue] = []
         if front == nil { issues.append(.missingFrontImage) }

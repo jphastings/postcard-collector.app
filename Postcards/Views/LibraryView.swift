@@ -25,6 +25,8 @@ import UIKit
 /// switcher all live in the sidebar's own toolbar, in the titlebar, clickable, with nothing
 /// else sharing that section. See `CollectionBrowser` and `CollectionModeSwitcher`.
 struct LibraryView: View {
+    static let windowID = "library"
+
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
 
@@ -42,6 +44,10 @@ struct LibraryView: View {
     /// iPad's "Create Postcard…" presentation (macOS opens a real `Window` scene instead —
     /// see `presentCreatePostcard()`); always `false` on iPhone, which has no entry point.
     @State private var isPresentingCreateForm = false
+    #if os(iOS)
+    /// An opened bare card, shown full screen (macOS opens a window instead — see `open(_:)`).
+    @State private var presentedCardURL: URL?
+    #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
@@ -130,11 +136,9 @@ struct LibraryView: View {
                         searchRequest: searchRequest,
                         contentGeneration: library.contentGeneration,
                         onCreateCollection: { try await createCollection(titled: $0) },
-                        onFileConsumed: { library.remove(path: $0) },
                         onImport: { isImporting = true },
                         onCreate: presentCreatePostcard,
-                        collectionPaths: writableCollections.map(\.path),
-                        barePaths: barePaths(for: source)
+                        collectionPaths: writableCollections.map(\.path)
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
@@ -148,7 +152,7 @@ struct LibraryView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    Task { await library.importSources(from: urls) }
+                    Task { await open(urls) }
                 case .failure(let error):
                     library.importError = error.localizedDescription
                 }
@@ -239,13 +243,29 @@ struct LibraryView: View {
         .postcardExporting(openCard: selectedCard)
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
-            Task { await library.importSources(from: urls) }
+            Task { await open(urls) }
             return true
         }
         // Double-click / "Open With" documents (see CFBundleDocumentTypes in project.yml).
+        #if os(macOS)
+        .opensPostcardFiles(library: library)
+        #else
         .onOpenURL { url in
-            Task { await library.importSources(from: [url]) }
+            Task { await open([url]) }
         }
+        .fullScreenCover(isPresented: Binding(get: { presentedCardURL != nil }, set: { if !$0 { presentedCardURL = nil } })) {
+            if let presentedCardURL {
+                NavigationStack {
+                    SinglePostcardView(url: presentedCardURL, library: library, cloudLibrary: cloudLibrary)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { self.presentedCardURL = nil }
+                            }
+                        }
+                }
+            }
+        }
+        #endif
         #if os(iOS)
         // iPad only in practice: `AddMenu` never sets this on iPhone, which keeps the plain
         // import button. macOS opens a real `Window` scene instead — see `presentCreatePostcard()`.
@@ -317,7 +337,7 @@ struct LibraryView: View {
                 }
                 .accessibilityIdentifier("All collections")
             }
-            if !importedCollectionSources.isEmpty || !localBarePaths.isEmpty {
+            if !importedCollectionSources.isEmpty {
                 Section(header: sectionHeader("Local")) {
                     ForEach(importedCollectionSources) { source in
                         NavigationLink(value: source) {
@@ -325,14 +345,9 @@ struct LibraryView: View {
                         }
                         .contextMenu { importedCollectionMenu(for: source) }
                     }
-                    // Bare local files aggregate into an "Individual postcards" row at the bottom
-                    // of the section they're stored in.
-                    if !localBarePaths.isEmpty {
-                        individualPostcardsRow(scope: .local)
-                    }
                 }
             }
-            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty || !cloudBarePaths.isEmpty {
+            if cloudLibrary.containerState == .available, !cloudSidebarItems.isEmpty {
                 Section(header: sectionHeader("iCloud")) {
                     ForEach(cloudSidebarItems) { item in
                         if item.downloadState == .current {
@@ -354,19 +369,9 @@ struct LibraryView: View {
                             CloudItemRow(item: item, refreshToken: 0)
                         }
                     }
-                    if !cloudBarePaths.isEmpty {
-                        individualPostcardsRow(scope: .cloud)
-                    }
                 }
             }
         }
-    }
-
-    private func individualPostcardsRow(scope: SinglePostcardsScope) -> some View {
-        NavigationLink(value: LibrarySource.singlePostcards(scope)) {
-            Label("Individual postcards", systemImage: "photo.on.rectangle.angled")
-        }
-        .accessibilityIdentifier("Individual postcards (\(scope.rawValue))")
     }
 
     /// A section subheading a little larger than SwiftUI's default sidebar header, sitting below
@@ -389,7 +394,7 @@ struct LibraryView: View {
     }
 
     private var hasAnySources: Bool {
-        !library.sources.isEmpty || !cloudLibrary.items.isEmpty
+        !library.sources.isEmpty || !cloudSidebarItems.isEmpty
     }
 
     /// The "Library" sidebar section's rows: imported collections, minus any whose path is
@@ -402,52 +407,14 @@ struct LibraryView: View {
         }
     }
 
-    /// The "iCloud" sidebar section's rows: fully-downloaded bare files move into "Single
-    /// postcards" below instead (aggregating them before they exist locally would just mean
-    /// showing progress rows in two places), so only collections and not-yet-downloaded bare
-    /// files stay here.
+    /// The "iCloud" sidebar section's rows. Bare card files in iCloud Drive aren't listed:
+    /// they open in their own window from Finder/Files like any other.
     private var cloudSidebarItems: [CloudItem] {
-        cloudLibrary.items.filter { $0.isCollection || $0.downloadState != .current }
+        cloudLibrary.items.filter(\.isCollection)
     }
 
-    /// Bare `.postcard.*` files opened locally (imported) — the Local "Individual postcards" row.
-    private var localBarePaths: [String] {
-        library.sources.compactMap { source -> String? in
-            if case .cardFile(let path, _) = source { return path }
-            return nil
-        }
-    }
-
-    /// Bare `.postcard.*` files synced from iCloud, only the fully-downloaded ones (see the iCloud
-    /// section comment) — the iCloud "Individual postcards" row.
-    private var cloudBarePaths: [String] {
-        cloudLibrary.items
-            .filter { !$0.isCollection && $0.downloadState == .current }
-            .map(\.path)
-    }
-
-    /// Every bare file the app knows about, local + iCloud — the union "All collections" searches.
-    private var allBarePaths: [String] { localBarePaths + cloudBarePaths }
-
-    /// The bare-file subset a pushed destination should show: the local or iCloud aggregate for an
-    /// "Individual postcards" row, the full union for "All collections".
-    private func barePaths(for source: LibrarySource) -> [String] {
-        switch source {
-        case .singlePostcards(.local): return localBarePaths
-        case .singlePostcards(.cloud): return cloudBarePaths
-        default: return allBarePaths
-        }
-    }
-
-    /// Every collection the app currently knows about — imported plus fully-downloaded
-    /// iCloud ones — for the grid cells' "Move to Collection…"/"Copy to Collection…" menus.
-    /// Deduplicated by path: a just-created iCloud collection can briefly be in both
-    /// `library.sources` (registered for instant visibility) and `cloudLibrary.items`.
     private var writableCollections: [WritableCollection] {
-        let downloaded = cloudLibrary.items
-            .filter { $0.isCollection && $0.downloadState == .current }
-            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
-        return WritableCollection.known(sources: library.sources, downloaded: downloaded)
+        library.writableCollections(with: cloudLibrary)
     }
 
     // MARK: - Sidebar row actions (Feature 3)
@@ -608,6 +575,18 @@ struct LibraryView: View {
         return WritableCollection(path: url.path, displayName: CollectionNaming.stem(forTitle: title))
     }
 
+    /// Collections join the library; bare cards open on their own — a window on macOS, full
+    /// screen on iOS.
+    private func open(_ urls: [URL]) async {
+        #if os(macOS)
+        await openPostcardFiles(urls, library: library, openWindow: openWindow)
+        #else
+        for card in await library.importSources(from: urls) {
+            presentedCardURL = card
+        }
+        #endif
+    }
+
     // MARK: - Create a Postcard
 
     /// `AddMenu`'s "Create Postcard…" action: a real `Window` scene on macOS, a full-screen
@@ -630,29 +609,11 @@ struct LibraryView: View {
         #endif
     }
 
-    /// Replaces the Go `Library`'s source set with every collection/bare file currently
-    /// known — imported and fully-downloaded cloud items — so "All collections" search
-    /// fans out across all of them (see `AllCollectionsView`).
+    /// Replaces the Go `Library`'s source set with every collection currently known —
+    /// imported and fully-downloaded cloud items — so "All collections" search fans out
+    /// across all of them (see `AllCollectionsView`).
     private func syncLibrarySearchSources() async {
-        var collections: [String] = []
-        var cardFiles: [String] = []
-
-        for source in library.sources {
-            switch source {
-            case .collection(let path, _): collections.append(path)
-            case .cardFile(let path, _): cardFiles.append(path)
-            case .singlePostcards, .allCollections: break
-            }
-        }
-        for item in cloudLibrary.items where item.downloadState == .current {
-            if item.isCollection {
-                collections.append(item.path)
-            } else {
-                cardFiles.append(item.path)
-            }
-        }
-
-        try? await GoCore.shared.setLibrarySources(collections: collections, cardFiles: cardFiles)
+        try? await GoCore.shared.setLibrarySources(collections: writableCollections.map(\.path), cardFiles: [])
     }
 }
 
@@ -678,11 +639,9 @@ private struct CollectionBrowser: View {
     /// reload picks up the new card without the user reselecting the collection.
     var contentGeneration = 0
     var onCreateCollection: ((String) async throws -> WritableCollection)?
-    var onFileConsumed: (String) -> Void = { _ in }
     var onImport: () -> Void
     var onCreate: () -> Void
     let collectionPaths: [String]
-    let barePaths: [String]
 
     /// Pops this destination off the sidebar's `NavigationStack` (used by the top-left back
     /// button on macOS, since the framework's own inline back button is hidden).
@@ -703,38 +662,9 @@ private struct CollectionBrowser: View {
                     contentGeneration: contentGeneration,
                     onCreateCollection: onCreateCollection
                 )
-            case .cardFile(let path, _):
-                // A bare file reached directly (not via "Single postcards") still routes
-                // through the same aggregate grid, just scoped to its own path, so it gets
-                // the identical browsing UI (search, context menu, map) as any other bare
-                // file rather than a bespoke one-card view.
-                SinglePostcardsGridView(
-                    paths: [path],
-                    selection: $selectedCard,
-                    viewMode: $viewMode,
-                    hasAnyLocation: $hasAnyLocation,
-                    writableCollections: writableCollections,
-                    cloudLibrary: cloudLibrary,
-                    searchRequest: searchRequest,
-                    onFileConsumed: onFileConsumed,
-                    onCreateCollection: onCreateCollection
-                )
-            case .singlePostcards:
-                SinglePostcardsGridView(
-                    paths: barePaths,
-                    selection: $selectedCard,
-                    viewMode: $viewMode,
-                    hasAnyLocation: $hasAnyLocation,
-                    writableCollections: writableCollections,
-                    cloudLibrary: cloudLibrary,
-                    searchRequest: searchRequest,
-                    onFileConsumed: onFileConsumed,
-                    onCreateCollection: onCreateCollection
-                )
             case .allCollections:
                 AllCollectionsView(
                     collectionPaths: collectionPaths,
-                    barePaths: barePaths,
                     selection: $selectedCard,
                     viewMode: $viewMode,
                     hasAnyLocation: $hasAnyLocation,
@@ -1026,8 +956,8 @@ private struct HideInlineNavBar: ViewModifier {
 }
 #endif
 
-private extension View {
-    /// See the call site in `LibraryView.body` for why this is applied app-wide.
+extension View {
+    /// See the call site in `LibraryView.body` for why this is applied to every window.
     func transparentWindowToolbarBackground() -> some View {
         #if os(macOS)
         modifier(TransparentWindowToolbarBackground())

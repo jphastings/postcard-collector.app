@@ -4,7 +4,7 @@ final class LibrarySourceTests: XCTestCase {
     func testKnownCollectionsCombinesLocalAndDownloadedDedupedByPath() {
         let sources: [LibrarySource] = [
             .collection(path: "/local/a.postcards", displayName: "A"),
-            .cardFile(path: "/local/bare.postcard.jpeg", displayName: "Bare"),
+            .allCollections,
         ]
         let downloaded = [
             WritableCollection(path: "/cloud/b.postcards", displayName: "B"),

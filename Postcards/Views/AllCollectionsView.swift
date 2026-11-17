@@ -1,8 +1,7 @@
 import SwiftUI
 
 /// The content pane for the sidebar's synthetic "All collections" row: the union of every
-/// card from every known source — collections and Single-postcards bare files alike — in
-/// the same masonry grid / map UI the per-collection views use. The sidebar picks the
+/// card from every known collection, in the same masonry grid / map UI the per-collection views use. The sidebar picks the
 /// SCOPE; this pane lists the matching postcards; the detail pane shows the tapped one.
 ///
 /// Search fans out through the Go `Library` (`GoCore.searchLibrary` — the same sources
@@ -11,8 +10,6 @@ import SwiftUI
 struct AllCollectionsView: View {
     /// Paths of every known, openable collection (imported + fully-downloaded iCloud).
     let collectionPaths: [String]
-    /// Paths of every known bare `.postcard.*` file.
-    let barePaths: [String]
     @Binding var selection: CardReference?
     /// Grid/map toggle, lifted to `LibraryView` and owned by its `CollectionBrowser`
     /// destination wrapper — see that type's doc comment.
@@ -53,12 +50,11 @@ struct AllCollectionsView: View {
 
     private struct SourcesKey: Equatable {
         var collections: [String]
-        var bare: [String]
         var generation: Int
     }
 
     private var sourcesKey: SourcesKey {
-        SourcesKey(collections: collectionPaths, bare: barePaths, generation: contentGeneration)
+        SourcesKey(collections: collectionPaths, generation: contentGeneration)
     }
 
     /// What both the grid and the map show: search hits while a query is active, the full
@@ -166,15 +162,6 @@ struct AllCollectionsView: View {
                 union += summaries.map { MapCardEntry(summary: $0, reference: .inCollection(path: path, summary: $0)) }
             } catch {
                 // One unreadable source shouldn't blank the union; its cards just won't appear.
-                continue
-            }
-        }
-        for path in barePaths {
-            do {
-                try await primeIfCloudBacked(path)
-                let summary = try await GoCore.shared.summary(ofCardFileAt: path)
-                union.append(MapCardEntry(summary: summary, reference: .bareFile(path: path, summary: summary)))
-            } catch {
                 continue
             }
         }

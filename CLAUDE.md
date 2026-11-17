@@ -56,6 +56,12 @@ Two-column `NavigationSplitView`: a sidebar hosting a `NavigationStack` (collect
 (with its info inspector/sheet). The sidebar column widens in map mode (`SidebarWidths`).
 On iPhone the same stack collapses to collections → postcards → postcard.
 
+The library holds collections only. A bare `.postcard.*` file is never kept: opening one
+(⌘O, drop, Finder) shows it in a `SinglePostcardView`, its own window on macOS (full screen
+on iOS) with "Add to Collection". macOS has exactly one collections window (a `Window`
+scene, not a `WindowGroup`) and any number of postcard windows; route every file-open
+through `openPostcardFiles` so cards and collections land in the right one.
+
 This replaced a 3-column layout after its middle column's toolbar items drifted **four
 times**. The lessons, which the architecture now encodes:
 
