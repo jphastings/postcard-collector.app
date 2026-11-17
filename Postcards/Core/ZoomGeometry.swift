@@ -78,4 +78,59 @@ enum ZoomGeometry {
             height: min(max(offset.height, -maxY), maxY)
         )
     }
+
+    /// The pan offsets, per axis, that keep at least `minVisibleFraction` of the card on
+    /// screen: `card` is its at-rest frame inside a `viewport`-sized container (the content
+    /// space, scaled by `scale` about the viewport's centre, then panned).
+    static func panBounds(
+        card: CGRect, viewport: CGSize, scale: CGFloat, minVisibleFraction: CGFloat = 0.25
+    ) -> PanBounds {
+        func range(cardMin: CGFloat, cardMax: CGFloat, length: CGFloat) -> ClosedRange<CGFloat> {
+            let center = length / 2
+            let margin = minVisibleFraction * scale * (cardMax - cardMin)
+            return (margin - center - scale * (cardMax - center))...(length - margin - center - scale * (cardMin - center))
+        }
+        return PanBounds(
+            x: range(cardMin: card.minX, cardMax: card.maxX, length: viewport.width),
+            y: range(cardMin: card.minY, cardMax: card.maxY, length: viewport.height)
+        )
+    }
+
+    struct PanBounds: Equatable {
+        var x: ClosedRange<CGFloat>
+        var y: ClosedRange<CGFloat>
+
+        func clamp(_ offset: CGSize) -> CGSize {
+            CGSize(width: offset.width.clamped(to: x), height: offset.height.clamped(to: y))
+        }
+
+        func contains(_ offset: CGSize) -> Bool {
+            x.contains(offset.width) && y.contains(offset.height)
+        }
+
+        /// `offset` as shown while being dragged: free within bounds, and past them only the
+        /// diminishing give of system scroll views' overscroll — `(1 - 1/(x·0.55/d + 1))·d`
+        /// for `x` past the edge on an axis whose viewport is `d` long — so pulling further
+        /// moves the card less and less, never past one viewport length.
+        func rubberBanded(_ offset: CGSize, viewport: CGSize) -> CGSize {
+            CGSize(
+                width: Self.band(offset.width, within: x, dimension: viewport.width),
+                height: Self.band(offset.height, within: y, dimension: viewport.height)
+            )
+        }
+
+        private static func band(_ value: CGFloat, within range: ClosedRange<CGFloat>, dimension: CGFloat) -> CGFloat {
+            let overshoot = value > range.upperBound ? value - range.upperBound
+                : value < range.lowerBound ? value - range.lowerBound : 0
+            guard overshoot != 0, dimension > 0 else { return value }
+            let give = (1 - 1 / (abs(overshoot) * 0.55 / dimension + 1)) * dimension
+            return overshoot > 0 ? range.upperBound + give : range.lowerBound - give
+        }
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
 }

@@ -204,4 +204,14 @@ final class CardFitGeometryTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(value, 0)
         }
     }
+
+    func testCardFrameIsTheCardItselfNotTheAreaItsFittedInto() {
+        // A square card in a wide pane: the padded area is 868 wide, but the card only 420.
+        let frame = CardFitGeometry.cardFrame(
+            paneSize: CGSize(width: 900, height: 452),
+            padding: EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16),
+            boundingSize: CGSize(width: 1000, height: 1000)
+        )
+        XCTAssertEqual(frame, CGRect(x: 240, y: 16, width: 420, height: 420))
+    }
 }

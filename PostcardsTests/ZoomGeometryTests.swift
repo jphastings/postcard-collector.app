@@ -168,4 +168,46 @@ final class ZoomGeometryTests: XCTestCase {
         )
         XCTAssertEqual(clamped, CGSize(width: -80, height: 0))
     }
+
+    // MARK: - Pan bounds & rubber banding
+
+    private let viewport = CGSize(width: 1000, height: 800)
+    private let card = CGRect(x: 100, y: 100, width: 800, height: 600)
+
+    /// How much of the card's width is on screen, for content scaled about the viewport centre.
+    private func visibleWidth(offset: CGFloat, scale: CGFloat) -> CGFloat {
+        let center = viewport.width / 2
+        let left = center + offset + scale * (card.minX - center)
+        let right = center + offset + scale * (card.maxX - center)
+        return min(right, viewport.width) - max(left, 0)
+    }
+
+    func testPanBoundsLeaveAQuarterOfTheZoomedCardOnScreen() {
+        let bounds = ZoomGeometry.panBounds(card: card, viewport: viewport, scale: 2)
+        let quarter = 0.25 * card.width * 2
+
+        XCTAssertEqual(visibleWidth(offset: bounds.x.upperBound, scale: 2), quarter, accuracy: 0.001)
+        XCTAssertEqual(visibleWidth(offset: bounds.x.lowerBound, scale: 2), quarter, accuracy: 0.001)
+        XCTAssertTrue(bounds.contains(.zero))
+    }
+
+    func testClampSettlesAnOffscreenCardBackToTheBound() {
+        let bounds = ZoomGeometry.panBounds(card: card, viewport: viewport, scale: 2)
+        let settled = bounds.clamp(CGSize(width: 5000, height: -5000))
+        XCTAssertEqual(settled, CGSize(width: bounds.x.upperBound, height: bounds.y.lowerBound))
+    }
+
+    func testRubberBandingGivesLessAndLessPastTheBound() {
+        let bounds = ZoomGeometry.panBounds(card: card, viewport: viewport, scale: 2)
+        let edge = bounds.x.upperBound
+        func shown(_ pull: CGFloat) -> CGFloat {
+            bounds.rubberBanded(CGSize(width: edge + pull, height: 0), viewport: viewport).width - edge
+        }
+
+        XCTAssertEqual(bounds.rubberBanded(CGSize(width: 10, height: -10), viewport: viewport), CGSize(width: 10, height: -10))
+        XCTAssertLessThan(shown(100), 100)
+        XCTAssertGreaterThan(shown(200), shown(100))
+        XCTAssertLessThan(shown(200) - shown(100), shown(100), "each further pull should move the card less")
+        XCTAssertLessThan(shown(1_000_000), viewport.width)
+    }
 }

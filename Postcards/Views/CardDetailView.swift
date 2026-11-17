@@ -24,11 +24,18 @@ struct CardDetailView: View {
     @State private var zoomOffset: CGSize = .zero
     @State private var lastZoomOffset: CGSize = .zero
     @State private var contentSize: CGSize = .zero
+    /// The at-rest card's frame within `contentSize` — what `panBounds` measures the card by.
+    @State private var cardFrame: CGRect = .zero
 
     #if os(macOS)
     // Token for the trackpad-pan scroll monitor installed by `zoomableCard` — see
     // `installTrackpadPanMonitor`.
     @State private var scrollMonitor: Any?
+    /// One trackpad scroll's running total, rubber-banded onto `zoomOffset` as it goes.
+    @State private var scrollPanRaw: CGSize = .zero
+    /// Set once a scroll has settled back from overshooting, so its trailing momentum
+    /// doesn't push the card out again (AppKit's scroll views stop momentum at the edge too).
+    @State private var ignoresScrollMomentum = false
     #endif
 
     // The flip is driven through this binding; FlippableCardView's own `tapToFlip` is disabled
@@ -160,13 +167,14 @@ struct CardDetailView: View {
                 if zoomScale <= minZoomScale {
                     resetZoom()
                 } else if zoomScale > maxZoomScale {
-                    let settledOffset = ZoomGeometry.offset(
+                    let anchoredOffset = ZoomGeometry.offset(
                         keepingAnchor: pinchAnchor(value),
                         inContentOfSize: contentSize,
                         previousScale: zoomScale,
                         previousOffset: zoomOffset,
                         newScale: maxZoomScale
                     )
+                    let settledOffset = panBounds(scale: maxZoomScale).clamp(anchoredOffset)
                     withAnimation(.snappy) {
                         zoomScale = maxZoomScale
                         zoomOffset = settledOffset
@@ -175,7 +183,7 @@ struct CardDetailView: View {
                     lastZoomOffset = settledOffset
                 } else {
                     lastZoomScale = zoomScale
-                    lastZoomOffset = zoomOffset
+                    settlePan()
                 }
             }
     }
@@ -203,15 +211,33 @@ struct CardDetailView: View {
                 // pre-transform-space correction would) double-counts the transform on every
                 // frame the offset itself changes, since that offset moves the gesture's own
                 // local space: a feedback loop that made the card jitter while panning.
-                zoomOffset = CGSize(
+                let raw = CGSize(
                     width: lastZoomOffset.width + value.translation.width,
                     height: lastZoomOffset.height + value.translation.height
                 )
+                zoomOffset = panBounds(scale: zoomScale).rubberBanded(raw, viewport: contentSize)
             }
             .onEnded { _ in
                 guard zoomScale > minZoomScale else { return }
-                lastZoomOffset = zoomOffset
+                settlePan()
             }
+    }
+
+    /// How far the card may be panned at `scale` while keeping a quarter of it on screen — a
+    /// smaller sliver can be all transparent edge on a die-cut card, and then it reads as lost.
+    /// See `ZoomGeometry.panBounds`.
+    private func panBounds(scale: CGFloat) -> ZoomGeometry.PanBounds {
+        ZoomGeometry.panBounds(card: cardFrame, viewport: contentSize, scale: scale)
+    }
+
+    /// Ends a pan: a card pulled past its bounds springs back to them, as an overscrolled
+    /// scroll view does.
+    private func settlePan() {
+        let settled = panBounds(scale: zoomScale).clamp(zoomOffset)
+        if settled != zoomOffset {
+            withAnimation(.spring(response: 0.35, dampingFraction: 1)) { zoomOffset = settled }
+        }
+        lastZoomOffset = settled
     }
 
     // A plain single tap flips the card immediately — no exclusively-before double-tap check,
@@ -313,6 +339,14 @@ struct CardDetailView: View {
             // the physical edges — clipped only by the container below, which spans the full
             // screen.
             .padding(atRestPadding(screen: proxy.size, insets: insets))
+            .onChange(of: atRestPadding(screen: proxy.size, insets: insets), initial: true) { _, padding in
+                cardFrame = CardFitGeometry.cardFrame(paneSize: proxy.size, padding: padding, boundingSize: fitSize)
+            }
+            .onChange(of: fitSize) { _, size in
+                cardFrame = CardFitGeometry.cardFrame(
+                    paneSize: proxy.size, padding: atRestPadding(screen: proxy.size, insets: insets), boundingSize: size
+                )
+            }
             // Fills the whole detail area (rather than just the card's aspect-fitted band) so
             // zoomed content has the full screen to pan across instead of being clipped back
             // to a small centered band.
@@ -350,11 +384,34 @@ struct CardDetailView: View {
             // benefit — scroll only ever pans while zoomed, so gating on the key window is close
             // enough without it.
             guard zoomScale > minZoomScale, event.window === NSApp.keyWindow else { return event }
-            zoomOffset = CGSize(
-                width: zoomOffset.width + event.scrollingDeltaX,
-                height: zoomOffset.height + event.scrollingDeltaY
-            )
-            lastZoomOffset = zoomOffset
+            let delta = CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY)
+            let bounds = panBounds(scale: zoomScale)
+
+            // A mouse wheel has no gesture phases: nothing to rubber-band against, so just stop
+            // at the bounds.
+            if event.phase.isEmpty && event.momentumPhase.isEmpty {
+                zoomOffset = bounds.clamp(CGSize(width: zoomOffset.width + delta.width, height: zoomOffset.height + delta.height))
+                lastZoomOffset = zoomOffset
+                return nil
+            }
+
+            if event.phase.contains(.began) {
+                scrollPanRaw = zoomOffset
+                ignoresScrollMomentum = false
+            }
+            if !event.momentumPhase.isEmpty, ignoresScrollMomentum { return nil }
+
+            scrollPanRaw = CGSize(width: scrollPanRaw.width + delta.width, height: scrollPanRaw.height + delta.height)
+            zoomOffset = bounds.rubberBanded(scrollPanRaw, viewport: contentSize)
+
+            let fingersLifted = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+            let momentumOvershot = !event.momentumPhase.isEmpty && !bounds.contains(zoomOffset)
+            if fingersLifted && !bounds.contains(zoomOffset) || momentumOvershot || event.momentumPhase.contains(.ended) {
+                ignoresScrollMomentum = true
+                settlePan()
+            } else {
+                lastZoomOffset = zoomOffset
+            }
             return nil
         }
     }
@@ -367,6 +424,11 @@ struct CardDetailView: View {
     }
     #endif
 
+    /// The card's at-rest bounding box (see `atRestPadding`).
+    private var fitSize: CGSize {
+        FlipGeometry.fitSize(forFrontSize: frontPixelSize, flip: reference.summary.flip, fitsFrontOnly: fitsFrontOnly)
+    }
+
     /// The at-rest inset for the card: whatever padding lands the aspect-fit, centred bounding
     /// box (front AND back — see `FlipGeometry.boundingSize`) in whichever of
     /// `CardFitGeometry`'s regimes fits it biggest, clear of the toolbar's button clusters. See
@@ -375,12 +437,9 @@ struct CardDetailView: View {
     /// portrait card's would be; the first flip zooms out to the full box before the back shows
     /// (`FlippableCardView.frontFitRelease`), so the back still never pokes under a button.
     private func atRestPadding(screen: CGSize, insets: EdgeInsets) -> EdgeInsets {
-        let bounding = FlipGeometry.fitSize(
-            forFrontSize: frontPixelSize, flip: reference.summary.flip, fitsFrontOnly: fitsFrontOnly
-        )
-        return CardFitGeometry.atRestPadding(
+        CardFitGeometry.atRestPadding(
             paneSize: screen,
-            boundingSize: bounding,
+            boundingSize: fitSize,
             toolbar: toolbarGeometry(insets: insets),
             bottomInset: insets.bottom,
             // On macOS, an open `.inspector` reports its width as a trailing safe-area inset on
