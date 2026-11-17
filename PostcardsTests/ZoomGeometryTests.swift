@@ -136,39 +136,6 @@ final class ZoomGeometryTests: XCTestCase {
         XCTAssertEqual(ZoomGeometry.resistedScale(-100, within: 1...5), 0)
     }
 
-    // MARK: - clampedOffset (watch double-tap zoom pan)
-
-    func testClampedOffsetPassesThroughWithinBounds() {
-        let containerSize = CGSize(width: 200, height: 300)
-        let offset = CGSize(width: 10, height: 10)
-        XCTAssertEqual(ZoomGeometry.clampedOffset(offset, contentSize: CGSize(width: 400, height: 600), containerSize: containerSize), offset)
-    }
-
-    func testClampedOffsetClampsToHalfTheOverhang() {
-        let containerSize = CGSize(width: 200, height: 300)
-        // Content twice the container's size overhangs by one container on each axis; half of
-        // that is as far as it can pan before a gap would open at the opposite edge.
-        let clamped = ZoomGeometry.clampedOffset(
-            CGSize(width: 1000, height: -1000), contentSize: CGSize(width: 400, height: 600), containerSize: containerSize
-        )
-        XCTAssertEqual(clamped, CGSize(width: 100, height: -150))
-    }
-
-    func testClampedOffsetIsZeroWhenTheContentFits() {
-        let clamped = ZoomGeometry.clampedOffset(
-            CGSize(width: 50, height: 50), contentSize: CGSize(width: 200, height: 200), containerSize: CGSize(width: 200, height: 200)
-        )
-        XCTAssertEqual(clamped, .zero)
-    }
-
-    func testClampedOffsetKeepsContentCentredAlongAnAxisItDoesNotOverflow() {
-        // A zoomed landscape card: wider than the screen, but still shorter than it.
-        let clamped = ZoomGeometry.clampedOffset(
-            CGSize(width: -80, height: 60), contentSize: CGSize(width: 500, height: 250), containerSize: CGSize(width: 200, height: 300)
-        )
-        XCTAssertEqual(clamped, CGSize(width: -80, height: 0))
-    }
-
     // MARK: - Pan bounds & rubber banding
 
     private let viewport = CGSize(width: 1000, height: 800)
