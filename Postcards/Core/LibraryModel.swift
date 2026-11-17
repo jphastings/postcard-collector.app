@@ -35,6 +35,10 @@ final class LibraryModel {
     /// without the user having to reselect the collection.
     var contentGeneration = 0
 
+    /// Component-bundle files (`{name}-front/back/only.<img>`, `{name}-meta.yaml`) opened from
+    /// outside "Create a Postcard", waiting for that window to take them in and prefill from.
+    var pendingCreateImport: [URL] = []
+
     private static let collectionSuffix = ".postcards"
     private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png", ".postcard"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes

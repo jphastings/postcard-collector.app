@@ -187,6 +187,11 @@ struct CreatePostcardForm: View {
                 onCompletion: finishSave
             )
             .task { await peopleDirectory.refresh(cloudItems: cloudLibrary.items) }
+            .onChange(of: library.pendingCreateImport, initial: true) { _, urls in
+                guard !urls.isEmpty else { return }
+                library.pendingCreateImport = []
+                importURLs(urls)
+            }
         }
         #if os(macOS)
         .frame(minWidth: 860, minHeight: 640)

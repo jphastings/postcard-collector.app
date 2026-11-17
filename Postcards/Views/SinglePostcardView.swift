@@ -90,11 +90,20 @@ struct SinglePostcardView: View {
 }
 
 #if os(macOS)
-/// Opens files on macOS: bare cards each get their own `SinglePostcardView` window; anything
-/// else (collections, or files that failed and need their error shown) brings up the single
-/// collections window, which may have been closed.
+/// Opens files on macOS: component-bundle pieces prefill "Create a Postcard"; bare cards each
+/// get their own `SinglePostcardView` window; anything else (collections, or files that failed
+/// and need their error shown) brings up the single collections window, which may have been
+/// closed.
 @MainActor
 func openPostcardFiles(_ urls: [URL], library: LibraryModel, openWindow: OpenWindowAction) async {
+    let bundlePieces = urls.filter { ComponentStem.parse(filename: $0.lastPathComponent) != nil }
+    if !bundlePieces.isEmpty {
+        library.pendingCreateImport = bundlePieces
+        openWindow(id: "create-postcard")
+    }
+    let urls = urls.filter { !bundlePieces.contains($0) }
+    guard !urls.isEmpty else { return }
+
     let cards = await library.importSources(from: urls)
     for card in cards {
         openWindow(id: SinglePostcardView.windowID, value: card)
