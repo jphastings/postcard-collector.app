@@ -37,25 +37,39 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View>: View {
             let columns = MasonryLayout.columns(of: items, count: columnCount, aspectRatio: aspectRatio)
 
             ScrollView {
-                // The header (e.g. a collection's name) scrolls with the grid rather than sitting
-                // in fixed chrome, so it slides off-screen as the user scrolls into the cards. The
-                // per-column `LazyVStack`s below keep cell rendering lazy regardless of this outer
-                // plain `VStack`.
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    HStack(alignment: .top, spacing: spacing) {
-                        ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                            LazyVStack(spacing: spacing) {
-                                ForEach(column) { item in
-                                    content(item)
-                                }
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+                        LazyVStack(spacing: spacing) {
+                            ForEach(column) { item in
+                                content(item)
                             }
-                            .frame(maxWidth: .infinity)
                         }
+                        .frame(maxWidth: .infinity)
                     }
-                    .padding(spacing)
                 }
+                .padding(spacing)
             }
+            // The header (e.g. a collection's name and Back) stays put while the cards scroll
+            // beneath it, so the way back is always in reach.
+            .modifier(PinnedHeader(header: header))
+        }
+    }
+}
+
+/// Pins `header` above a scroll view's content: a `safeAreaBar` where available, so the
+/// content scrolls under it behind the system scroll-edge effect, as it does under toolbars.
+private struct PinnedHeader<Header: View>: ViewModifier {
+    let header: Header
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26, iOS 26, *) {
+            // Asked for explicitly: the window's hidden toolbar background otherwise leaves the
+            // edge hard, with cards showing straight through behind the header.
+            content
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .safeAreaBar(edge: .top, spacing: 0) { header }
+        } else {
+            content.safeAreaInset(edge: .top, spacing: 0) { header.background(.bar) }
         }
     }
 }
@@ -70,11 +84,10 @@ extension MasonryGrid where Header == EmptyView {
     }
 }
 
-/// A collection's name shown at the top of a `MasonryGrid`'s scroll content on macOS, so it
-/// scrolls away as the user scrolls into the cards (the pushed destination's inline title band is
-/// hidden — see `LibraryView`). Renders nothing on iOS, where the name is the native navigation
+/// A collection's name, with Back beside it, pinned at the top of a `MasonryGrid` on macOS (the
+/// pushed destination's inline title band is hidden — see `LibraryView`). Renders nothing on iOS, where the name is the native navigation
 /// title.
-struct ScrollingCollectionTitle: View {
+struct CollectionTitle: View {
     let title: String
 
     #if os(macOS)
@@ -103,11 +116,11 @@ struct ScrollingCollectionTitle: View {
                 .fontWeight(.bold)
                 .lineLimit(1)
         }
-            .preference(key: ShowsInlineBackKey.self, value: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
+        .preference(key: ShowsInlineBackKey.self, value: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
         #else
         EmptyView()
         #endif
@@ -115,7 +128,7 @@ struct ScrollingCollectionTitle: View {
 }
 
 #if os(macOS)
-/// Whether a pushed browser is showing `ScrollingCollectionTitle`'s Back; when it isn't (map,
+/// Whether a pushed browser is showing `CollectionTitle`'s Back; when it isn't (map,
 /// loading, an error), the browser floats its own.
 struct ShowsInlineBackKey: PreferenceKey {
     static let defaultValue = false

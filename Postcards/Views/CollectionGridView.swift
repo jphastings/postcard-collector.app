@@ -98,7 +98,7 @@ struct CollectionGridView: View {
                     MasonryGrid(
                         items: cards,
                         aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) },
-                        header: { ScrollingCollectionTitle(title: title ?? source.displayName) }
+                        header: { CollectionTitle(title: title ?? source.displayName) }
                     ) { card in
                         Button {
                             selection = .inCollection(path: source.path, summary: card)
