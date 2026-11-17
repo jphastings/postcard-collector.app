@@ -90,7 +90,7 @@ struct AllCollectionsView: View {
                         MasonryGrid(
                             items: displayedEntries,
                             aspectRatio: { Double($0.summary.frontPxW) / Double(max($0.summary.frontPxH, 1)) },
-                            header: { ScrollingCollectionTitle(title: "All collections") }
+                            header: { CollectionTitle(title: "All collections") }
                         ) { entry in
                             Button {
                                 selection = entry.reference

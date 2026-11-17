@@ -364,7 +364,7 @@ struct LibraryView: View {
         List {
             Section {
                 // The list's own title, in the same style as a collection's name at the top of the
-                // grid (`ScrollingCollectionTitle`).
+                // grid (`CollectionTitle`).
                 Text("Your collections")
                     .font(.largeTitle)
                     .fontWeight(.bold)
@@ -796,7 +796,7 @@ private struct CollectionBrowser: View {
         }
         #if os(macOS)
         // Hide this pushed destination's own inline back button + title band — back moves
-        // beside the collection name in the scrollable grid (`ScrollingCollectionTitle`), or
+        // beside the collection name pinned atop the grid (`CollectionTitle`), or
         // floats under the traffic lights wherever that title isn't showing (the map, loading,
         // an error — see `FloatingBack`), and hiding the band lets the grid/map
         // fill the column to the very top (see `SidebarDestinationFill`).
@@ -1122,7 +1122,7 @@ private struct WindowReader: NSViewRepresentable {
 }
 
 /// "‹ Back" floating under the traffic lights, for a pushed browser that isn't showing
-/// `ScrollingCollectionTitle`'s own (the map, loading, an error).
+/// `CollectionTitle`'s own (the map, loading, an error).
 private struct FloatingBack: ViewModifier {
     let action: () -> Void
     @State private var inlineBackShown = false
