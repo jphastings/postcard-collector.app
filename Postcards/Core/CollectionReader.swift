@@ -3,18 +3,18 @@ import SQLite3
 
 /// Errors surfaced by `CollectionReader`.
 enum CollectionReaderError: LocalizedError {
-    /// The file's `PRAGMA user_version` doesn't match `CollectionReader.supportedSchemaVersion`.
-    case unsupportedSchema(found: Int, supported: Int)
+    /// The file's `PRAGMA user_version` is outside `CollectionReader.readableSchemaVersions`.
+    case unsupportedSchema(found: Int, supported: ClosedRange<Int>)
     case notFound(name: String)
     case sqlite(String)
     case corruptMetadata
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedSchema(let found, let supported) where found > supported:
+        case .unsupportedSchema(let found, let supported) where found > supported.upperBound:
             return "This collection was created by a newer version of Postcards (schema \(found)); update the app to open it."
         case .unsupportedSchema(let found, let supported):
-            return "This collection uses an outdated format (schema \(found), current is \(supported)); open it in the app (or upgrade it with the postcards CLI) first."
+            return "This collection uses an outdated format (schema \(found), current is \(supported.upperBound)); open it in the app (or upgrade it with the postcards CLI) first."
         case .notFound(let name):
             return "No card named \"\(name)\" was found."
         case .sqlite(let message):
@@ -34,9 +34,10 @@ enum CollectionReaderError: LocalizedError {
 /// concurrently. Callers that need to share one across tasks should wrap it in an actor,
 /// the way `GoCore` wraps `AppcoreCollection`.
 final class CollectionReader {
-    /// The `PRAGMA user_version`/`meta.schema_version` this reader understands. Kept in
-    /// sync with `pkg/collection.schemaVersion()` in the Go core.
-    static let supportedSchemaVersion = 2
+    /// The `PRAGMA user_version`/`meta.schema_version`s this reader understands, up to
+    /// `pkg/collection.schemaVersion()` in the Go core. Schema 3 only added columns this
+    /// reader doesn't select, so it still reads collections the app hasn't migrated yet.
+    static let readableSchemaVersions = 2...3
 
     private var db: OpaquePointer?
 
@@ -50,10 +51,10 @@ final class CollectionReader {
         db = handle
 
         let version = try Self.queryUserVersion(handle)
-        guard version == Self.supportedSchemaVersion else {
+        guard Self.readableSchemaVersions.contains(version) else {
             sqlite3_close(handle)
             db = nil
-            throw CollectionReaderError.unsupportedSchema(found: version, supported: Self.supportedSchemaVersion)
+            throw CollectionReaderError.unsupportedSchema(found: version, supported: Self.readableSchemaVersions)
         }
     }
 

@@ -12,6 +12,22 @@ final class GoCoreTests: XCTestCase {
         ).path
     }
 
+    func testAnOutdatedCollectionOpensOnceMigrated() async throws {
+        let v2 = try XCTUnwrap(Bundle(for: GoCoreTests.self).url(forResource: "fixture-v2", withExtension: "postcards"))
+        let copy = FileManager.default.temporaryDirectory.appending(path: "outdated-\(UUID().uuidString).postcards")
+        try FileManager.default.copyItem(at: v2, to: copy)
+        defer { try? FileManager.default.removeItem(at: copy) }
+
+        let before = try await GoCore.shared.schemaStatus(ofCollectionAt: copy.path)
+        try await GoCore.shared.migrateCollection(at: copy.path)
+        let after = try await GoCore.shared.schemaStatus(ofCollectionAt: copy.path)
+        let cards = try await GoCore.shared.cardSummaries(inCollectionAt: copy.path)
+
+        XCTAssertEqual(before, .outdated)
+        XCTAssertEqual(after, .current)
+        XCTAssertEqual(cards.count, 5)
+    }
+
     func testBundledFixtureTitleReadsSampleCollectionThroughGoCore() async throws {
         let title = try await GoCore.shared.title(ofCollectionAt: try fixturePath())
         XCTAssertEqual(title, "Sample Collection")

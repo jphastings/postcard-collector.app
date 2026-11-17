@@ -64,6 +64,9 @@ struct LibraryView: View {
     /// title instead of showing the stale cached one (their `.task(id:)` doesn't otherwise
     /// change just because the title changed underneath them).
     @State private var titleRefreshTokens: [String: Int] = [:]
+    /// The outdated collection whose upgrade dialog is showing.
+    @State private var upgradeRequest: LibrarySource?
+    @State private var upgradeError: String?
 
     /// The collection browser's grid/map toggle, lifted here (out of each pane) because the
     /// sidebar column's own width now depends on it too — see `SidebarWidths`. Reset to
@@ -226,7 +229,7 @@ struct LibraryView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("DetailPane")
             #if os(macOS)
-            .navigationSplitViewColumnWidth(min: SidebarFit.detailMinWidth + detailExtraWidth, ideal: 700)
+            .navigationSplitViewColumnWidth(min: SidebarFit.detailMinWidth + detailExtraWidth, ideal: SidebarFit.detailMinWidth + detailExtraWidth)
             .onPreferenceChange(DetailExtraWidthKey.self) { detailExtraWidth = $0 }
             #endif
         }
@@ -326,6 +329,23 @@ struct LibraryView: View {
         .onChange(of: cloudLibrary.items, initial: true) { _, _ in
             Task { await syncLibrarySearchSources() }
         }
+        .onChange(of: library.outdatedCollectionPaths) { _, _ in
+            Task { await syncLibrarySearchSources() }
+        }
+        .task(id: library.knownCollectionPaths(with: cloudLibrary)) { await refreshSchemaStatuses() }
+        .sheet(item: $upgradeRequest) { source in
+            UpgradeCollectionDialog(offersAll: library.outdatedCollectionPaths.count > 1) { all in
+                Task { await upgrade(source, all: all) }
+            }
+        }
+        .alert(
+            "Couldn't upgrade collection",
+            isPresented: Binding(get: { upgradeError != nil }, set: { if !$0 { upgradeError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(upgradeError ?? "")
+        }
         // On iPhone (compact width), a search preset from `CardInfoPanel`'s "More from…"
         // menu should land the user back on the grid of results, not leave them stuck on
         // the detail view they tapped the preset from — popping `selectedCard` collapses
@@ -359,8 +379,13 @@ struct LibraryView: View {
             if !importedCollectionSources.isEmpty {
                 Section(header: sectionHeader("Local")) {
                     ForEach(importedCollectionSources) { source in
-                        NavigationLink(value: source) {
-                            SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                        let row = SourceRow(source: source, refreshToken: titleRefreshTokens[source.path, default: 0])
+                        Group {
+                            if library.outdatedCollectionPaths.contains(source.path) {
+                                outdatedRow(row, source: source)
+                            } else {
+                                NavigationLink(value: source) { row }
+                            }
                         }
                         .contextMenu { importedCollectionMenu(for: source) }
                     }
@@ -370,8 +395,13 @@ struct LibraryView: View {
                 Section(header: sectionHeader("iCloud")) {
                     ForEach(cloudSidebarItems) { item in
                         if item.downloadState == .current {
-                            NavigationLink(value: item.librarySource) {
-                                CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
+                            let row = CloudItemRow(item: item, refreshToken: titleRefreshTokens[item.path, default: 0])
+                            Group {
+                                if library.outdatedCollectionPaths.contains(item.path) {
+                                    outdatedRow(row, source: item.librarySource)
+                                } else {
+                                    NavigationLink(value: item.librarySource) { row }
+                                }
                             }
                             .contextMenu { cloudCollectionMenu(for: item) }
                         } else if item.downloadState == .remote {
@@ -436,6 +466,49 @@ struct LibraryView: View {
         library.writableCollections(with: cloudLibrary)
     }
 
+    /// A collection on an older schema: it can't open until upgraded, so the row offers the
+    /// upgrade instead, flagged where download glyphs sit.
+    private func outdatedRow(_ row: some View, source: LibrarySource) -> some View {
+        Button { upgradeRequest = source } label: {
+            HStack {
+                row
+                Spacer(minLength: 8)
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.yellow)
+                    .frame(width: 20, height: 20)
+                    .accessibilityLabel("Needs upgrading")
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("This collection is in an old format")
+    }
+
+    private func refreshSchemaStatuses() async {
+        var outdated: Set<String> = []
+        for path in library.knownCollectionPaths(with: cloudLibrary) {
+            if (try? await GoCore.shared.schemaStatus(ofCollectionAt: path)) == .outdated {
+                outdated.insert(path)
+            }
+        }
+        library.outdatedCollectionPaths = outdated
+    }
+
+    private func upgrade(_ source: LibrarySource, all: Bool) async {
+        let paths = all ? library.outdatedCollectionPaths : [source.path]
+        for path in paths {
+            do {
+                try await GoCore.shared.migrateCollection(at: path)
+                library.outdatedCollectionPaths.remove(path)
+                titleRefreshTokens[path, default: 0] += 1
+            } catch {
+                upgradeError = error.localizedDescription
+                return
+            }
+        }
+        sidebarPath = [source]
+    }
+
     // MARK: - Sidebar row actions (Feature 3)
 
     @ViewBuilder
@@ -444,6 +517,8 @@ struct LibraryView: View {
             renameText = source.displayName
             renamingSource = source
         }
+        // Writing the title would upgrade the file without asking.
+        .disabled(library.outdatedCollectionPaths.contains(source.path))
         if cloudLibrary.containerState == .available {
             Button("Add to iCloud…") {
                 Task { await addToICloud(source) }
@@ -471,6 +546,7 @@ struct LibraryView: View {
             renameText = item.displayName
             renamingSource = item.librarySource
         }
+        .disabled(library.outdatedCollectionPaths.contains(item.path))
         // For iCloud items this reveals the LOCAL ubiquity URL — the synced file under
         // ~/Library/Mobile Documents, which Finder presents as the iCloud Drive folder.
         revealInFinderButton(path: item.path)
@@ -778,10 +854,17 @@ private struct SourceRow: View {
 
     private func loadTitle() async {
         guard source.isCollection else { return }
-        if let fetched = try? await GoCore.shared.title(ofCollectionAt: source.path), !fetched.isEmpty {
+        if let fetched = await collectionTitle(at: source.path), !fetched.isEmpty {
             title = fetched
         }
     }
+}
+
+/// A collection's user-set title. An outdated collection can't be opened by the Go core until
+/// it's upgraded, but `CollectionReader` reads older schemas, so its row still shows its title.
+private func collectionTitle(at path: String) async -> String? {
+    if let title = try? await GoCore.shared.title(ofCollectionAt: path) { return title }
+    return await Task.detached { try? CollectionReader(path: path).title() }.value
 }
 
 /// On compact-width devices (iPhone), a `NavigationSplitView`'s "detail" column is never made
@@ -861,7 +944,7 @@ private struct CloudItemRow: View {
 
     private func loadTitle() async {
         guard item.isCollection, item.downloadState == .current else { return }
-        if let fetched = try? await GoCore.shared.title(ofCollectionAt: item.path), !fetched.isEmpty {
+        if let fetched = await collectionTitle(at: item.path), !fetched.isEmpty {
             title = fetched
         }
     }

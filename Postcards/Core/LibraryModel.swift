@@ -39,6 +39,11 @@ final class LibraryModel {
     /// outside "Create a Postcard", waiting for that window to take them in and prefill from.
     var pendingCreateImport: [URL] = []
 
+    /// Collections on an older schema, which can't be opened until the user upgrades them
+    /// (see `GoCore.schemaStatus`). Kept out of `writableCollections`: writing to one would
+    /// migrate it as a side effect, without asking.
+    var outdatedCollectionPaths: Set<String> = []
+
     private static let collectionSuffix = ".postcards"
     private static let cardSuffixes = [".postcard.webp", ".postcard.jpg", ".postcard.jpeg", ".postcard.png", ".postcard"]
     private static let knownSuffixes = [collectionSuffix] + cardSuffixes
@@ -112,6 +117,16 @@ final class LibraryModel {
         return cards
     }
 
+    /// Throws unless the collection opens — or is on an older schema, which the sidebar then
+    /// offers to upgrade rather than refusing it here.
+    private static func validateCollection(at path: String) async throws {
+        do {
+            _ = try await GoCore.shared.cardSummaries(inCollectionAt: path)
+        } catch {
+            guard (try? await GoCore.shared.schemaStatus(ofCollectionAt: path)) == .outdated else { throw error }
+        }
+    }
+
     private static func requireKnownSuffix(_ url: URL) throws {
         let filename = url.lastPathComponent.lowercased()
         guard knownSuffixes.contains(where: { filename.hasSuffix($0) }) else {
@@ -171,7 +186,7 @@ final class LibraryModel {
     private func openInPlace(_ url: URL) async throws {
         // Validate it opens via the Go core at its real path, so a corrupt/non-postcard file is
         // reported now instead of leaving a dead grid.
-        _ = try await GoCore.shared.cardSummaries(inCollectionAt: url.path)
+        try await Self.validateCollection(at: url.path)
         rememberBookmark(for: url)
         addSource(for: url)
     }
@@ -268,7 +283,7 @@ final class LibraryModel {
 
     private func addValidatedSource(at url: URL) async throws {
         do {
-            _ = try await GoCore.shared.cardSummaries(inCollectionAt: url.path)
+            try await Self.validateCollection(at: url.path)
             addSource(for: url)
         } catch {
             try? FileManager.default.removeItem(at: url)
@@ -299,5 +314,14 @@ extension LibraryModel {
             .filter { $0.isCollection && $0.downloadState == .current }
             .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
         return WritableCollection.known(sources: sources, downloaded: downloaded)
+            .filter { !outdatedCollectionPaths.contains($0.path) }
+    }
+
+    /// Every openable-or-upgradable collection path, for checking which are outdated.
+    func knownCollectionPaths(with cloudLibrary: CloudLibrary) -> [String] {
+        let downloaded = cloudLibrary.items
+            .filter { $0.isCollection && $0.downloadState == .current }
+            .map { WritableCollection(path: $0.path, displayName: $0.displayName) }
+        return WritableCollection.known(sources: sources, downloaded: downloaded).map(\.path)
     }
 }

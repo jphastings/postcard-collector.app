@@ -20,6 +20,12 @@ they need must be added to their lists by hand (and one they can't compile must 
   `addCard`'s own decode-on-write for thumbnailing. Everything else still holds: no other
   runtime path decodes pixels in Go.
 - All Appcore calls are blocking — only call through the `GoCore` actor, never on main.
+- Collection schemas move on: a collection on an older schema can't be opened read-only
+  until it's migrated. Migration is the user's call, never automatic — a migrated file can't
+  be read by app builds on an older Go core (their other devices). The sidebar flags outdated
+  collections (`GoCore.schemaStatus`) and offers the upgrade (`GoCore.migrateCollection`, one
+  coordinated write). `CollectionReader` (QuickLook) never migrates, so it reads every schema
+  version whose columns it selects.
 - JSON contract: list/search results are always arrays, never `null` (enforced Go-side;
   a `null` here once broke search with "data couldn't be read because it is missing").
 - **Every search path routes through the Go core** (collection FTS or the Library
