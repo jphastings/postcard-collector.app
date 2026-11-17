@@ -692,16 +692,6 @@ private struct CollectionBrowser: View {
             // chevron, but placed it past the sidebar/detail split instead — `.primaryAction`
             // for both is the more predictable, adjacent pairing.)
             ToolbarItemGroup(placement: .primaryAction) {
-                #if os(macOS)
-                // Back lives here, as a real toolbar item, because it's the only reliably
-                // clickable control in the titlebar band (see CLAUDE.md) — the framework's own
-                // inline back button is hidden. Popping the sidebar stack via `dismiss()`.
-                // Hidden while the sidebar is collapsed (nothing to go back within).
-                if sidebarVisible {
-                    Button("Back", systemImage: "chevron.backward") { dismiss() }
-                        .accessibilityIdentifier("SidebarBack")
-                }
-                #endif
                 AddMenu(onCreate: onCreate, onOpen: onImport)
                 // The grid/map switcher acts on the sidebar's browser, so it hides with the sidebar.
                 if sidebarVisible {
@@ -710,11 +700,28 @@ private struct CollectionBrowser: View {
             }
         }
         #if os(macOS)
-        // Hide this pushed destination's own inline back button + title band — the back button
-        // moves to a real toolbar item (see the `ToolbarItemGroup` above), the collection name
-        // into the scrollable grid, and hiding the band lets the grid/map fill the column to the
-        // very top (see `SidebarDestinationFill`).
+        // Hide this pushed destination's own inline back button + title band — back moves
+        // beside the collection name in the scrollable grid (`ScrollingCollectionTitle`), or
+        // floats under the traffic lights over the map, and hiding the band lets the grid/map
+        // fill the column to the very top (see `SidebarDestinationFill`).
         .modifier(HideInlineNavBar())
+        .overlay(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                if viewMode == .map {
+                    Button("Back", systemImage: "chevron.backward") { dismiss() }
+                        .modifier(GlassButtonStyle())
+                        .keyboardShortcut("[", modifiers: .command)
+                        .accessibilityIdentifier("SidebarBack")
+                        // Measured from the sidebar's top edge rather than below the toolbar
+                        // band: the traffic lights end 25pt down with an 11pt gap above them,
+                        // so the same gap below them lands Back at 36pt.
+                        .padding(.leading, 12)
+                        .padding(.top, 36)
+                }
+            }
+            .ignoresSafeArea(.container, edges: .top)
+        }
         #endif
     }
 }
@@ -942,6 +949,17 @@ private struct TransparentWindowToolbarBackground: ViewModifier {
 /// Hides a pushed destination's inline back button + title band. `toolbar(removing: .title)` needs
 /// macOS 15; below that only the back button is hidden (the inline title stays — an acceptable
 /// degradation, as the Liquid-Glass sidebar this targets is a macOS 26 concern anyway).
+/// Liquid Glass where the SDK and OS have it, a bordered button before that.
+private struct GlassButtonStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+    }
+}
+
 private struct HideInlineNavBar: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 15, *) {

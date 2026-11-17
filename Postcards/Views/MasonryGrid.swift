@@ -77,12 +77,32 @@ extension MasonryGrid where Header == EmptyView {
 struct ScrollingCollectionTitle: View {
     let title: String
 
+    #if os(macOS)
+    /// Pops the sidebar's pushed browser: this title only ever heads a pushed destination.
+    @Environment(\.dismiss) private var dismiss
+    #endif
+
     var body: some View {
         #if os(macOS)
-        Text(title)
-            .font(.largeTitle)
-            .fontWeight(.bold)
-            .lineLimit(1)
+        HStack(spacing: 6) {
+            // Back sits beside the name rather than in the toolbar, so the sidebar's toolbar
+            // doesn't set how narrow the column can get.
+            Button(action: { dismiss() }) {
+                Image(systemName: "chevron.backward")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("[", modifiers: .command)
+            .help("Back")
+            .accessibilityLabel("Back")
+            .accessibilityIdentifier("SidebarBack")
+            Text(title)
+                .font(.largeTitle)
+                .fontWeight(.bold)
+                .lineLimit(1)
+        }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 8)
