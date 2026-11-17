@@ -198,7 +198,7 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   decode an image for layout.
 - Postcards can be non-rectangular with fibrous, ragged edges — that is a *feature* of
   the format. Never clip, round, smooth, or put background plates behind card thumbnails
-  or the flip view; alpha is only ever *read* (e.g. the selection glow masks by it).
+  or the flip view; alpha is only ever *read* (e.g. the selection outline traces it).
 - The flip is physically accurate: axis semantics come from dotpostcard's
   `formats/web/postcards.css`; visibility is a hard cut at edge-on driven by the live
   animated angle (`FlipGeometry.showsFront`), never a crossfade.
