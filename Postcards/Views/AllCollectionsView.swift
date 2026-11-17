@@ -275,13 +275,14 @@ private struct SearchInputKey: Equatable {
 /// A thumbnail cell that works for either kind of reference: collection cards use the Go
 /// core's pre-generated thumbnail (like `GridCell`), bare files split the full image's
 /// front (like `BareGridCell`) — both through the same `ThumbnailCache` keys those cells
-/// use, so nothing already cached is decoded twice. No context menu here: move/copy/remove
-/// actions belong to the per-source views, where "which collection is this card in" is
-/// unambiguous.
+/// use, so nothing already cached is decoded twice. Its context menu only exports:
+/// move/copy/remove actions belong to the per-source views, where "which collection is this
+/// card in" is unambiguous.
 private struct UnionGridCell: View {
     let entry: MapCardEntry
     var isSelected: Bool = false
 
+    @Environment(\.exportPostcard) private var exportPostcard
     @State private var thumbnail: PlatformImage?
 
     var body: some View {
@@ -302,6 +303,9 @@ private struct UnionGridCell: View {
         .accessibilityLabel(entry.summary.name)
         .accessibilityIdentifier(entry.summary.name)
         .task(id: entry.id) { await loadThumbnail() }
+        .contextMenu {
+            Button("Export…") { exportPostcard?(entry.reference) }
+        }
     }
 
     private func loadThumbnail() async {

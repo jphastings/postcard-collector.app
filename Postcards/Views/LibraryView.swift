@@ -236,6 +236,7 @@ struct LibraryView: View {
         // the titlebar band (its top would be clipped by an opaque strip otherwise).
         // NSToolbar is one shared bar for the whole window, so this is necessarily global.
         .transparentWindowToolbarBackground()
+        .postcardExporting(openCard: selectedCard)
         // Finder/Files drops of .postcards / .postcard.* files anywhere on the window.
         .dropDestination(for: URL.self) { urls, _ in
             Task { await library.importSources(from: urls) }

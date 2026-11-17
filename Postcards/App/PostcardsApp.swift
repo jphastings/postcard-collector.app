@@ -57,6 +57,9 @@ struct PostcardsApp: App {
                 Button("Open…") { presentOpenPanel() }
                     .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(after: .saveItem) {
+                ExportPostcardCommand()
+            }
             // Sparkle's conventional placement: directly below "About Postcard Collector".
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updater: updaterController.updater)
