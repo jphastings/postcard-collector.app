@@ -79,6 +79,13 @@ struct LibraryView: View {
     /// The split view's column visibility, tracked so the back/switcher toolbar items can hide
     /// when the sidebar is collapsed (they act on a sidebar that isn't on screen).
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    #if os(macOS)
+    /// Set when the sidebar was collapsed because the window got too narrow, so widening the
+    /// window brings it back (see `SidebarFit`).
+    @State private var sidebarAutoCollapsed = false
+    /// An open inspector's width, reported by `CardDetailView`.
+    @State private var detailExtraWidth: CGFloat = 0
+    #endif
 
     /// Whether the sidebar's own toolbar buttons (back, grid/map switcher) should show: hidden on
     /// macOS while the sidebar is collapsed; always shown elsewhere.
@@ -142,6 +149,9 @@ struct LibraryView: View {
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
+                    // After the fill, so it's placed against the whole column even when the pane
+                    // is only as tall as its content (loading, an error).
+                    .modifier(FloatingBack { sidebarPath.removeLast() })
                     #endif
                 }
             }
@@ -215,7 +225,17 @@ struct LibraryView: View {
             // sidebar column (e.g. that it widens in map mode).
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("DetailPane")
+            #if os(macOS)
+            .navigationSplitViewColumnWidth(min: SidebarFit.detailMinWidth + detailExtraWidth, ideal: 700)
+            .onPreferenceChange(DetailExtraWidthKey.self) { detailExtraWidth = $0 }
+            #endif
         }
+        #if os(macOS)
+        .modifier(SidebarFitting(
+            columnVisibility: $columnVisibility, autoCollapsed: $sidebarAutoCollapsed,
+            mode: viewMode, detailExtra: detailExtraWidth
+        ))
+        #endif
         // Drives the macOS window title from the sidebar's own push state. A pushed
         // `NavigationStack` destination's `.navigationTitle` (e.g. one set inside
         // `CollectionBrowser`) does NOT reach the window title bar — confirmed empirically in
@@ -229,10 +249,9 @@ struct LibraryView: View {
         // would mean lifting the fetched title into `LibraryView` too.
         .navigationTitle(sidebarPath.last.map(\.displayName) ?? "Postcards")
         #if os(macOS)
-        // The sidebar's width now ranges up to 700 (map mode) on its own — 800 is comfortably
-        // above that plus a usable detail column, and below the old 3-column minimum of 900
-        // now that the content column is gone.
-        .frame(minWidth: 800, minHeight: 500)
+        // Narrow enough for the postcard pane alone: below what the sidebar needs alongside it,
+        // `SidebarFitting` collapses the sidebar rather than let it slide off the left edge.
+        .frame(minWidth: SidebarFit.detailMinWidth + detailExtraWidth + SidebarFit.chrome, minHeight: 500)
         #endif
         // The window toolbar's background is hidden PERMANENTLY on macOS (15+), not just
         // while a card is selected: macOS only turns the toolbar to liquid glass by itself
@@ -702,26 +721,10 @@ private struct CollectionBrowser: View {
         #if os(macOS)
         // Hide this pushed destination's own inline back button + title band — back moves
         // beside the collection name in the scrollable grid (`ScrollingCollectionTitle`), or
-        // floats under the traffic lights over the map, and hiding the band lets the grid/map
+        // floats under the traffic lights wherever that title isn't showing (the map, loading,
+        // an error — see `FloatingBack`), and hiding the band lets the grid/map
         // fill the column to the very top (see `SidebarDestinationFill`).
         .modifier(HideInlineNavBar())
-        .overlay(alignment: .topLeading) {
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                if viewMode == .map {
-                    Button("Back", systemImage: "chevron.backward") { dismiss() }
-                        .modifier(GlassButtonStyle())
-                        .keyboardShortcut("[", modifiers: .command)
-                        .accessibilityIdentifier("SidebarBack")
-                        // Measured from the sidebar's top edge rather than below the toolbar
-                        // band: the traffic lights end 25pt down with an 11pt gap above them,
-                        // so the same gap below them lands Back at 36pt.
-                        .padding(.leading, 12)
-                        .padding(.top, 36)
-                }
-            }
-            .ignoresSafeArea(.container, edges: .top)
-        }
         #endif
     }
 }
@@ -949,6 +952,121 @@ private struct TransparentWindowToolbarBackground: ViewModifier {
 /// Hides a pushed destination's inline back button + title band. `toolbar(removing: .title)` needs
 /// macOS 15; below that only the back button is hidden (the inline title stays — an acceptable
 /// degradation, as the Liquid-Glass sidebar this targets is a macOS 26 concern anyway).
+/// Applies `SidebarFit` to the window hosting the split view: collapses the sidebar as the
+/// window narrows past what both panes need, restores it as it widens, and grows the window
+/// when the sidebar is shown (or switched to the wider map) without room for it.
+private struct SidebarFitting: ViewModifier {
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+    @Binding var autoCollapsed: Bool
+    let mode: CollectionViewMode
+    let detailExtra: CGFloat
+
+    @State private var width: CGFloat = 0
+    @State private var window: NSWindow?
+
+    private var sidebarShown: Bool { columnVisibility != .detailOnly }
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.onChange(of: proxy.size.width, initial: true) { old, new in
+                        width = new
+                        apply(SidebarFit.afterResize(
+                            from: old, to: new, mode: mode, detailExtra: detailExtra,
+                            sidebarShown: sidebarShown, autoCollapsed: autoCollapsed
+                        ))
+                    }
+                }
+                .ignoresSafeArea()
+            }
+            .background(WindowReader(window: $window))
+            .onChange(of: columnVisibility) {
+                if sidebarShown { autoCollapsed = false }
+                makeRoom()
+            }
+            .onChange(of: mode) { makeRoom() }
+            .onChange(of: detailExtra) { makeRoom() }
+    }
+
+    private func makeRoom() {
+        apply(SidebarFit.afterSidebarChange(width: width, mode: mode, detailExtra: detailExtra, sidebarShown: sidebarShown))
+    }
+
+    private func apply(_ action: SidebarFit.Action) {
+        switch action {
+        case .none:
+            break
+        case .collapseSidebar:
+            autoCollapsed = true
+            withAnimation { columnVisibility = .detailOnly }
+        case .restoreSidebar:
+            autoCollapsed = false
+            withAnimation { columnVisibility = .all }
+        case .growWindow(let shortfall):
+            guard let window else { return }
+            var frame = window.frame
+            frame.size.width += shortfall
+            if let screen = window.screen?.visibleFrame {
+                frame.size.width = min(frame.width, screen.width)
+                frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width)
+            }
+            // Already as wide as the screen allows: make room the other way.
+            if frame.width - window.frame.width < shortfall {
+                apply(.collapseSidebar)
+                return
+            }
+            window.setFrame(frame, display: true, animate: true)
+        }
+    }
+}
+
+/// Hands back the `NSWindow` a view lives in.
+private struct WindowReader: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: NSViewRepresentableContext<WindowReader>) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { window = view.window }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: NSViewRepresentableContext<WindowReader>) {
+        if window !== nsView.window {
+            DispatchQueue.main.async { window = nsView.window }
+        }
+    }
+}
+
+/// "‹ Back" floating under the traffic lights, for a pushed browser that isn't showing
+/// `ScrollingCollectionTitle`'s own (the map, loading, an error).
+private struct FloatingBack: ViewModifier {
+    let action: () -> Void
+    @State private var inlineBackShown = false
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(ShowsInlineBackKey.self) { inlineBackShown = $0 }
+            .overlay(alignment: .topLeading) {
+                ZStack(alignment: .topLeading) {
+                    Color.clear
+                    if !inlineBackShown {
+                        Button("Back", systemImage: "chevron.backward", action: action)
+                            .modifier(GlassButtonStyle())
+                            .keyboardShortcut("[", modifiers: .command)
+                            .accessibilityIdentifier("SidebarBack")
+                            // Measured from the sidebar's top edge rather than below the toolbar
+                            // band: the traffic lights end 25pt down with an 11pt gap above them,
+                            // so the same gap below them lands Back at 36pt.
+                            .padding(.leading, 12)
+                            .padding(.top, 36)
+                    }
+                }
+                .ignoresSafeArea(.container, edges: .top)
+            }
+    }
+}
+
 /// Liquid Glass where the SDK and OS have it, a bordered button before that.
 private struct GlassButtonStyle: ViewModifier {
     func body(content: Content) -> some View {

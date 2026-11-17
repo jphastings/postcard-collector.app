@@ -103,6 +103,7 @@ struct ScrollingCollectionTitle: View {
                 .fontWeight(.bold)
                 .lineLimit(1)
         }
+            .preference(key: ShowsInlineBackKey.self, value: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -112,3 +113,12 @@ struct ScrollingCollectionTitle: View {
         #endif
     }
 }
+
+#if os(macOS)
+/// Whether a pushed browser is showing `ScrollingCollectionTitle`'s Back; when it isn't (map,
+/// loading, an error), the browser floats its own.
+struct ShowsInlineBackKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+#endif

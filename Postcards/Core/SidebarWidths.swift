@@ -44,7 +44,52 @@ enum SidebarWidths {
         // toggle + Add + the grid/map switcher) always fits without collapsing items into the
         // ">>" overflow menu. Back isn't in it: it sits beside the collection's name instead.
         case .grid: return Bounds(min: 270, ideal: 340, max: 400)
-        case .map: return Bounds(min: 400, ideal: 500, max: 700)
+        // The map can be dragged narrower than the grid can be wide, but opens wider.
+        case .map: return Bounds(min: 300, ideal: 500, max: 700)
         }
+    }
+}
+
+/// What the window does when the sidebar and the postcard pane stop fitting side by side,
+/// following Finder/Mail: narrowing the window collapses the sidebar (and widening it again
+/// brings back a sidebar that was collapsed that way); anything else that needs more room —
+/// showing the sidebar, or switching it to the wider map — grows the window instead. Without
+/// this, SwiftUI keeps the sidebar at its minimum and slides it off the window's left edge.
+enum SidebarFit {
+    /// The postcard pane's narrowest useful width.
+    static let detailMinWidth: CGFloat = 320
+    /// The floating sidebar's own insets and the split between the panes.
+    static let chrome: CGFloat = 24
+
+    /// `detailExtra` is anything the postcard pane carries beside the card, i.e. an open
+    /// inspector.
+    static func requiredWidth(for mode: CollectionViewMode, detailExtra: CGFloat = 0) -> CGFloat {
+        SidebarWidths.bounds(for: mode).min + detailMinWidth + detailExtra + chrome
+    }
+
+    enum Action: Equatable {
+        case none
+        case collapseSidebar
+        case restoreSidebar
+        case growWindow(by: CGFloat)
+    }
+
+    /// The window was resized from `oldWidth` to `newWidth`.
+    static func afterResize(
+        from oldWidth: CGFloat, to newWidth: CGFloat, mode: CollectionViewMode, detailExtra: CGFloat = 0,
+        sidebarShown: Bool, autoCollapsed: Bool
+    ) -> Action {
+        let required = requiredWidth(for: mode, detailExtra: detailExtra)
+        if newWidth < oldWidth, newWidth < required, sidebarShown { return .collapseSidebar }
+        if newWidth > oldWidth, newWidth >= required, !sidebarShown, autoCollapsed { return .restoreSidebar }
+        return .none
+    }
+
+    /// The sidebar was shown, its mode changed, or the inspector opened, in a window `width` wide.
+    static func afterSidebarChange(
+        width: CGFloat, mode: CollectionViewMode, detailExtra: CGFloat = 0, sidebarShown: Bool
+    ) -> Action {
+        let shortfall = requiredWidth(for: mode, detailExtra: detailExtra) - width
+        return sidebarShown && shortfall > 0 ? .growWindow(by: shortfall) : .none
     }
 }

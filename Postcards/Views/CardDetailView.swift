@@ -83,10 +83,17 @@ struct CardDetailView: View {
             #if os(iOS)
             .sheet(isPresented: $showingInfo) { infoPanel }
             #else
-            .inspector(isPresented: $showingInfo) { infoPanel }
+            .inspector(isPresented: $showingInfo) {
+                infoPanel.inspectorColumnWidth(min: Self.inspectorMinWidth, ideal: 300, max: 420)
+            }
+            .preference(key: DetailExtraWidthKey.self, value: showingInfo ? Self.inspectorMinWidth : 0)
             #endif
             .task(id: reference.id) { await load() }
     }
+
+    #if os(macOS)
+    static let inspectorMinWidth: CGFloat = 260
+    #endif
 
     private var infoButton: some View {
         Button("Info", systemImage: "info.circle") {
@@ -523,3 +530,12 @@ struct CardDetailView: View {
     }
 }
 
+
+#if os(macOS)
+/// Width the postcard pane needs beside the card itself — an open inspector's — so the window
+/// can make room for it (see `SidebarFit`).
+struct DetailExtraWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+#endif
