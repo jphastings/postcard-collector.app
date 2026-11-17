@@ -452,14 +452,14 @@ struct LibraryView: View {
                 ForEach(atmosphereSessionsInOrder) { session in
                     Text("@\(session.handle ?? session.did)")
                         .font(.headline)
-                        .foregroundStyle(.secondary)
+                        .modifier(DimmedUnless(false))
                         .contextMenu {
                             Button("Sign Out") { Task { await signOut(session) } }
                         }
                     if let error = atmosphereLibrary.listingErrors[session.did] {
                         Text("Couldn't refresh")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .modifier(DimmedUnless(false))
                             .help(error)
                     }
                     ForEach(atmosphereLibrary.collections[session.did] ?? []) { collection in
@@ -470,6 +470,9 @@ struct LibraryView: View {
                                     progress: atmosphereLibrary.progress[collection.uri],
                                     caption: atmosphereCaption(collection, path: source.path)
                                 )
+                            }
+                            .contextMenu {
+                                Button("Copy at-uri") { copyToPasteboard(collection.uri) }
                             }
                         }
                     }
@@ -1053,15 +1056,17 @@ private struct CloudItemRow: View {
                     case .current:
                         EmptyView()
                     case .downloading:
-                        Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+                        Text("Downloading…").font(.caption).modifier(DimmedUnless(false))
                     case .remote:
-                        Text(Self.downloadPrompt).font(.caption).foregroundStyle(.secondary)
+                        Text(Self.downloadPrompt).font(.caption).modifier(DimmedUnless(false))
                     }
                 }
             } icon: {
                 Image(systemName: item.isCollection ? "photo.stack" : "photo")
             }
-            .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
+            // Only dims undownloaded rows: an explicit `.primary` would also stop the sidebar
+            // dimming this row with the rest when the window isn't focused.
+            .modifier(DimmedUnless(item.downloadState == .current))
             // A downloaded row's navigation chevron takes this place.
             if item.downloadState != .current {
                 Spacer(minLength: 8)
@@ -1082,6 +1087,38 @@ private struct CloudItemRow: View {
 }
 
 /// An Atmosphere account's collection, with a ring filling as a fetch brings its cards in.
+private struct DimmedUnless: ViewModifier {
+    let isFullStrength: Bool
+    #if os(macOS)
+    // A button row isn't dimmed by the sidebar when the window loses focus, so it steps down
+    // itself to stay dimmer than the navigation rows around it.
+    @Environment(\.controlActiveState) private var controlActiveState
+    #endif
+
+    init(_ isFullStrength: Bool) { self.isFullStrength = isFullStrength }
+
+    func body(content: Content) -> some View {
+        if isFullStrength {
+            content
+        } else {
+            #if os(macOS)
+            content.foregroundStyle(controlActiveState == .inactive ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+            #else
+            content.foregroundStyle(.secondary)
+            #endif
+        }
+    }
+}
+
+private func copyToPasteboard(_ string: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(string, forType: .string)
+    #else
+    UIPasteboard.general.string = string
+    #endif
+}
+
 private struct AtmosphereCollectionRow: View {
     let title: String
     let progress: CollectionFetchProgress?
@@ -1093,7 +1130,7 @@ private struct AtmosphereCollectionRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                     if let caption {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                        Text(caption).font(.caption).modifier(DimmedUnless(false))
                     }
                 }
             } icon: {
