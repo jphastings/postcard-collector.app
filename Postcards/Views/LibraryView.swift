@@ -29,6 +29,7 @@ struct LibraryView: View {
 
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
+    let atmosphere: AtmosphereAccounts
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -67,6 +68,7 @@ struct LibraryView: View {
     /// The outdated collection whose upgrade dialog is showing.
     @State private var upgradeRequest: LibrarySource?
     @State private var upgradeError: String?
+    @State private var isAddingAccount = false
 
     /// The collection browser's grid/map toggle, lifted here (out of each pane) because the
     /// sidebar column's own width now depends on it too — see `SidebarWidths`. Reset to
@@ -106,10 +108,12 @@ struct LibraryView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             NavigationStack(path: $sidebarPath) {
                 VStack(spacing: 0) {
-                    if hasAnySources {
+                    if hasAnySources || !atmosphere.sessions.isEmpty {
                         sourceList
                     } else {
                         emptyLibraryView
+                        atmosphereHeader
+                            .padding()
                     }
                     if cloudLibrary.containerState == .unavailable {
                         Text("Sign in to iCloud to sync collections")
@@ -273,6 +277,8 @@ struct LibraryView: View {
         .opensPostcardFiles(library: library)
         #else
         .onOpenURL { url in
+            // Not the Atmosphere OAuth callback, which the web authentication session takes.
+            guard url.isFileURL else { return }
             Task { await open([url]) }
         }
         .fullScreenCover(isPresented: Binding(get: { presentedCardURL != nil }, set: { if !$0 { presentedCardURL = nil } })) {
@@ -295,6 +301,7 @@ struct LibraryView: View {
             CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
         }
         #endif
+        .modifier(AtmosphereSignIn(accounts: atmosphere, isPresented: $isAddingAccount))
         .task { await runAutomationHookIfRequested() }
         .onChange(of: sidebarPath) { _, newPath in
             // Every push starts fresh in grid mode, ungated, until the newly pushed pane's
@@ -420,6 +427,33 @@ struct LibraryView: View {
                     }
                 }
             }
+            Section(header: atmosphereHeader) {
+                ForEach(atmosphere.sessions) { session in
+                    Text("@\(session.handle ?? session.did)")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                        .contextMenu {
+                            Button("Sign Out") { Task { await atmosphere.signOut(session) } }
+                        }
+                }
+            }
+        }
+    }
+
+    private var atmosphereHeader: some View {
+        HStack {
+            sectionHeader("Atmosphere")
+            Spacer()
+            Button { isAddingAccount = true } label: {
+                Image(systemName: "person.badge.plus")
+            }
+            .buttonStyle(.borderless)
+            .disabled(atmosphere.isSigningIn)
+            .help("Add Account")
+            .accessibilityLabel("Add Account")
+            // Section headers run further right than rows do; this lines the button up with
+            // the rows' trailing glyphs (download, upgrade warning).
+            .padding(.trailing, 19)
         }
     }
 

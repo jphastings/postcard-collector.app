@@ -9,6 +9,7 @@ import Sparkle
 struct PostcardsApp: App {
     @State private var library = LibraryModel()
     @State private var cloudLibrary: CloudLibrary
+    @State private var atmosphere = AtmosphereAccounts()
     #if os(iOS)
     @State private var watchConnectivityProvider: WatchConnectivityProvider?
     #endif
@@ -46,7 +47,7 @@ struct PostcardsApp: App {
     }
 
     private var libraryView: some View {
-        LibraryView(library: library, cloudLibrary: cloudLibrary)
+        LibraryView(library: library, cloudLibrary: cloudLibrary, atmosphere: atmosphere)
             .task { await cloudLibrary.start() }
     }
 

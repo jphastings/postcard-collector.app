@@ -12,6 +12,15 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.8.0
+  # Atmosphere (atproto) sign-in, iOS and macOS only. Pinned exactly: XcodeGen generates no
+  # Package.resolved, and Jot signs every DPoP proof. OAuthenticator's last tag predates its
+  # per-origin DPoP nonce cache and refresh fixes, so it's pinned to a main commit.
+  OAuthenticator:
+    url: https://github.com/ATProtoKit/OAuthenticator
+    revision: b455b1259da75f056d1e24f8926227eaa13e1c7a
+  Jot:
+    url: https://github.com/ATProtoKit/Jot
+    exactVersion: 0.1.1
 
 settings:
   base:
@@ -95,6 +104,12 @@ targetTemplates:
             UTTypeTagSpecification:
               public.filename-extension:
                 - postcard
+        # The Atmosphere OAuth redirect (org.dotpostcard:/oauth/callback), the reverse-DNS
+        # form of the client_id's host as atproto requires of native clients.
+        CFBundleURLTypes:
+          - CFBundleURLName: org.dotpostcard.oauth
+            CFBundleURLSchemes:
+              - org.dotpostcard
         NSUbiquitousContainers:
           iCloud.org.dotpostcard.collector:
             NSUbiquitousContainerName: Postcards
@@ -142,6 +157,8 @@ targets:
       - sdk: libsqlite3.tbd
       - target: Postcards-watchOS
         embed: true
+      - package: OAuthenticator
+      - package: Jot
 
   Postcards-macOS:
     templates: [PostcardApp]
@@ -199,6 +216,8 @@ targets:
       - target: PostcardsQuickLookThumbnail
         embed: true
       - package: Sparkle
+      - package: OAuthenticator
+      - package: Jot
 
   Postcards-watchOS:
     type: application
