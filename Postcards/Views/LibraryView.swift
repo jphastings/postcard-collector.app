@@ -499,7 +499,7 @@ struct LibraryView: View {
                     }
                     // What the account follows comes after what it owns.
                     ForEach(atmosphereLibrary.collections(followedBy: session.did)) { collection in
-                        atmosphereCollectionLink(collection, owner: atmosphereLibrary.ownerHandle(of: collection.uri))
+                        atmosphereCollectionLink(collection, owner: atmosphereLibrary.ownerHandle(of: collection.uri), followedBy: session.did)
                     }
                 }
             }
@@ -507,16 +507,19 @@ struct LibraryView: View {
     }
 
     /// An Atmosphere collection's row, the same wherever it's listed: under its owner, under an
-    /// account following it, or both. `owner` is set for a followed collection.
+    /// account following it, or both. `owner` and `followedBy` are set for a followed collection.
     @ViewBuilder
-    private func atmosphereCollectionLink(_ collection: AtprotoCollection, owner: String? = nil) -> some View {
+    private func atmosphereCollectionLink(
+        _ collection: AtprotoCollection, owner: String? = nil, followedBy follower: String? = nil
+    ) -> some View {
         if let source = atmosphereLibrary.source(for: collection) {
             NavigationLink(value: source) {
                 AtmosphereCollectionRow(
                     title: collection.title,
                     owner: owner,
                     progress: atmosphereLibrary.progress[collection.uri],
-                    caption: atmosphereCaption(collection)
+                    caption: atmosphereCaption(collection),
+                    hasUnseenPostcards: atmosphereLibrary.hasUnseenPostcards(collection.uri)
                 )
             }
             .contextMenu {
@@ -524,8 +527,12 @@ struct LibraryView: View {
                 ForEach(AtmosphereFollowing.followActions(for: collection.uri, accounts: signedInDIDs, handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
                     Button(action.title) { follow(collection.uri, as: action.did) }
                 }
-                ForEach(AtmosphereFollowing.unfollowActions(for: collection.uri, accounts: signedInDIDs, handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
-                    Button(action.title) { unfollow(action) }
+                // Only where it's listed under the account that follows it, so it's clear who
+                // unfollows; never on the owner's own listing.
+                if let follower {
+                    ForEach(AtmosphereFollowing.unfollowActions(for: collection.uri, accounts: [follower], handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
+                        Button(action.title) { unfollow(action) }
+                    }
                 }
                 Button("Copy at-uri") { copyToPasteboard(collection.uri) }
             }
@@ -930,6 +937,16 @@ private struct CollectionBrowser: View {
         return atmosphereLibrary.progress[uri]
     }
 
+    private var newPostcards: Set<String> {
+        guard case .atprotoCollection(let uri, _, _) = source else { return [] }
+        return atmosphereLibrary.newPostcards(in: uri)
+    }
+
+    private var newPostcardNames: Set<String> {
+        guard case .atprotoCollection(let uri, _, _) = source else { return [] }
+        return atmosphereLibrary.newPostcardNames(in: uri)
+    }
+
     var body: some View {
         Group {
             switch source {
@@ -959,7 +976,9 @@ private struct CollectionBrowser: View {
                     searchRequest: searchRequest,
                     contentGeneration: contentGeneration,
                     onCreateCollection: onCreateCollection,
-                    stillFetching: stillFetching
+                    stillFetching: stillFetching,
+                    hasNewPostcards: !newPostcards.isEmpty,
+                    newPostcardNames: newPostcardNames
                 )
             case .allCollections:
                 AllCollectionsView(
@@ -1195,6 +1214,7 @@ private struct AtmosphereCollectionRow: View {
     let owner: String?
     let progress: CollectionFetchProgress?
     let caption: String?
+    let hasUnseenPostcards: Bool
 
     var body: some View {
         HStack {
@@ -1202,10 +1222,9 @@ private struct AtmosphereCollectionRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // The owner's handle only shows when it fits beside the whole title.
                     ViewThatFits(in: .horizontal) {
-                        HStack {
+                        HStack(spacing: 6) {
                             Text(title)
                             if let owner {
-                                Spacer(minLength: 8)
                                 Text("@\(owner)").modifier(DimmedUnless(false))
                             }
                         }
@@ -1228,10 +1247,16 @@ private struct AtmosphereCollectionRow: View {
             if let progress {
                 Spacer(minLength: 8)
                 CloudDownloadGlyph(state: .downloading(percent: progress.fraction.map { $0 * 100 }))
+            } else if hasUnseenPostcards {
+                Spacer(minLength: 8)
+                Circle()
+                    .fill(.tint)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 20, height: 20)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(progress == nil ? "" : "Downloading")
+        .accessibilityValue(progress != nil ? "Downloading" : hasUnseenPostcards ? "New postcards" : "")
     }
 }
 

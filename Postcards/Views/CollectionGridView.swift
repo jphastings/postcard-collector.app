@@ -52,6 +52,11 @@ struct CollectionGridView: View {
     /// Set while cards are still arriving in this collection (an Atmosphere download): the grid
     /// ends with a spinner saying how many more are coming.
     var stillFetching: CollectionFetchProgress?
+    /// Whether this Atmosphere collection has new postcards (see `AtmosphereNewPostcards`): its
+    /// search starts with the New token, and offers it.
+    var hasNewPostcards = false
+    /// The new postcards' card names, for the New token; empty until they've downloaded.
+    var newPostcardNames: Set<String> = []
 
     /// `nil` until the first load/search completes; distinguishes "still loading" from a
     /// collection or search that has genuinely returned zero cards.
@@ -165,7 +170,10 @@ struct CollectionGridView: View {
         .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadCards() }
         .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadTitle() }
         .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadPeople() }
-        .task(id: SearchInputKey(text: searchText, tokens: searchTokens)) { await search() }
+        .task(id: SearchInputKey(text: searchText, tokens: searchTokens, newPostcardNames: newPostcardNames)) { await search() }
+        .task(id: hasNewPostcards ? source.id : nil) {
+            if hasNewPostcards { appendTokens([.new]) }
+        }
         .onChange(of: searchText) { _, newValue in promoteTypedTokens(from: newValue) }
         .onChange(of: searchRequest.generation) { _, _ in applySearchPreset() }
         .alert(
@@ -198,7 +206,7 @@ struct CollectionGridView: View {
         do {
             let loaded = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
             hasAnyLocation = CollectionMapGating.isEnabled(for: loaded)
-            if !isSearching(searchQuery) {
+            if !isSearching {
                 cards = loaded
             } else {
                 await search()
@@ -226,23 +234,37 @@ struct CollectionGridView: View {
         SearchQuery.from(tokens: searchTokens, freeText: searchText)
     }
 
-    private func isSearching(_ query: SearchQuery) -> Bool {
-        !(query.isPlainText && query.text.isEmpty)
+    private var isSearching: Bool {
+        !searchQuery.isEmpty || onlyNew
+    }
+
+    private var onlyNew: Bool {
+        searchTokens.contains { $0.kind == .new }
     }
 
     private func search() async {
         let query = searchQuery
-        guard isSearching(query) else {
+        guard isSearching else {
             await loadCards()
             return
         }
         loadError = nil
         do {
-            if query.isPlainText {
-                cards = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
+            var found: [CardSummary]
+            if query.isEmpty {
+                found = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
+            } else if query.isPlainText {
+                found = try await GoCore.shared.search(inCollectionAt: source.path, query: searchText).map(\.card)
             } else {
-                cards = try await GoCore.shared.searchFiltered(inCollectionAt: source.path, filter: query).map(\.card)
+                found = try await GoCore.shared.searchFiltered(inCollectionAt: source.path, filter: query).map(\.card)
             }
+            // The one search that doesn't go through the Go core: which postcards are new is the
+            // app's own state (at-uris that arrived recently), not searchable text, so the Go
+            // core's results are narrowed to the new postcards by card name here.
+            if onlyNew {
+                found = AtmosphereNewPostcards.onlyNew(found, names: newPostcardNames)
+            }
+            cards = found
         } catch {
             loadErrorTitle = "Search failed"
             loadError = error.localizedDescription
@@ -254,7 +276,7 @@ struct CollectionGridView: View {
     }
 
     private var suggestedTokens: [SearchToken] {
-        SearchSuggestions.suggestions(for: searchText, people: people, existingTokens: searchTokens)
+        SearchSuggestions.suggestions(for: searchText, people: people, existingTokens: searchTokens, offersNew: hasNewPostcards)
     }
 
     /// Converts any complete `tag:value` expression just typed into a pill, leaving whatever
@@ -392,11 +414,12 @@ private struct MoreCardsComing: View {
     }
 }
 
-/// `.task(id:)` key for re-running search when EITHER the free text or the active pills
-/// change.
+/// `.task(id:)` key for re-running search when the free text, the active pills, or the new
+/// postcards' names change.
 private struct SearchInputKey: Equatable {
     var text: String
     var tokens: [SearchToken]
+    var newPostcardNames: Set<String>
 }
 
 /// `.task(id:)` key for reloading the grid when EITHER the browsed source or

@@ -8,7 +8,12 @@ import Foundation
 struct SearchToken: Identifiable, Hashable, Codable, Sendable {
     enum Kind: String, Codable, Sendable {
         case from, to, with, collector, country, on, before, after
+        /// Only the Atmosphere collection's new postcards (see `AtmosphereNewPostcards`). Not
+        /// searchable text, so it's never typed as a tag and adds nothing to the Go core's query.
+        case new
     }
+
+    static let new = SearchToken(kind: .new, display: "New", value: "")
 
     var kind: Kind
     var display: String
@@ -31,6 +36,7 @@ struct SearchToken: Identifiable, Hashable, Codable, Sendable {
         case .on: return "On \(display)"
         case .before: return "Before \(display)"
         case .after: return "After \(display)"
+        case .new: return display
         }
     }
 
@@ -40,6 +46,7 @@ struct SearchToken: Identifiable, Hashable, Codable, Sendable {
         case .from, .to, .with, .collector: return "person"
         case .country: return "globe"
         case .on, .before, .after: return "calendar"
+        case .new: return "sparkles"
         }
     }
 
@@ -97,6 +104,8 @@ struct SearchToken: Identifiable, Hashable, Codable, Sendable {
                 } else {
                     remainderFragments.append(requoted(fragment))
                 }
+            case .new:
+                remainderFragments.append(requoted(fragment))
             }
         }
 
@@ -131,6 +140,8 @@ extension SearchQuery {
             case .country: query.country.append(token.value)
             case .on, .before, .after:
                 applyDateTag(token.kind.rawValue, value: token.value, to: &query)
+            case .new:
+                break
             }
         }
         return query

@@ -21,10 +21,13 @@ enum SearchSuggestions {
     ///   token per role they're eligible for — From/To/With/Collected by, in that order —
     ///   ordered overall by name-match quality then role order, followed by any matching
     ///   country names.
+    /// - With `offersNew` (an Atmosphere collection with new postcards), a plain partial that
+    ///   starts "new" suggests the New token first.
     static func suggestions(
         for text: String,
         people: [PersonRef],
         existingTokens: [SearchToken] = [],
+        offersNew: Bool = false,
         limit: Int = 8
     ) -> [SearchToken] {
         let fragment = trailingFragment(of: text)
@@ -34,7 +37,8 @@ enum SearchSuggestions {
         if let (kind, partial) = splitFragmentTag(fragment) {
             candidates = taggedFragmentSuggestions(kind: kind, partial: partial, people: people)
         } else if fragment.count >= 2 {
-            candidates = plainFragmentSuggestions(fragment: fragment, people: people)
+            let new = offersNew && "new".hasPrefix(fragment.lowercased()) ? [SearchToken.new] : []
+            candidates = new + plainFragmentSuggestions(fragment: fragment, people: people)
         } else {
             candidates = []
         }
@@ -88,6 +92,8 @@ enum SearchSuggestions {
         case .on, .before, .after:
             guard SearchQuery.isValidDateValue(partial) else { return [] }
             return [SearchToken(kind: kind, display: partial, value: partial)]
+        case .new:
+            return []
         }
     }
 

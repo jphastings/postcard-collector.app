@@ -74,6 +74,11 @@ struct SearchQuery: Equatable, Codable {
             && sentFrom == nil && sentUntil == nil
     }
 
+    /// True iff nothing at all is set: every card matches.
+    var isEmpty: Bool {
+        isPlainText && text.isEmpty
+    }
+
     /// This query, JSON-encoded for `searchFilteredJSON` — `nil` only if encoding somehow
     /// fails (it can't, in practice: every field here is a plain `String`/`[String]`).
     var filterJSON: String? {

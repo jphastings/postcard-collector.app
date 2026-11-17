@@ -48,17 +48,22 @@ private struct HandleEntry: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Add Account")
+            Text("Your Atmosphere account")
                 .font(.headline)
-            TextField("alice.bsky.social", text: $handle)
-                .textContentType(.username)
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                .textFieldStyle(.roundedBorder)
-                #endif
-                .onSubmit { if canContinue { finish(true) } }
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("alice.bsky.social", text: $handle)
+                    .textContentType(.username)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .textFieldStyle(.roundedBorder)
+                    #endif
+                    .onSubmit { if canContinue { finish(true) } }
+                Text("Any Atmosphere account works (including Bluesky)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { finish(false) }
@@ -72,7 +77,7 @@ private struct HandleEntry: View {
         #if os(macOS)
         .frame(width: 320)
         #else
-        .presentationDetents([.height(180)])
+        .presentationDetents([.height(200)])
         #endif
     }
 }

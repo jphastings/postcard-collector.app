@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import os
 
@@ -36,20 +37,34 @@ final class AtmosphereLibrary {
     private(set) var completePaths: Set<String> = []
     /// Bumped as a fetch writes cards into a cached file, so open views reload it.
     private(set) var generation = 0
+    private var newPostcardState: AtmosphereNewPostcards
+    /// Each complete cached collection's postcards and their names, by collection at-uri, from its
+    /// sidecar.
+    private var fetchedCards: [String: [AtprotoFetchedCard]] = [:]
+    private var isLowDataMode = false
 
     private var signedIn: [String] = []
     private var isReloading = false
     private var reloadThrottle = ReloadThrottle()
     private let root: URL
+    private let newPostcardsURL: URL
+    private let pathMonitor = NWPathMonitor()
 
-    init(root: URL = AtmosphereCache.defaultRoot) {
+    init(root: URL = AtmosphereCache.defaultRoot, newPostcardsURL: URL = AtmosphereNewPostcards.defaultURL) {
         self.root = root
+        self.newPostcardsURL = newPostcardsURL
+        newPostcardState = (try? Data(contentsOf: newPostcardsURL))
+            .flatMap { try? JSONDecoder().decode(AtmosphereNewPostcards.self, from: $0) } ?? AtmosphereNewPostcards()
         if let data = try? Data(contentsOf: AtmosphereCache.followingURL(root: root)),
            let saved = try? JSONDecoder().decode(AtmosphereFollowingSnapshot.self, from: data) {
             follows = saved.follows
             followedRecords = saved.records
             ownerHandles = saved.handles
         }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            MainActor.assumeIsolated { self?.isLowDataMode = path.isConstrained }
+        }
+        pathMonitor.start(queue: .main)
     }
 
     /// Lists every signed-in account's collections and follows, and reads each followed collection's
@@ -123,12 +138,21 @@ final class AtmosphereLibrary {
     }
 
     /// Reads each followed collection's record (once, however many accounts follow it) and its
-    /// owner's handle. Records only, never contents, so it's fine in Low Data Mode.
+    /// owner's handle, which is all that's fetched in Low Data Mode. Otherwise a downloaded
+    /// collection whose record has changed is fetched again in the background, so it's up to date
+    /// when opened.
     private func refreshFollowedRecords(missingOnly: Bool) async {
         let subjects = followedSubjects
         for uri in subjects where ownListing(of: uri) == nil && !(missingOnly && followedRecords[uri] != nil) {
             do {
-                followedRecords[uri] = try await GoCore.shared.atprotoCollection(uri: uri)
+                let record = try await GoCore.shared.atprotoCollection(uri: uri)
+                followedRecords[uri] = record
+                if let url = AtmosphereCache.collectionURL(root: root, uri: uri),
+                   AtmosphereCache.refetchesInBackground(
+                       recordCID: record.cid, sidecar: AtmosphereCache.readSidecar(forCollectionAt: url), isLowDataMode: isLowDataMode
+                   ) {
+                    Task { await fetch(uri: uri, latest: record) }
+                }
             } catch {
                 logger.error("Reading followed \(uri, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -170,10 +194,20 @@ final class AtmosphereLibrary {
     /// complete, fetches it again only when its record has changed. Cards land in the file one by
     /// one, so it can be browsed from the first (see `progress` and `generation`).
     ///
-    /// Low Data Mode: fetching collection contents only ever happens here, because the user opened
-    /// the collection. Never start one pre-emptively (a background resume or refresh of collections
-    /// that aren't open) while `NWPathMonitor` reports the path `isConstrained`.
+    /// Opening a followed collection sees its unseen new postcards (see `AtmosphereNewPostcards`).
+    ///
+    /// Low Data Mode: fetching collection contents only happens here, because the user opened the
+    /// collection, or in the background when `AtmosphereCache.refetchesInBackground` allows it.
     func open(uri: String) async {
+        if isFollowedOnly(uri), let record = followedRecords[uri],
+           newPostcardState.open(uri, postcards: record.postcards, at: .now) {
+            saveNewPostcards()
+        }
+        await fetch(uri: uri)
+    }
+
+    /// `latest` is the collection's record, when it's just been read.
+    private func fetch(uri: String, latest: AtprotoCollection? = nil) async {
         // A fetch already running for this uri, from whichever row, is the one to show.
         guard !fetching.contains(uri), let collection = listed(uri),
               let url = AtmosphereCache.collectionURL(root: root, uri: uri)
@@ -184,7 +218,7 @@ final class AtmosphereLibrary {
         let isComplete = completePaths.contains(url.path)
         var recordCID = collection.cid
         if isComplete {
-            guard let latest = try? await GoCore.shared.atprotoCollection(uri: uri),
+            guard let latest = await latestRecord(latest, uri: uri),
                   AtmosphereCache.needsFetch(isCached: true, recordCID: latest.cid, sidecar: AtmosphereCache.readSidecar(forCollectionAt: url))
             else { return }
             recordCID = latest.cid
@@ -209,13 +243,15 @@ final class AtmosphereLibrary {
             reporter.finish()
             await consumer.value
             // Without it, the next open fetches again.
-            try? AtmosphereCache.writeSidecar(AtprotoCollectionSidecar(cid: recordCID, cards: cards), forCollectionAt: url)
+            let sidecar = AtprotoCollectionSidecar(cid: recordCID, cards: cards)
+            try? AtmosphereCache.writeSidecar(sidecar, forCollectionAt: url)
             guard isWanted(uri) else {
                 await removeCache(of: uri)
                 return
             }
             completePaths.insert(url.path)
             cachedPaths.insert(url.path)
+            completed(sidecar, uri: uri)
         } catch {
             reporter.finish()
             await consumer.value
@@ -224,6 +260,11 @@ final class AtmosphereLibrary {
             downloadErrors[uri] = error.localizedDescription
         }
         reloadNow()
+    }
+
+    private func latestRecord(_ latest: AtprotoCollection?, uri: String) async -> AtprotoCollection? {
+        if let latest { return latest }
+        return try? await GoCore.shared.atprotoCollection(uri: uri)
     }
 
     /// A failed download keeps the cards it committed, so trying again straight away resumes
@@ -258,6 +299,23 @@ final class AtmosphereLibrary {
         generation += 1
     }
 
+    /// Whether the followed collection at `uri` has postcards that arrived since it was last opened.
+    func hasUnseenPostcards(_ uri: String) -> Bool {
+        guard isFollowedOnly(uri), let record = followedRecords[uri] else { return false }
+        return !newPostcardState.unseen(in: uri, postcards: record.postcards).isEmpty
+    }
+
+    /// The postcards in the collection at `uri` that are new now, by at-uri.
+    func newPostcards(in uri: String) -> Set<String> {
+        newPostcardState.new(in: uri, at: .now)
+    }
+
+    /// The current names of the postcards in the collection at `uri` that are new now; empty for
+    /// any that haven't downloaded yet.
+    func newPostcardNames(in uri: String) -> Set<String> {
+        AtmosphereNewPostcards.names(of: newPostcards(in: uri), in: fetchedCards[uri] ?? [])
+    }
+
     /// How many postcards the listing says the collection at `uri` holds.
     func cardCount(of uri: String) -> Int? {
         listed(uri)?.cardCount
@@ -279,12 +337,20 @@ final class AtmosphereLibrary {
         AtmosphereFollowing.subjects(followedBy: signedIn.map { follows[$0] ?? [] })
     }
 
+    /// New postcards are only looked for in collections the signed-in accounts follow but don't own.
+    private func isFollowedOnly(_ uri: String) -> Bool {
+        ownListing(of: uri) == nil && followedSubjects.contains(uri)
+    }
+
     /// Every collection the signed-in accounts own or follow, once each.
-    private var knownURLs: [URL] {
+    private var knownURIs: [String] {
         var seen: Set<String> = []
         return (signedIn.flatMap { (collections[$0] ?? []).map(\.uri) } + followedSubjects)
             .filter { seen.insert($0).inserted }
-            .compactMap { AtmosphereCache.collectionURL(root: root, uri: $0) }
+    }
+
+    private var knownURLs: [URL] {
+        knownURIs.compactMap { AtmosphereCache.collectionURL(root: root, uri: $0) }
     }
 
     private func isWanted(_ uri: String) -> Bool {
@@ -320,9 +386,31 @@ final class AtmosphereLibrary {
     }
 
     private func refreshCachedPaths() {
-        let onDisk = knownURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
-        completePaths = Set(onDisk.filter { AtmosphereCache.isComplete(sidecar: AtmosphereCache.readSidecar(forCollectionAt: $0)) }.map(\.path))
-        cachedPaths = completePaths.union(cachedPaths.intersection(onDisk.map(\.path)))
+        var onDisk: Set<String> = []
+        var complete: Set<String> = []
+        for uri in knownURIs {
+            guard let url = AtmosphereCache.collectionURL(root: root, uri: uri), FileManager.default.fileExists(atPath: url.path) else { continue }
+            onDisk.insert(url.path)
+            if let sidecar = AtmosphereCache.readSidecar(forCollectionAt: url), AtmosphereCache.isComplete(sidecar: sidecar) {
+                complete.insert(url.path)
+                completed(sidecar, uri: uri)
+            }
+        }
+        completePaths = complete
+        cachedPaths = complete.union(cachedPaths.intersection(onDisk))
+    }
+
+    /// Takes in what a complete download of the collection at `uri` holds.
+    private func completed(_ sidecar: AtprotoCollectionSidecar, uri: String) {
+        fetchedCards[uri] = sidecar.cards
+        if isFollowedOnly(uri), newPostcardState.downloaded(uri, postcards: sidecar.cards.map(\.uri)) {
+            saveNewPostcards()
+        }
+    }
+
+    private func saveNewPostcards() {
+        try? FileManager.default.createDirectory(at: newPostcardsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(newPostcardState).write(to: newPostcardsURL, options: .atomic)
     }
 
     /// Adds the partial downloads (a fetch that failed or was cut short) that hold a card. Running
@@ -352,6 +440,7 @@ final class AtmosphereLibrary {
     private func followingChanged() {
         let subjects = Set(followedSubjects)
         followedRecords = followedRecords.filter { subjects.contains($0.key) }
+        if newPostcardState.keepOnly(subjects) { saveNewPostcards() }
         let owners = Set(subjects.compactMap(AtmosphereCache.owner(of:)))
         ownerHandles = ownerHandles.filter { owners.contains($0.key) }
         let snapshot = AtmosphereFollowingSnapshot(
