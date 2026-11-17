@@ -30,8 +30,10 @@ struct LibraryView: View {
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
     let atmosphere: AtmosphereAccounts
+    let atmosphereLibrary: AtmosphereLibrary
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     /// The sidebar's own `NavigationStack` path: empty at level 1 (the collections list),
     /// one element once a source is pushed (level 2, the `CollectionBrowser`). Kept as an
@@ -148,11 +150,12 @@ struct LibraryView: View {
                         writableCollections: writableCollections,
                         cloudLibrary: cloudLibrary,
                         searchRequest: searchRequest,
-                        contentGeneration: library.contentGeneration,
+                        contentGeneration: library.contentGeneration + atmosphereLibrary.generation,
                         onCreateCollection: { try await createCollection(titled: $0) },
                         onImport: { isImporting = true },
                         onCreate: presentCreatePostcard,
-                        collectionPaths: writableCollections.map(\.path)
+                        collectionPaths: allCollectionPaths,
+                        atmosphereLibrary: atmosphereLibrary
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
@@ -315,6 +318,9 @@ struct LibraryView: View {
             if case .collection(let path, _) = newPath.last {
                 library.lastSelectedCollectionPath = path
             }
+            if case .atprotoCollection(let uri, _, _) = newPath.last {
+                Task { await atmosphereLibrary.open(uri: uri) }
+            }
             // A cloud-backed source is only reachable once it's tagged as `.current`, but the
             // path underneath it can still be mid-write from a concurrent iCloud sync; prime
             // it with a short coordinated read before `CollectionBrowser` hands the path to
@@ -339,6 +345,21 @@ struct LibraryView: View {
         .onChange(of: library.outdatedCollectionPaths) { _, _ in
             Task { await syncLibrarySearchSources() }
         }
+        .onChange(of: atmosphereLibrary.cachedCollectionPaths) { _, _ in
+            Task { await syncLibrarySearchSources() }
+        }
+        // Launch, sign-in and sign-out (which forgets the account's collections).
+        .task(id: signedInDIDs) { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        }
+        #else
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        }
+        #endif
         .task(id: library.knownCollectionPaths(with: cloudLibrary)) { await refreshSchemaStatuses() }
         .sheet(item: $upgradeRequest) { source in
             UpgradeCollectionDialog(offersAll: library.outdatedCollectionPaths.count > 1) { all in
@@ -428,13 +449,30 @@ struct LibraryView: View {
                 }
             }
             Section(header: atmosphereHeader) {
-                ForEach(atmosphere.sessions) { session in
+                ForEach(atmosphereSessionsInOrder) { session in
                     Text("@\(session.handle ?? session.did)")
                         .font(.headline)
                         .foregroundStyle(.secondary)
                         .contextMenu {
-                            Button("Sign Out") { Task { await atmosphere.signOut(session) } }
+                            Button("Sign Out") { Task { await signOut(session) } }
                         }
+                    if let error = atmosphereLibrary.listingErrors[session.did] {
+                        Text("Couldn't refresh")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(error)
+                    }
+                    ForEach(atmosphereLibrary.collections[session.did] ?? []) { collection in
+                        if let source = atmosphereLibrary.source(for: collection, did: session.did) {
+                            NavigationLink(value: source) {
+                                AtmosphereCollectionRow(
+                                    title: collection.title,
+                                    progress: atmosphereLibrary.progress[collection.uri],
+                                    caption: atmosphereCaption(collection, path: source.path)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -498,6 +536,42 @@ struct LibraryView: View {
 
     private var writableCollections: [WritableCollection] {
         library.writableCollections(with: cloudLibrary)
+    }
+
+    /// What "All collections" shows and searches: every writable collection, plus every
+    /// Atmosphere collection that's been downloaded.
+    private var allCollectionPaths: [String] {
+        writableCollections.map(\.path) + atmosphereLibrary.cachedCollectionPaths
+    }
+
+    private var signedInDIDs: [String] { atmosphere.sessions.map(\.did) }
+
+    /// Why an Atmosphere collection's row isn't simply its copy: its last fetch failed, or it's
+    /// only partly downloaded (opening it carries on). A running fetch's ring says enough.
+    private func atmosphereCaption(_ collection: AtprotoCollection, path: String) -> String? {
+        guard atmosphereLibrary.progress[collection.uri] == nil else { return nil }
+        let isComplete = atmosphereLibrary.completePaths.contains(path)
+        if atmosphereLibrary.downloadErrors[collection.uri] != nil {
+            return isComplete ? "Couldn't refresh" : "Couldn't download"
+        }
+        return atmosphereLibrary.cachedPaths.contains(path) && !isComplete ? "Partly downloaded" : nil
+    }
+
+    /// Accounts with no collections sink to the bottom.
+    private var atmosphereSessionsInOrder: [AtmosphereSession] {
+        let hasCollections = { (session: AtmosphereSession) in !(atmosphereLibrary.collections[session.did] ?? []).isEmpty }
+        return atmosphere.sessions.filter(hasCollections) + atmosphere.sessions.filter { !hasCollections($0) }
+    }
+
+    /// Signing out takes the account's collections off screen too.
+    private func signOut(_ session: AtmosphereSession) async {
+        let paths = Set((atmosphereLibrary.collections[session.did] ?? []).compactMap {
+            atmosphereLibrary.source(for: $0, did: session.did)?.path
+        })
+        await atmosphere.signOut(session)
+        guard !signedInDIDs.contains(session.did) else { return }
+        if let shown = sidebarPath.last, paths.contains(shown.path) { sidebarPath = [] }
+        if let card = selectedCard, paths.contains(card.sourcePath) { selectedCard = nil }
     }
 
     /// A collection on an older schema: it can't open until upgraded, so the row offers the
@@ -739,10 +813,11 @@ struct LibraryView: View {
     }
 
     /// Replaces the Go `Library`'s source set with every collection currently known —
-    /// imported and fully-downloaded cloud items — so "All collections" search fans out
-    /// across all of them (see `AllCollectionsView`).
+    /// imported, fully-downloaded cloud items and downloaded Atmosphere collections — so
+    /// "All collections" search fans out across all of them (see `AllCollectionsView`). A fetch
+    /// writes an Atmosphere collection in place, so the library's handles see its cards arrive.
     private func syncLibrarySearchSources() async {
-        try? await GoCore.shared.setLibrarySources(collections: writableCollections.map(\.path), cardFiles: [])
+        try? await GoCore.shared.setLibrarySources(collections: allCollectionPaths, cardFiles: [])
     }
 }
 
@@ -771,15 +846,36 @@ private struct CollectionBrowser: View {
     var onImport: () -> Void
     var onCreate: () -> Void
     let collectionPaths: [String]
+    let atmosphereLibrary: AtmosphereLibrary
 
     /// Pops this destination off the sidebar's `NavigationStack` (used by the top-left back
     /// button on macOS, since the framework's own inline back button is hidden).
     @Environment(\.dismiss) private var dismiss
 
+    private var stillFetching: CollectionFetchProgress? {
+        guard case .atprotoCollection(let uri, _, _) = source else { return nil }
+        return atmosphereLibrary.progress[uri]
+    }
+
     var body: some View {
         Group {
             switch source {
-            case .collection:
+            case .atprotoCollection(let uri, let path, _) where !atmosphereLibrary.cachedPaths.contains(path):
+                Group {
+                    if let error = atmosphereLibrary.downloadErrors[uri] {
+                        ContentUnavailableView("Couldn't download collection", systemImage: "exclamationmark.triangle", description: Text(error))
+                    } else {
+                        // Until the first card lands; the grid takes over from there.
+                        ProgressView {
+                            if let count = atmosphereLibrary.cardCount(of: uri) {
+                                Text("Downloading \(count) postcards…")
+                            }
+                        }
+                    }
+                }
+                // Fills the column, so the floating Back has room under the traffic lights.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .collection, .atprotoCollection:
                 CollectionGridView(
                     source: source,
                     selection: $selectedCard,
@@ -789,7 +885,8 @@ private struct CollectionBrowser: View {
                     cloudLibrary: cloudLibrary,
                     searchRequest: searchRequest,
                     contentGeneration: contentGeneration,
-                    onCreateCollection: onCreateCollection
+                    onCreateCollection: onCreateCollection,
+                    stillFetching: stillFetching
                 )
             case .allCollections:
                 AllCollectionsView(
@@ -981,6 +1078,34 @@ private struct CloudItemRow: View {
         if let fetched = await collectionTitle(at: item.path), !fetched.isEmpty {
             title = fetched
         }
+    }
+}
+
+/// An Atmosphere account's collection, with a ring filling as a fetch brings its cards in.
+private struct AtmosphereCollectionRow: View {
+    let title: String
+    let progress: CollectionFetchProgress?
+    let caption: String?
+
+    var body: some View {
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if let caption {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: "photo.stack")
+            }
+            if let progress {
+                Spacer(minLength: 8)
+                CloudDownloadGlyph(state: .downloading(percent: progress.fraction.map { $0 * 100 }))
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(progress == nil ? "" : "Downloading")
     }
 }
 

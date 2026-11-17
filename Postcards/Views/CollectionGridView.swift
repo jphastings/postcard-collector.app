@@ -49,6 +49,9 @@ struct CollectionGridView: View {
     /// and returns it as a move/copy target — supplied by `LibraryView`, which owns where
     /// new collections live (iCloud vs local) and source registration.
     var onCreateCollection: ((String) async throws -> WritableCollection)?
+    /// Set while cards are still arriving in this collection (an Atmosphere download): the grid
+    /// ends with a spinner saying how many more are coming.
+    var stillFetching: CollectionFetchProgress?
 
     /// `nil` until the first load/search completes; distinguishes "still loading" from a
     /// collection or search that has genuinely returned zero cards.
@@ -98,7 +101,12 @@ struct CollectionGridView: View {
                     MasonryGrid(
                         items: cards,
                         aspectRatio: { Double($0.frontPxW) / Double(max($0.frontPxH, 1)) },
-                        header: { CollectionTitle(title: title ?? source.displayName) }
+                        header: { CollectionTitle(title: title ?? source.displayName) },
+                        footer: {
+                            if let stillFetching {
+                                MoreCardsComing(remaining: stillFetching.remaining)
+                            }
+                        }
                     ) { card in
                         Button {
                             selection = .inCollection(path: source.path, summary: card)
@@ -155,8 +163,8 @@ struct CollectionGridView: View {
         .modifier(SearchFocusedIfAvailable(binding: $isSearchFieldFocused))
         #endif
         .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadCards() }
-        .task(id: source.id) { await loadTitle() }
-        .task(id: source.id) { await loadPeople() }
+        .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadTitle() }
+        .task(id: SourceLoadKey(sourceID: source.id, generation: contentGeneration)) { await loadPeople() }
         .task(id: SearchInputKey(text: searchText, tokens: searchTokens)) { await search() }
         .onChange(of: searchText) { _, newValue in promoteTypedTokens(from: newValue) }
         .onChange(of: searchRequest.generation) { _, _ in applySearchPreset() }
@@ -182,12 +190,19 @@ struct CollectionGridView: View {
         }
     }
 
+    /// Reloads keep the current `cards` until the new ones arrive, and an active search's
+    /// results rather than replacing them with every card: a collection that's still
+    /// downloading reloads every half second.
     private func loadCards() async {
         loadError = nil
         do {
             let loaded = try await GoCore.shared.cardSummaries(inCollectionAt: source.path)
-            cards = loaded
             hasAnyLocation = CollectionMapGating.isEnabled(for: loaded)
+            if !isSearching(searchQuery) {
+                cards = loaded
+            } else {
+                await search()
+            }
         } catch {
             loadErrorTitle = "Couldn't open collection"
             loadError = error.localizedDescription
@@ -207,9 +222,17 @@ struct CollectionGridView: View {
         }
     }
 
+    private var searchQuery: SearchQuery {
+        SearchQuery.from(tokens: searchTokens, freeText: searchText)
+    }
+
+    private func isSearching(_ query: SearchQuery) -> Bool {
+        !(query.isPlainText && query.text.isEmpty)
+    }
+
     private func search() async {
-        let query = SearchQuery.from(tokens: searchTokens, freeText: searchText)
-        guard !(query.isPlainText && query.text.isEmpty) else {
+        let query = searchQuery
+        guard isSearching(query) else {
             await loadCards()
             return
         }
@@ -350,6 +373,25 @@ struct CollectionGridView: View {
     }
 }
 
+/// The last cell of a grid whose collection is still downloading.
+private struct MoreCardsComing: View {
+    let remaining: Int?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            if let remaining, remaining > 0 {
+                Text("\(remaining) more")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 16)
+    }
+}
+
 /// `.task(id:)` key for re-running search when EITHER the free text or the active pills
 /// change.
 private struct SearchInputKey: Equatable {
@@ -441,23 +483,27 @@ private struct GridCell: View {
         .task(id: card.id) { await loadThumbnail() }
         .task(id: card.id) { await loadFrontDescription() }
         .contextMenu {
-            Menu("Move to Collection…") {
-                Button("New collection…") { onNewCollection(card, .move) }
-                Divider()
-                ForEach(writableCollections) { target in
-                    Button(target.displayName) { onMove(card, target) }
+            if source.isWritable {
+                Menu("Move to Collection…") {
+                    Button("New collection…") { onNewCollection(card, .move) }
+                    Divider()
+                    ForEach(writableCollections) { target in
+                        Button(target.displayName) { onMove(card, target) }
+                    }
                 }
-            }
-            Menu("Copy to Collection…") {
-                Button("New collection…") { onNewCollection(card, .copy) }
-                Divider()
-                ForEach(writableCollections) { target in
-                    Button(target.displayName) { onCopy(card, target) }
+                Menu("Copy to Collection…") {
+                    Button("New collection…") { onNewCollection(card, .copy) }
+                    Divider()
+                    ForEach(writableCollections) { target in
+                        Button(target.displayName) { onCopy(card, target) }
+                    }
                 }
             }
             Button("Export…") { exportPostcard?(.inCollection(path: source.path, summary: card)) }
-            Divider()
-            Button("Remove from Collection…", role: .destructive) { confirmingRemoval = true }
+            if source.isWritable {
+                Divider()
+                Button("Remove from Collection…", role: .destructive) { confirmingRemoval = true }
+            }
         }
         .confirmationDialog(
             "Remove “\(card.name)” from this collection?",

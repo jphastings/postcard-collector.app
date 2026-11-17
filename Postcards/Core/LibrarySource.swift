@@ -1,10 +1,13 @@
 import Foundation
 
-/// One thing the library's sidebar can show: an opened `.postcards` collection, or the
-/// synthetic "All collections" row. Bare `.postcard.*` files are never library sources —
+/// One thing the library's sidebar can show: an opened `.postcards` collection, an Atmosphere
+/// account's collection (read-only, browsed from its cached copy), or the synthetic
+/// "All collections" row. Bare `.postcard.*` files are never library sources —
 /// they open in their own single-postcard window (see `SinglePostcardView`).
 enum LibrarySource: Identifiable, Hashable {
     case collection(path: String, displayName: String)
+    /// The cached copy of an org.dotpostcard.collection record at `uri`.
+    case atprotoCollection(uri: String, path: String, displayName: String)
     /// Not a real file: the sidebar's pinned first row, showing the union of every card
     /// from every collection at once (see `AllCollectionsView`).
     case allCollections
@@ -14,6 +17,7 @@ enum LibrarySource: Identifiable, Hashable {
     var path: String {
         switch self {
         case .collection(let path, _): return path
+        case .atprotoCollection(_, let path, _): return path
         case .allCollections: return "all-collections://aggregate"
         }
     }
@@ -21,6 +25,7 @@ enum LibrarySource: Identifiable, Hashable {
     var displayName: String {
         switch self {
         case .collection(_, let name): return name
+        case .atprotoCollection(_, _, let name): return name
         case .allCollections: return "All collections"
         }
     }
@@ -29,6 +34,10 @@ enum LibrarySource: Identifiable, Hashable {
         if case .collection = self { return true }
         return false
     }
+
+    /// Whether cards can be added to, moved out of and removed from it. Never an Atmosphere
+    /// collection, which mirrors someone's records.
+    var isWritable: Bool { isCollection }
 }
 
 /// One collection a card can be moved/copied into — the "known writable collections" list
