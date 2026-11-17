@@ -364,6 +364,44 @@ actor GoCore {
         return try Self.decode([LibraryHit].self, from: json, context: "searching bare card files")
     }
 
+    // MARK: - Atmosphere (atproto)
+
+    // Anonymous network reads that touch none of this actor's handles, so they're nonisolated:
+    // a slow download mustn't hold up every other read queued behind it on the actor.
+
+    /// The org.dotpostcard.collection records in `actor`'s repo (a handle or DID).
+    nonisolated func atprotoCollections(actor: String) async throws -> [AtprotoCollection] {
+        let json = try Self.call { AppcoreAtprotoCollectionsJSON(actor, $0) }
+        return try Self.decode([AtprotoCollection].self, from: json, context: "listing \(actor)'s collections")
+    }
+
+    nonisolated func atprotoCollection(uri: String) async throws -> AtprotoCollection {
+        let json = try Self.call { AppcoreAtprotoCollectionJSON(uri, $0) }
+        return try Self.decode(AtprotoCollection.self, from: json, context: "reading \(uri)")
+    }
+
+    nonisolated func atprotoFollows(actor: String) async throws -> [AtprotoFollow] {
+        let json = try Self.call { AppcoreAtprotoFollowsJSON(actor, $0) }
+        return try Self.decode([AtprotoFollow].self, from: json, context: "listing \(actor)'s follows")
+    }
+
+    /// Builds the collection at `uri` into the `.postcards` file at `path` in place, one card at a
+    /// time, so open handles see it grow; a failure keeps the cards so far, and calling again
+    /// resumes. `onCard(done, total)` runs on a Go thread as each card is committed.
+    nonisolated func fetchAtprotoCollection(
+        uri: String, to path: String, onCard: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> [AtprotoFetchedCard] {
+        let progress = FetchProgressRelay(onCard: onCard)
+        // A download can block for minutes, so it gets a thread of its own rather than tying up
+        // one of the few in Swift's cooperative pool.
+        let json = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try Self.call { AppcoreFetchAtprotoCollection(uri, path, progress, $0) } })
+            }
+        }
+        return try Self.decode([AtprotoFetchedCard].self, from: json, context: "downloading \(uri)")
+    }
+
     // MARK: - JSON
 
     private static func decode<T: Decodable>(_ type: T.Type, from json: String, context: String) throws -> T {
@@ -381,4 +419,18 @@ actor GoCore {
 private struct LibrarySourcesPayload: Encodable {
     var collections: [String]
     var cards: [String]
+}
+
+/// Hands each card a fetch commits to `onCard`, on whichever Go thread reports it; never touches
+/// anything main-actor itself.
+private final class FetchProgressRelay: NSObject, AppcoreFetchProgressProtocol {
+    private let onCard: @Sendable (Int, Int) -> Void
+
+    init(onCard: @escaping @Sendable (Int, Int) -> Void) {
+        self.onCard = onCard
+    }
+
+    func cardAdded(_ uri: String?, name: String?, done: Int, total: Int) {
+        onCard(done, total)
+    }
 }

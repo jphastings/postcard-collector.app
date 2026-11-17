@@ -8,10 +8,12 @@ import SwiftUI
 ///
 /// Reading order is column-balanced rather than strict rows — items enter in the given
 /// order, so it still reads roughly left-to-right, top-to-bottom.
-struct MasonryGrid<Item: Identifiable, Content: View, Header: View>: View {
+struct MasonryGrid<Item: Identifiable, Content: View, Header: View, Footer: View>: View {
     let items: [Item]
     let aspectRatio: (Item) -> Double
     let header: Header
+    /// Full width, after the last item.
+    let footer: Footer
     @ViewBuilder let content: (Item) -> Content
 
     private let spacing: CGFloat = 16
@@ -20,11 +22,13 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View>: View {
         items: [Item],
         aspectRatio: @escaping (Item) -> Double,
         @ViewBuilder header: () -> Header,
+        @ViewBuilder footer: () -> Footer,
         @ViewBuilder content: @escaping (Item) -> Content
     ) {
         self.items = items
         self.aspectRatio = aspectRatio
         self.header = header()
+        self.footer = footer()
         self.content = content
     }
 
@@ -37,17 +41,20 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View>: View {
             let columns = MasonryLayout.columns(of: items, count: columnCount, aspectRatio: aspectRatio)
 
             ScrollView {
-                HStack(alignment: .top, spacing: spacing) {
-                    ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                        LazyVStack(spacing: spacing) {
-                            ForEach(column) { item in
-                                content(item)
+                VStack(spacing: 0) {
+                    HStack(alignment: .top, spacing: spacing) {
+                        ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+                            LazyVStack(spacing: spacing) {
+                                ForEach(column) { item in
+                                    content(item)
+                                }
                             }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
                     }
+                    .padding(spacing)
+                    footer
                 }
-                .padding(spacing)
             }
             // The header (e.g. a collection's name and Back) stays put while the cards scroll
             // beneath it, so the way back is always in reach.
@@ -74,7 +81,18 @@ private struct PinnedHeader<Header: View>: ViewModifier {
     }
 }
 
-extension MasonryGrid where Header == EmptyView {
+extension MasonryGrid where Footer == EmptyView {
+    init(
+        items: [Item],
+        aspectRatio: @escaping (Item) -> Double,
+        @ViewBuilder header: () -> Header,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) {
+        self.init(items: items, aspectRatio: aspectRatio, header: header, footer: { EmptyView() }, content: content)
+    }
+}
+
+extension MasonryGrid where Header == EmptyView, Footer == EmptyView {
     init(
         items: [Item],
         aspectRatio: @escaping (Item) -> Double,

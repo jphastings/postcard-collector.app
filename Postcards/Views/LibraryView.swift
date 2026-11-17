@@ -29,8 +29,11 @@ struct LibraryView: View {
 
     let library: LibraryModel
     let cloudLibrary: CloudLibrary
+    let atmosphere: AtmosphereAccounts
+    let atmosphereLibrary: AtmosphereLibrary
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     /// The sidebar's own `NavigationStack` path: empty at level 1 (the collections list),
     /// one element once a source is pushed (level 2, the `CollectionBrowser`). Kept as an
@@ -67,6 +70,10 @@ struct LibraryView: View {
     /// The outdated collection whose upgrade dialog is showing.
     @State private var upgradeRequest: LibrarySource?
     @State private var upgradeError: String?
+    @State private var isAddingAccount = false
+    /// While "Follow a Collection…" asks for an address: the accounts it may follow as.
+    @State private var followAddressAccounts: [String]?
+    @State private var followAddress = ""
 
     /// The collection browser's grid/map toggle, lifted here (out of each pane) because the
     /// sidebar column's own width now depends on it too — see `SidebarWidths`. Reset to
@@ -106,10 +113,12 @@ struct LibraryView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             NavigationStack(path: $sidebarPath) {
                 VStack(spacing: 0) {
-                    if hasAnySources {
+                    if hasAnySources || !atmosphere.sessions.isEmpty {
                         sourceList
                     } else {
                         emptyLibraryView
+                        atmosphereHeader
+                            .padding()
                     }
                     if cloudLibrary.containerState == .unavailable {
                         Text("Sign in to iCloud to sync collections")
@@ -144,11 +153,12 @@ struct LibraryView: View {
                         writableCollections: writableCollections,
                         cloudLibrary: cloudLibrary,
                         searchRequest: searchRequest,
-                        contentGeneration: library.contentGeneration,
+                        contentGeneration: library.contentGeneration + atmosphereLibrary.generation,
                         onCreateCollection: { try await createCollection(titled: $0) },
                         onImport: { isImporting = true },
                         onCreate: presentCreatePostcard,
-                        collectionPaths: writableCollections.map(\.path)
+                        collectionPaths: allCollectionPaths,
+                        atmosphereLibrary: atmosphereLibrary
                     )
                     #if os(macOS)
                     .modifier(SidebarDestinationFill())
@@ -273,6 +283,8 @@ struct LibraryView: View {
         .opensPostcardFiles(library: library)
         #else
         .onOpenURL { url in
+            // Not the Atmosphere OAuth callback, which the web authentication session takes.
+            guard url.isFileURL else { return }
             Task { await open([url]) }
         }
         .fullScreenCover(isPresented: Binding(get: { presentedCardURL != nil }, set: { if !$0 { presentedCardURL = nil } })) {
@@ -295,6 +307,26 @@ struct LibraryView: View {
             CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
         }
         #endif
+        .modifier(AtmosphereSignIn(accounts: atmosphere, isPresented: $isAddingAccount))
+        .alert(
+            "Follow a Collection",
+            isPresented: Binding(get: { followAddressAccounts != nil }, set: { if !$0 { followAddressAccounts = nil } })
+        ) {
+            TextField("at://…/org.dotpostcard.collection/…", text: $followAddress)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                #endif
+            let accounts = followAddressAccounts ?? []
+            ForEach(accounts, id: \.self) { did in
+                Button(accounts.count > 1 ? "Follow as @\(atmosphereHandles[did] ?? did)" : "Follow") {
+                    follow(followAddress, as: did)
+                    followAddress = ""
+                }
+            }
+            Button("Cancel", role: .cancel) { followAddress = "" }
+        }
         .task { await runAutomationHookIfRequested() }
         .onChange(of: sidebarPath) { _, newPath in
             // Every push starts fresh in grid mode, ungated, until the newly pushed pane's
@@ -307,6 +339,9 @@ struct LibraryView: View {
             // "Single postcards"/"All collections" rows.
             if case .collection(let path, _) = newPath.last {
                 library.lastSelectedCollectionPath = path
+            }
+            if case .atprotoCollection(let uri, _, _) = newPath.last {
+                Task { await atmosphereLibrary.open(uri: uri) }
             }
             // A cloud-backed source is only reachable once it's tagged as `.current`, but the
             // path underneath it can still be mid-write from a concurrent iCloud sync; prime
@@ -332,6 +367,24 @@ struct LibraryView: View {
         .onChange(of: library.outdatedCollectionPaths) { _, _ in
             Task { await syncLibrarySearchSources() }
         }
+        .onChange(of: atmosphereLibrary.cachedCollectionPaths) { _, _ in
+            Task { await syncLibrarySearchSources() }
+        }
+        .onChange(of: atmosphereLibrary.collectionPaths) { old, new in
+            closeAtmosphereCollections(leaving: old.subtracting(new))
+        }
+        // Launch, sign-in and sign-out (which forgets the account's collections).
+        .task(id: signedInDIDs) { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        }
+        #else
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        }
+        #endif
         .task(id: library.knownCollectionPaths(with: cloudLibrary)) { await refreshSchemaStatuses() }
         .sheet(item: $upgradeRequest) { source in
             UpgradeCollectionDialog(offersAll: library.outdatedCollectionPaths.count > 1) { all in
@@ -420,6 +473,104 @@ struct LibraryView: View {
                     }
                 }
             }
+            Section(header: atmosphereHeader) {
+                ForEach(atmosphereSessionsInOrder) { session in
+                    Text("@\(session.handle ?? session.did)")
+                        .font(.headline)
+                        .modifier(DimmedUnless(false))
+                        .contextMenu {
+                            Button("Follow a Collection…") { followAddressAccounts = [session.did] }
+                            Button("Sign Out") { Task { await atmosphere.signOut(session) } }
+                        }
+                    if session.needsSignIn == true {
+                        Text("Sign in again")
+                            .font(.caption)
+                            .modifier(DimmedUnless(false))
+                            .help("This account's sign-in has expired. Add it again to follow and unfollow as it.")
+                    }
+                    if let error = atmosphereLibrary.listingErrors[session.did] {
+                        Text("Couldn't refresh")
+                            .font(.caption)
+                            .modifier(DimmedUnless(false))
+                            .help(error)
+                    }
+                    ForEach(atmosphereLibrary.collections[session.did] ?? []) { collection in
+                        atmosphereCollectionLink(collection)
+                    }
+                    // What the account follows comes after what it owns.
+                    ForEach(atmosphereLibrary.collections(followedBy: session.did)) { collection in
+                        atmosphereCollectionLink(collection, owner: atmosphereLibrary.ownerHandle(of: collection.uri), followedBy: session.did)
+                    }
+                }
+            }
+        }
+    }
+
+    /// An Atmosphere collection's row, the same wherever it's listed: under its owner, under an
+    /// account following it, or both. `owner` and `followedBy` are set for a followed collection.
+    @ViewBuilder
+    private func atmosphereCollectionLink(
+        _ collection: AtprotoCollection, owner: String? = nil, followedBy follower: String? = nil
+    ) -> some View {
+        if let source = atmosphereLibrary.source(for: collection) {
+            NavigationLink(value: source) {
+                AtmosphereCollectionRow(
+                    title: collection.title,
+                    owner: owner,
+                    progress: atmosphereLibrary.progress[collection.uri],
+                    caption: atmosphereCaption(collection),
+                    hasUnseenPostcards: atmosphereLibrary.hasUnseenPostcards(collection.uri)
+                )
+            }
+            .contextMenu {
+                let handles = atmosphereHandles
+                ForEach(AtmosphereFollowing.followActions(for: collection.uri, accounts: signedInDIDs, handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
+                    Button(action.title) { follow(collection.uri, as: action.did) }
+                }
+                // Only where it's listed under the account that follows it, so it's clear who
+                // unfollows; never on the owner's own listing.
+                if let follower {
+                    ForEach(AtmosphereFollowing.unfollowActions(for: collection.uri, accounts: [follower], handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
+                        Button(action.title) { unfollow(action) }
+                    }
+                }
+                Button("Copy at-uri") { copyToPasteboard(collection.uri) }
+            }
+        }
+    }
+
+    private var atmosphereHandles: [String: String] {
+        Dictionary(atmosphere.sessions.compactMap { session in session.handle.map { (session.did, $0) } }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private func follow(_ address: String, as did: String) {
+        Task {
+            await atmosphere.follow(address, as: did)
+            await atmosphereLibrary.reloadFollows(of: did)
+        }
+    }
+
+    private func unfollow(_ action: AtmosphereFollowAction) {
+        Task {
+            await atmosphere.unfollow(action.followURIs, as: action.did)
+            await atmosphereLibrary.reloadFollows(of: action.did)
+        }
+    }
+
+    private var atmosphereHeader: some View {
+        HStack {
+            sectionHeader("Atmosphere")
+            Spacer()
+            Button { isAddingAccount = true } label: {
+                Image(systemName: "person.badge.plus")
+            }
+            .buttonStyle(.borderless)
+            .disabled(atmosphere.isSigningIn)
+            .help("Add Account")
+            .accessibilityLabel("Add Account")
+            // Section headers run further right than rows do; this lines the button up with
+            // the rows' trailing glyphs (download, upgrade warning).
+            .padding(.trailing, 19)
         }
     }
 
@@ -464,6 +615,43 @@ struct LibraryView: View {
 
     private var writableCollections: [WritableCollection] {
         library.writableCollections(with: cloudLibrary)
+    }
+
+    /// What "All collections" shows and searches: every writable collection, plus every
+    /// Atmosphere collection that's been downloaded.
+    private var allCollectionPaths: [String] {
+        writableCollections.map(\.path) + atmosphereLibrary.cachedCollectionPaths
+    }
+
+    private var signedInDIDs: [String] { atmosphere.sessions.map(\.did) }
+
+    /// Why an Atmosphere collection's row isn't simply its copy: its last fetch failed, or it's
+    /// only partly downloaded (opening it carries on). A running fetch's ring says enough.
+    private func atmosphereCaption(_ collection: AtprotoCollection) -> String? {
+        guard atmosphereLibrary.progress[collection.uri] == nil,
+              let path = atmosphereLibrary.source(for: collection)?.path
+        else { return nil }
+        let isComplete = atmosphereLibrary.completePaths.contains(path)
+        if atmosphereLibrary.downloadErrors[collection.uri] != nil {
+            return isComplete ? "Couldn't refresh" : "Couldn't download"
+        }
+        return atmosphereLibrary.cachedPaths.contains(path) && !isComplete ? "Partly downloaded" : nil
+    }
+
+    /// Accounts with no collections, of their own or followed, sink to the bottom.
+    private var atmosphereSessionsInOrder: [AtmosphereSession] {
+        let hasCollections = { (session: AtmosphereSession) in
+            !(atmosphereLibrary.collections[session.did] ?? []).isEmpty
+                || !atmosphereLibrary.collections(followedBy: session.did).isEmpty
+        }
+        return atmosphere.sessions.filter(hasCollections) + atmosphere.sessions.filter { !hasCollections($0) }
+    }
+
+    /// Signing out or unfollowing takes the collections no account owns or follows any more off
+    /// screen too.
+    private func closeAtmosphereCollections(leaving paths: Set<String>) {
+        if let shown = sidebarPath.last, paths.contains(shown.path) { sidebarPath = [] }
+        if let card = selectedCard, paths.contains(card.sourcePath) { selectedCard = nil }
     }
 
     /// A collection on an older schema: it can't open until upgraded, so the row offers the
@@ -705,10 +893,11 @@ struct LibraryView: View {
     }
 
     /// Replaces the Go `Library`'s source set with every collection currently known —
-    /// imported and fully-downloaded cloud items — so "All collections" search fans out
-    /// across all of them (see `AllCollectionsView`).
+    /// imported, fully-downloaded cloud items and downloaded Atmosphere collections — so
+    /// "All collections" search fans out across all of them (see `AllCollectionsView`). A fetch
+    /// writes an Atmosphere collection in place, so the library's handles see its cards arrive.
     private func syncLibrarySearchSources() async {
-        try? await GoCore.shared.setLibrarySources(collections: writableCollections.map(\.path), cardFiles: [])
+        try? await GoCore.shared.setLibrarySources(collections: allCollectionPaths, cardFiles: [])
     }
 }
 
@@ -737,15 +926,46 @@ private struct CollectionBrowser: View {
     var onImport: () -> Void
     var onCreate: () -> Void
     let collectionPaths: [String]
+    let atmosphereLibrary: AtmosphereLibrary
 
     /// Pops this destination off the sidebar's `NavigationStack` (used by the top-left back
     /// button on macOS, since the framework's own inline back button is hidden).
     @Environment(\.dismiss) private var dismiss
 
+    private var stillFetching: CollectionFetchProgress? {
+        guard case .atprotoCollection(let uri, _, _) = source else { return nil }
+        return atmosphereLibrary.progress[uri]
+    }
+
+    private var newPostcards: Set<String> {
+        guard case .atprotoCollection(let uri, _, _) = source else { return [] }
+        return atmosphereLibrary.newPostcards(in: uri)
+    }
+
+    private var newPostcardNames: Set<String> {
+        guard case .atprotoCollection(let uri, _, _) = source else { return [] }
+        return atmosphereLibrary.newPostcardNames(in: uri)
+    }
+
     var body: some View {
         Group {
             switch source {
-            case .collection:
+            case .atprotoCollection(let uri, let path, _) where !atmosphereLibrary.cachedPaths.contains(path):
+                Group {
+                    if let error = atmosphereLibrary.downloadErrors[uri] {
+                        ContentUnavailableView("Couldn't download collection", systemImage: "exclamationmark.triangle", description: Text(error))
+                    } else {
+                        // Until the first card lands; the grid takes over from there.
+                        ProgressView {
+                            if let count = atmosphereLibrary.cardCount(of: uri) {
+                                Text("Downloading \(count) postcards…")
+                            }
+                        }
+                    }
+                }
+                // Fills the column, so the floating Back has room under the traffic lights.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .collection, .atprotoCollection:
                 CollectionGridView(
                     source: source,
                     selection: $selectedCard,
@@ -755,7 +975,10 @@ private struct CollectionBrowser: View {
                     cloudLibrary: cloudLibrary,
                     searchRequest: searchRequest,
                     contentGeneration: contentGeneration,
-                    onCreateCollection: onCreateCollection
+                    onCreateCollection: onCreateCollection,
+                    stillFetching: stillFetching,
+                    hasNewPostcards: !newPostcards.isEmpty,
+                    newPostcardNames: newPostcardNames
                 )
             case .allCollections:
                 AllCollectionsView(
@@ -922,15 +1145,17 @@ private struct CloudItemRow: View {
                     case .current:
                         EmptyView()
                     case .downloading:
-                        Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+                        Text("Downloading…").font(.caption).modifier(DimmedUnless(false))
                     case .remote:
-                        Text(Self.downloadPrompt).font(.caption).foregroundStyle(.secondary)
+                        Text(Self.downloadPrompt).font(.caption).modifier(DimmedUnless(false))
                     }
                 }
             } icon: {
                 Image(systemName: item.isCollection ? "photo.stack" : "photo")
             }
-            .foregroundStyle(item.downloadState == .current ? .primary : .secondary)
+            // Only dims undownloaded rows: an explicit `.primary` would also stop the sidebar
+            // dimming this row with the rest when the window isn't focused.
+            .modifier(DimmedUnless(item.downloadState == .current))
             // A downloaded row's navigation chevron takes this place.
             if item.downloadState != .current {
                 Spacer(minLength: 8)
@@ -947,6 +1172,91 @@ private struct CloudItemRow: View {
         if let fetched = await collectionTitle(at: item.path), !fetched.isEmpty {
             title = fetched
         }
+    }
+}
+
+private struct DimmedUnless: ViewModifier {
+    let isFullStrength: Bool
+    #if os(macOS)
+    // A button row isn't dimmed by the sidebar when the window loses focus, so it steps down
+    // itself to stay dimmer than the navigation rows around it.
+    @Environment(\.controlActiveState) private var controlActiveState
+    #endif
+
+    init(_ isFullStrength: Bool) { self.isFullStrength = isFullStrength }
+
+    func body(content: Content) -> some View {
+        if isFullStrength {
+            content
+        } else {
+            #if os(macOS)
+            content.foregroundStyle(controlActiveState == .inactive ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+            #else
+            content.foregroundStyle(.secondary)
+            #endif
+        }
+    }
+}
+
+private func copyToPasteboard(_ string: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(string, forType: .string)
+    #else
+    UIPasteboard.general.string = string
+    #endif
+}
+
+/// An Atmosphere collection, with a ring filling as a fetch brings its cards in.
+private struct AtmosphereCollectionRow: View {
+    let title: String
+    /// A followed collection's owner's handle; `nil` for the account's own.
+    let owner: String?
+    let progress: CollectionFetchProgress?
+    let caption: String?
+    let hasUnseenPostcards: Bool
+
+    var body: some View {
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    // The owner's handle only shows when it fits beside the whole title.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            Text(title)
+                            if let owner {
+                                Text("@\(owner)").modifier(DimmedUnless(false))
+                            }
+                        }
+                        Text(title)
+                    }
+                    .lineLimit(1)
+                    if let caption {
+                        Text(caption).font(.caption).modifier(DimmedUnless(false))
+                    }
+                }
+            } icon: {
+                if owner == nil {
+                    Image(systemName: "photo.stack")
+                } else {
+                    // A light, open glyph: at the same point size it reads smaller than the
+                    // dense photo stack, so it's stepped up a scale to match optically.
+                    Image(systemName: "dot.radiowaves.up.forward").imageScale(.large)
+                }
+            }
+            if let progress {
+                Spacer(minLength: 8)
+                CloudDownloadGlyph(state: .downloading(percent: progress.fraction.map { $0 * 100 }))
+            } else if hasUnseenPostcards {
+                Spacer(minLength: 8)
+                Circle()
+                    .fill(.tint)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 20, height: 20)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(progress != nil ? "Downloading" : hasUnseenPostcards ? "New postcards" : "")
     }
 }
 

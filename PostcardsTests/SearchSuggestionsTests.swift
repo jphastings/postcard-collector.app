@@ -118,4 +118,14 @@ final class SearchSuggestionsTests: XCTestCase {
     func testEmptyTrailingFragmentAfterTrailingSpaceSuggestsNothing() {
         XCTAssertTrue(SearchSuggestions.suggestions(for: "from:Claire ", people: [claire]).isEmpty)
     }
+
+    // MARK: - New
+
+    func testNewIsOfferedFirstOnlyWhereThereAreNewPostcards() {
+        XCTAssertEqual(SearchSuggestions.suggestions(for: "ne", people: [], offersNew: true).first, .new)
+        XCTAssertEqual(SearchSuggestions.suggestions(for: "New", people: [], offersNew: true).first, .new)
+        XCTAssertFalse(SearchSuggestions.suggestions(for: "new", people: []).contains(.new))
+        XCTAssertFalse(SearchSuggestions.suggestions(for: "news", people: [], offersNew: true).contains(.new))
+        XCTAssertFalse(SearchSuggestions.suggestions(for: "new", people: [], existingTokens: [.new], offersNew: true).contains(.new))
+    }
 }

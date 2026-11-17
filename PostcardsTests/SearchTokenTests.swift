@@ -108,4 +108,17 @@ final class SearchTokenTests: XCTestCase {
         XCTAssertTrue(tokens.isEmpty)
         XCTAssertEqual(remainder, "sunset beach")
     }
+
+    // MARK: - New
+
+    func testNewTokenLeavesTheGoQueryAlone() {
+        XCTAssertEqual(SearchToken.new.pillLabel, "New")
+        XCTAssertEqual(SearchQuery.from(tokens: [.new], freeText: "beach"), SearchQuery(text: "beach"))
+    }
+
+    func testTypedNewStaysText() {
+        for typed in ["new ", "new:x "] {
+            XCTAssertEqual(SearchToken.promote(from: typed).tokens, [], typed)
+        }
+    }
 }

@@ -120,6 +120,8 @@ private struct OpensPostcardFiles: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onOpenURL { url in
+            // Not the Atmosphere OAuth callback, which the web authentication session takes.
+            guard url.isFileURL else { return }
             Task { await openPostcardFiles([url], library: library, openWindow: openWindow) }
         }
     }
