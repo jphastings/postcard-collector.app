@@ -157,4 +157,45 @@ final class WatchRelayTests: XCTestCase {
 
         XCTAssertEqual(decoded, [details])
     }
+
+    // MARK: - WatchCollectionInfo compatibility
+
+    /// The catalog entry as watches and phones that predate Atmosphere know it.
+    private struct OldWatchCollectionInfo: Codable, Equatable {
+        var id: String
+        var title: String
+        var cardCount: Int
+    }
+
+    func testAnOldPhonesCatalogDecodesAsICloudCollections() throws {
+        let data = try JSONEncoder().encode([OldWatchCollectionInfo(id: "Rome", title: "Rome", cardCount: 3)])
+
+        let catalog = try JSONDecoder().decode([WatchCollectionInfo].self, from: data)
+
+        XCTAssertEqual(catalog, [WatchCollectionInfo(id: "Rome", title: "Rome", cardCount: 3)])
+        XCTAssertNil(catalog.first?.atmosphere)
+    }
+
+    func testAnOldWatchDecodesANewCatalogWithAtmosphereEntries() throws {
+        let data = try JSONEncoder().encode([
+            WatchCollectionInfo(id: "Rome", title: "Rome", cardCount: 3),
+            WatchCollectionInfo(id: "atproto-1", title: "Followed", cardCount: 2, atmosphere: .followed),
+        ])
+
+        let catalog = try JSONDecoder().decode([OldWatchCollectionInfo].self, from: data)
+
+        XCTAssertEqual(catalog, [
+            OldWatchCollectionInfo(id: "Rome", title: "Rome", cardCount: 3),
+            OldWatchCollectionInfo(id: "atproto-1", title: "Followed", cardCount: 2),
+        ])
+    }
+
+    func testTheAtmosphereRoleRoundTrips() throws {
+        let catalog = [
+            WatchCollectionInfo(id: "a", title: "Own", cardCount: 1, atmosphere: .own),
+            WatchCollectionInfo(id: "b", title: "Followed", cardCount: 1, atmosphere: .followed),
+        ]
+
+        XCTAssertEqual(try JSONDecoder().decode([WatchCollectionInfo].self, from: JSONEncoder().encode(catalog)), catalog)
+    }
 }

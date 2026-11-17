@@ -49,6 +49,9 @@ final class CollectionReader {
             throw CollectionReaderError.sqlite(message)
         }
         db = handle
+        // A file can be read while the Go core writes it (an Atmosphere download commits card
+        // by card), so wait out a commit's lock like the Go core's own connections do.
+        sqlite3_busy_timeout(handle, 5000)
 
         let version = try Self.queryUserVersion(handle)
         guard Self.readableSchemaVersions.contains(version) else {

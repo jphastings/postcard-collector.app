@@ -46,7 +46,8 @@ final class AtmosphereLibrary {
     private var signedIn: [String] = []
     private var isReloading = false
     private var reloadThrottle = ReloadThrottle()
-    private let root: URL
+    /// Where the cache files and saved listings and follows live (see `AtmosphereCache`).
+    let root: URL
     private let newPostcardsURL: URL
     private let pathMonitor = NWPathMonitor()
 

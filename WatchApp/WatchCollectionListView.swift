@@ -95,6 +95,12 @@ private struct CollectionRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
+                if info.atmosphere == .followed {
+                    Image(systemName: "dot.radiowaves.up.forward")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Followed")
+                }
                 if library.isPinned(info.id) {
                     Image(systemName: "pin.fill")
                         .font(.caption2)

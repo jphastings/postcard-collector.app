@@ -141,6 +141,50 @@ extension AtmosphereCache {
     static func isBrowsable(isComplete: Bool, cardCount: Int) -> Bool {
         isComplete || cardCount > 0
     }
+
+    /// Every browsable cached collection the signed-in accounts own or follow, once each, read
+    /// from disk alone: the saved listings (`<did>.json`) and follows (`following.json`), and the
+    /// cache files beside them. So it gives the same answer before anything has reloaded
+    /// `AtmosphereLibrary` — in a background launch, say. Opens each cached file to count its
+    /// cards (blocking SQLite), so call it off the main actor.
+    static func downloadedCollections(root: URL) -> [DownloadedAtmosphereCollection] {
+        let fileManager = FileManager.default
+        let decoder = JSONDecoder()
+        let listingURLs = ((try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" && isDID($0.deletingPathExtension().lastPathComponent) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let owned = listingURLs.flatMap { url in
+            (try? Data(contentsOf: url)).flatMap { try? decoder.decode([AtprotoCollection].self, from: $0) } ?? []
+        }
+        let following = (try? Data(contentsOf: followingURL(root: root)))
+            .flatMap { try? decoder.decode(AtmosphereFollowingSnapshot.self, from: $0) } ?? AtmosphereFollowingSnapshot()
+        let ownedTitles = Dictionary(owned.map { ($0.uri, $0.title) }, uniquingKeysWith: { first, _ in first })
+        let followed = AtmosphereFollowing.subjects(followedBy: following.follows.sorted { $0.key < $1.key }.map(\.value))
+
+        var seen: Set<String> = []
+        return (owned.map(\.uri) + followed).filter { seen.insert($0).inserted }.compactMap { uri in
+            guard let url = collectionURL(root: root, uri: uri), fileManager.fileExists(atPath: url.path) else { return nil }
+            let reader = try? CollectionReader(path: url.path)
+            let cardCount = (try? reader?.cardCount()) ?? 0
+            guard isBrowsable(isComplete: isComplete(sidecar: readSidecar(forCollectionAt: url)), cardCount: cardCount) else { return nil }
+            let title = ownedTitles[uri] ?? following.records[uri]?.title ?? (try? reader?.title()) ?? rkey(of: uri) ?? uri
+            return DownloadedAtmosphereCollection(
+                uri: uri, path: url.path, title: title, cardCount: cardCount, isFollowed: ownedTitles[uri] == nil
+            )
+        }
+    }
+}
+
+/// A collection a signed-in Atmosphere account owns or follows that's downloaded here, fully or
+/// partly (see `AtmosphereCache.downloadedCollections`).
+struct DownloadedAtmosphereCollection: Equatable, Sendable {
+    let uri: String
+    let path: String
+    let title: String
+    /// The cards in the file now, which for a partial download is fewer than the record lists.
+    let cardCount: Int
+    /// Followed by a signed-in account and owned by none of them.
+    let isFollowed: Bool
 }
 
 /// How far a running fetch has got, from its per-card callbacks.

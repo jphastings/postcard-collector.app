@@ -10,7 +10,7 @@ struct PostcardsApp: App {
     @State private var library = LibraryModel()
     @State private var cloudLibrary: CloudLibrary
     @State private var atmosphere = AtmosphereAccounts()
-    @State private var atmosphereLibrary = AtmosphereLibrary()
+    @State private var atmosphereLibrary: AtmosphereLibrary
     #if os(iOS)
     @State private var watchConnectivityProvider: WatchConnectivityProvider?
     #endif
@@ -36,12 +36,14 @@ struct PostcardsApp: App {
         // own; those show "Downloading…".)
         cloudLibrary.shouldAutoDownload = { _ in false }
         _cloudLibrary = State(initialValue: cloudLibrary)
+        let atmosphereLibrary = AtmosphereLibrary()
+        _atmosphereLibrary = State(initialValue: atmosphereLibrary)
         #if os(iOS)
         // Started here, at process launch, rather than from a view's `.task` — iOS can
         // launch this app in the background to deliver a queued WCSession userInfo (phone
         // locked/in pocket), and a background launch never runs `LibraryView`'s task. The
         // delegate must exist from the first instant so that delivery isn't silently dropped.
-        let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary)
+        let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary, atmosphereLibrary: atmosphereLibrary)
         _watchConnectivityProvider = State(initialValue: provider)
         provider.start()
         #endif

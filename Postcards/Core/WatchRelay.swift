@@ -5,7 +5,8 @@ import Foundation
 /// watch app (`WatchLibrary`).
 ///
 /// watchOS can't open iCloud Drive documents, so the watch never touches iCloud. Instead the
-/// phone reads the iCloud Drive `.postcards` files and relays them over WatchConnectivity: a
+/// phone reads the iCloud Drive `.postcards` files (and the Atmosphere collections it has
+/// downloaded) and relays them over WatchConnectivity: a
 /// lightweight catalog is pushed as the application context, and each collection the watch
 /// asks for is streamed to it progressively (see "Progressive streaming" below) and cached
 /// there, so it opens with no phone present.
@@ -152,12 +153,23 @@ struct WatchCardMeta: Identifiable, Hashable, Codable, Sendable {
 }
 
 /// One collection as advertised to the watch — enough to draw the list row without the file
-/// itself. `id` is the collection's stable identifier (its filename stem); it keys relay
-/// messages and the on-watch cache filename alike.
+/// itself. `id` is the collection's stable identifier — an iCloud collection's filename stem,
+/// or `WatchCatalogBuilder.atmosphereID(uri:)` for an Atmosphere one; it keys relay messages
+/// and is the on-watch cache directory's name, so it must stay one safe path component.
 struct WatchCollectionInfo: Identifiable, Hashable, Codable, Sendable {
     var id: String
     var title: String
     var cardCount: Int
+    /// Set for an Atmosphere collection; absent for iCloud ones. Optional so catalogs from
+    /// phones that predate it still decode, and watches that predate it ignore it.
+    var atmosphere: AtmosphereRole? = nil
+
+    enum AtmosphereRole: String, Codable, Sendable {
+        /// A signed-in account's own.
+        case own
+        /// Followed by a signed-in account, owned by none of them.
+        case followed
+    }
 }
 
 /// What the watch asks for when it (re)requests a collection: the cards it already holds at

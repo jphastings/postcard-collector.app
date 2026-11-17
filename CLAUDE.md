@@ -196,6 +196,12 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   pinned — otherwise per card, on zoom. The phone does all pixel work; the watch only decodes
   small files through an LRU (zoom faces bypass it). Keep it that way — per-card
   decode/rotation on the watch is what made scrolling jerky.
+- Atmosphere collections the phone has downloaded (complete or partial) are relayed too,
+  mixed into the same catalog; it never starts an atproto download for the watch. Their ids
+  are `WatchCatalogBuilder.atmosphereID(uri:)` (a hash of the at-uri: the id names an
+  on-watch cache directory, so it must be one safe path component), and the set is read
+  from disk so a background launch can serve them. The watch re-requests a collection
+  whenever the catalog lists more cards than its manifest holds.
 - The phone publishes its catalog only once `CloudLibrary` has gathered (or iCloud is
   unavailable): an empty pre-gather catalog tells the watch there are no collections.
 - Threading discipline is strict everywhere WCSession appears: `@MainActor @Observable`
