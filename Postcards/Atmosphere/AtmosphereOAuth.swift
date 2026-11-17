@@ -32,6 +32,9 @@ struct AtmosphereSession: Codable, Identifiable {
     var authorizationServer: ServerMetadata
     var login: Login
     var dpopKey: DPoPKey
+    /// Set once the authorization server has rejected the refresh token; signing in again replaces
+    /// the whole session.
+    var needsSignIn: Bool?
 
     var id: String { did }
 }

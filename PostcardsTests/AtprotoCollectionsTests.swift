@@ -40,19 +40,20 @@ final class AtprotoCollectionsTests: XCTestCase {
         XCTAssertEqual(cards, [AtprotoFetchedCard(uri: "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/org.dotpostcard.postcard/3lbq2wcmaqs2a", name: "eiffel-tower")])
     }
 
-    func testCachePathIsKeyedByDIDAndRecordKey() {
+    func testCachePathIsKeyedByTheURIsOwnerAndRecordKey() {
         let url = AtmosphereCache.collectionURL(
-            root: URL(fileURLWithPath: "/caches/Atmosphere"), did: "did:plc:abc",
-            uri: "at://did:plc:abc/org.dotpostcard.collection/3lbq2xxbkzk2c"
+            root: URL(fileURLWithPath: "/caches/Atmosphere"), uri: "at://did:plc:abc/org.dotpostcard.collection/3lbq2xxbkzk2c"
         )
         XCTAssertEqual(url?.path, "/caches/Atmosphere/did:plc:abc/3lbq2xxbkzk2c.postcards")
         XCTAssertEqual(url.map(AtmosphereCache.sidecarURL)?.path, "/caches/Atmosphere/did:plc:abc/3lbq2xxbkzk2c.json")
     }
 
-    func testRecordKeysThatCouldEscapeTheCacheAreRefused() {
+    func testURIsThatCouldEscapeTheCacheAreRefused() {
         let root = URL(fileURLWithPath: "/caches/Atmosphere")
-        XCTAssertNil(AtmosphereCache.collectionURL(root: root, did: "did:plc:abc", uri: "at://did:plc:abc/org.dotpostcard.collection/.."))
-        XCTAssertNil(AtmosphereCache.collectionURL(root: root, did: "did:plc:abc", uri: "at://did:plc:abc/org.dotpostcard.collection/a%2Fb"))
+        XCTAssertNil(AtmosphereCache.collectionURL(root: root, uri: "at://did:plc:abc/org.dotpostcard.collection/.."))
+        XCTAssertNil(AtmosphereCache.collectionURL(root: root, uri: "at://did:plc:abc/org.dotpostcard.collection/a%2Fb"))
+        XCTAssertNil(AtmosphereCache.collectionURL(root: root, uri: "at://../org.dotpostcard.collection/3lbq2xxbkzk2c"))
+        XCTAssertNil(AtmosphereCache.collectionURL(root: root, uri: "at://alice.example.com/org.dotpostcard.collection/3lbq2xxbkzk2c"), "a handle isn't a stable owner")
     }
 
     func testSidecarRoundTrips() throws {

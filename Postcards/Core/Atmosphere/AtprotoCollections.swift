@@ -27,6 +27,16 @@ struct AtprotoFetchedCard: Codable, Hashable, Sendable {
     let name: String
 }
 
+/// The last good follows of the signed-in accounts and what they lead to, for offline launches.
+struct AtmosphereFollowingSnapshot: Codable {
+    /// Each account's follows, by DID.
+    var follows: [String: [AtprotoFollow]] = [:]
+    /// Followed collections' records, by at-uri.
+    var records: [String: AtprotoCollection] = [:]
+    /// Followed collections' owners' handles, by DID.
+    var handles: [String: String] = [:]
+}
+
 /// What's remembered beside a cached collection file about the fetch that wrote it.
 struct AtprotoCollectionSidecar: Codable, Equatable, Sendable {
     /// The collection record's cid when it was fetched.
@@ -49,19 +59,43 @@ enum AtmosphereCache {
     /// The record key: the at-uri's last path segment. `nil` for anything that isn't a valid
     /// rkey, which a PDS could otherwise use to point a cache path elsewhere.
     static func rkey(of uri: String) -> String? {
-        guard uri.hasPrefix("at://"), let last = uri.split(separator: "/").last.map(String.init),
-              last != ".", last != "..", last.count <= 512,
+        guard uri.hasPrefix("at://"), let last = uri.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init),
+              !last.isEmpty, last != ".", last != "..", last.count <= 512,
               last.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:~-".contains($0)) })
         else { return nil }
         return last
+    }
+
+    static let collectionNSID = "org.dotpostcard.collection"
+
+    /// The DID whose repo holds the record at `uri`; `nil` when the at-uri names its repo by handle,
+    /// or by anything that isn't a DID safe to use as a folder name.
+    static func owner(of uri: String) -> String? {
+        let parts = uri.split(separator: "/", omittingEmptySubsequences: false)
+        guard uri.hasPrefix("at://"), parts.count > 2, isDID(String(parts[2])) else { return nil }
+        return String(parts[2])
+    }
+
+    static func isDID(_ string: String) -> Bool {
+        let parts = string.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        return parts.count == 3 && parts[0] == "did" && !parts[1].isEmpty && !parts[2].isEmpty && string.count <= 2048
+            && string.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._:%-".contains($0)) }
     }
 
     static func accountDirectory(root: URL, did: String) -> URL {
         root.appending(path: did, directoryHint: .isDirectory)
     }
 
-    static func collectionURL(root: URL, did: String, uri: String) -> URL? {
-        rkey(of: uri).map { accountDirectory(root: root, did: did).appending(path: "\($0).postcards") }
+    /// One file per collection, whichever accounts own or follow it: keyed by the at-uri's own DID
+    /// and record key.
+    static func collectionURL(root: URL, uri: String) -> URL? {
+        guard let did = owner(of: uri), let rkey = rkey(of: uri) else { return nil }
+        return accountDirectory(root: root, did: did).appending(path: "\(rkey).postcards")
+    }
+
+    /// A cached collection is kept while any signed-in account owns or follows it.
+    static func keepsCache(of uri: String, signedIn: Set<String>, followed: Set<String>) -> Bool {
+        owner(of: uri).map(signedIn.contains) == true || followed.contains(uri)
     }
 
     static func sidecarURL(forCollectionAt url: URL) -> URL {
@@ -72,6 +106,12 @@ enum AtmosphereCache {
     /// collide with it.
     static func listingURL(root: URL, did: String) -> URL {
         root.appending(path: "\(did).json")
+    }
+
+    /// The last good follows and followed collections (see `AtmosphereFollowingSnapshot`). Not a
+    /// DID, so no account's listing can collide with it.
+    static func followingURL(root: URL) -> URL {
+        root.appending(path: "following.json")
     }
 
     static func readSidecar(forCollectionAt url: URL) -> AtprotoCollectionSidecar? {

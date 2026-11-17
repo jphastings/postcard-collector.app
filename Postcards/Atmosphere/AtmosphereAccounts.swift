@@ -10,7 +10,7 @@ import OAuthenticator
 final class AtmosphereAccounts {
     private(set) var sessions: [AtmosphereSession] = []
     private(set) var isSigningIn = false
-    /// A failed sign-in or sign-out, for an alert.
+    /// A failed sign-in, sign-out, follow or unfollow, for an alert.
     var problem: Problem?
 
     struct Problem {
@@ -48,6 +48,44 @@ final class AtmosphereAccounts {
             reload()
         } catch {
             problem = Problem(title: "Couldn't Sign Out", message: error.localizedDescription)
+        }
+    }
+
+    /// Follows the collection at `address` (a typed or pasted at-uri) as the account `did`, once its
+    /// record is found.
+    func follow(_ address: String, as did: String) async {
+        guard let session = sessions.first(where: { $0.did == did }) else { return }
+        guard let uri = AtmosphereFollowing.collectionURI(from: address) else {
+            problem = Problem(title: "Couldn't Follow", message: "That isn't a collection's address. They look like at://alice.example.com/org.dotpostcard.collection/…")
+            return
+        }
+        let collection: AtprotoCollection
+        do {
+            collection = try await GoCore.shared.atprotoCollection(uri: uri)
+        } catch {
+            problem = Problem(title: "Couldn't Find That Collection", message: error.localizedDescription)
+            return
+        }
+        await write("Couldn't Follow", as: session) {
+            try await $0.createRecord(collection: AtprotoFollowRecord.type, record: AtprotoFollowRecord(subject: collection.uri))
+        }
+    }
+
+    /// Deletes the follow records at `followURIs`, all in the account `did`'s repo.
+    func unfollow(_ followURIs: [String], as did: String) async {
+        guard let session = sessions.first(where: { $0.did == did }) else { return }
+        await write("Couldn't Unfollow", as: session) { pds in
+            for uri in followURIs { try await pds.deleteRecord(uri: uri) }
+        }
+    }
+
+    private func write(_ failureTitle: String, as session: AtmosphereSession, _ body: (AtmospherePDS) async throws -> Void) async {
+        do {
+            try await body(AtmospherePDS(session: session, store: store))
+        } catch {
+            if case AtmospherePDSError.needsSignIn = error { reload() }
+            let message = error.localizedDescription
+            problem = Problem(title: failureTitle, message: session.handle.map { "@\($0): \(message)" } ?? message)
         }
     }
 
