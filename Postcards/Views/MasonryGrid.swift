@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// A masonry (Pinterest-style) grid: SwiftUI has no built-in one, so this is the standard
-/// robust construction — a ScrollView holding an HStack of N equal-width LazyVStack
-/// columns, with items dealt to the currently-shortest column by their KNOWN aspect ratios
-/// (see `MasonryLayout`; no image decode is needed for layout). Postcards vary a lot in
-/// aspect ratio, so this wastes far less space than a uniform grid.
+/// A masonry (Pinterest-style) grid: items are dealt into N equal-width columns, each to the
+/// currently-shortest one, by their KNOWN aspect ratios (see `MasonryLayout`). Postcards vary a
+/// lot in aspect ratio, so this wastes far less space than a uniform grid.
+///
+/// Every frame is computed up front, so the scroll content has its exact height from the start
+/// and only cells near the visible area are created, each at its precomputed place. Lazy stacks
+/// can't do this: they estimate the heights of cells they've discarded, so scrolling back up made
+/// cards jump and could leave a screen of slack above the first row.
 ///
 /// Reading order is column-balanced rather than strict rows — items enter in the given
 /// order, so it still reads roughly left-to-right, top-to-bottom.
@@ -17,6 +20,9 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View, Footer: View
     @ViewBuilder let content: (Item) -> Content
 
     private let spacing: CGFloat = 16
+    /// The content's vertical span worth rendering; `nil` until the grid first reports its
+    /// scroll position.
+    @State private var renderSpan: ClosedRange<Double>?
 
     init(
         items: [Item],
@@ -34,24 +40,35 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View, Footer: View
 
     var body: some View {
         GeometryReader { proxy in
-            let columnCount = MasonryLayout.columnCount(
-                forAvailableWidth: proxy.size.width - spacing * 2,
-                spacing: spacing
+            let width = proxy.size.width - spacing * 2
+            let placement = MasonryLayout.placement(
+                of: items,
+                width: width,
+                columnCount: MasonryLayout.columnCount(forAvailableWidth: width, spacing: spacing),
+                spacing: spacing,
+                aspectRatio: aspectRatio
             )
-            let columns = MasonryLayout.columns(of: items, count: columnCount, aspectRatio: aspectRatio)
+            let viewportHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            let span = renderSpan ?? MasonryLayout.renderSpan(scrollOffset: 0, viewportHeight: viewportHeight)
 
             ScrollView {
                 VStack(spacing: 0) {
-                    HStack(alignment: .top, spacing: spacing) {
-                        ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                            LazyVStack(spacing: spacing) {
-                                ForEach(column) { item in
-                                    content(item)
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
+                    ZStack(alignment: .topLeading) {
+                        ForEach(rendered(placement, in: span)) { cell in
+                            content(cell.item)
+                                .frame(width: cell.frame.width, height: cell.frame.height)
+                                .offset(x: cell.frame.minX, y: cell.frame.minY)
                         }
                     }
+                    .frame(width: max(width, 0), height: placement.contentHeight, alignment: .topLeading)
+                    // Reads where the content sits in the scroll view, which depends only on the
+                    // scroll position: the frame above is fixed by `placement`, whatever renders.
+                    .onGeometryChange(for: ClosedRange<Double>.self) { content in
+                        MasonryLayout.renderSpan(
+                            scrollOffset: -content.frame(in: .scrollView).minY,
+                            viewportHeight: viewportHeight
+                        )
+                    } action: { renderSpan = $0 }
                     .padding(spacing)
                     footer
                 }
@@ -60,6 +77,18 @@ struct MasonryGrid<Item: Identifiable, Content: View, Header: View, Footer: View
             // beneath it, so the way back is always in reach.
             .modifier(PinnedHeader(header: header))
         }
+    }
+
+    private func rendered(_ placement: MasonryLayout.Placement, in span: ClosedRange<Double>) -> [PlacedItem] {
+        zip(items, placement.frames)
+            .filter { span.overlaps(Double($0.1.minY)...Double($0.1.maxY)) }
+            .map { PlacedItem(item: $0.0, frame: $0.1) }
+    }
+
+    private struct PlacedItem: Identifiable {
+        let item: Item
+        let frame: CGRect
+        var id: Item.ID { item.id }
     }
 }
 
