@@ -20,7 +20,10 @@ permissions:
 
 concurrency:
   group: prepare-release
-  cancel-in-progress: true
+  # Only a newer push supersedes a run. Every merged pull request also finishes a (skipped)
+  # Release run, whose workflow_run trigger lands here seconds after the push; letting it
+  # cancel would kill the push's run, then skip itself, and no release pull request appears.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   prepare-release:
