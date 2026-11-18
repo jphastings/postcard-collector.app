@@ -1246,8 +1246,9 @@ private struct AtmosphereCollectionRow: View {
                     Image(systemName: "photo.stack")
                 } else {
                     // A light, open glyph: at the same point size it reads smaller than the
-                    // dense photo stack, so it's stepped up a scale to match optically.
-                    Image(systemName: "dot.radiowaves.up.forward").imageScale(.large)
+                    // dense photo stack, so it's drawn larger to match optically. A scale effect
+                    // rather than `.imageScale`, which iOS lists override with their own icon size.
+                    Image(systemName: "dot.radiowaves.up.forward").scaleEffect(1.3)
                 }
             }
             if let progress {

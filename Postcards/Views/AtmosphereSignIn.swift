@@ -12,26 +12,60 @@ struct AtmosphereSignIn: ViewModifier {
     @State private var submittedHandle: String?
 
     func body(content: Content) -> some View {
-        content
-            // The browser opens once the sheet has gone, so the two never compete to present.
-            .sheet(isPresented: $isPresented, onDismiss: startSignIn) {
-                HandleEntry(handle: $handle) { submit in
-                    if submit { submittedHandle = handle }
-                    isPresented = false
+        handleEntry(content)
+            // On a background view: two alerts on one view don't reliably both present.
+            .background {
+                Color.clear.alert(
+                    accounts.problem?.title ?? "",
+                    isPresented: Binding(get: { accounts.problem != nil }, set: { if !$0 { accounts.problem = nil } })
+                ) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(accounts.problem?.message ?? "")
                 }
-            }
-            .alert(
-                accounts.problem?.title ?? "",
-                isPresented: Binding(get: { accounts.problem != nil }, set: { if !$0 { accounts.problem = nil } })
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(accounts.problem?.message ?? "")
             }
     }
 
+    @ViewBuilder
+    private func handleEntry(_ content: Content) -> some View {
+        #if os(macOS)
+        // The browser opens once the sheet has gone, so the two never compete to present.
+        content.sheet(isPresented: $isPresented, onDismiss: startSignIn) {
+            HandleEntry(handle: $handle) { submit in
+                if submit { submittedHandle = handle }
+                isPresented = false
+            }
+        }
+        #else
+        content
+            .alert("Your Atmosphere account", isPresented: $isPresented) {
+                TextField("alice.bsky.social", text: $handle)
+                    .textContentType(.username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button("Cancel", role: .cancel) {}
+                Button("Continue") { submittedHandle = handle }
+                    .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+            } message: {
+                Text("Any Atmosphere account works (including Bluesky)")
+            }
+            .onChange(of: isPresented) { _, presented in
+                guard !presented else { return }
+                Task {
+                    // Lets the alert finish leaving before the browser presents.
+                    try? await Task.sleep(for: .milliseconds(400))
+                    startSignIn()
+                }
+            }
+        #endif
+    }
+
     private func startSignIn() {
-        guard let submittedHandle else { return }
+        guard let submittedHandle else {
+            handle = ""
+            return
+        }
         self.submittedHandle = nil
         handle = ""
         let openBrowser = webAuthenticationSession.userAuthenticator(preferredBrowserSession: .ephemeral)
@@ -39,6 +73,7 @@ struct AtmosphereSignIn: ViewModifier {
     }
 }
 
+#if os(macOS)
 private struct HandleEntry: View {
     @Binding var handle: String
     /// `true` to continue, `false` to cancel.
@@ -54,11 +89,6 @@ private struct HandleEntry: View {
                 TextField("alice.bsky.social", text: $handle)
                     .textContentType(.username)
                     .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .textFieldStyle(.roundedBorder)
-                    #endif
                     .onSubmit { if canContinue { finish(true) } }
                 Text("Any Atmosphere account works (including Bluesky)")
                     .font(.caption)
@@ -74,10 +104,7 @@ private struct HandleEntry: View {
             }
         }
         .padding()
-        #if os(macOS)
         .frame(width: 320)
-        #else
-        .presentationDetents([.height(200)])
-        #endif
     }
 }
+#endif
