@@ -4,6 +4,19 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.6 (2026-11-18)
+
+### Features
+
+- keep a collection's title and Back pinned while its postcards scroll
+- sign in to atproto accounts in a new Atmosphere sidebar section
+- browse your atproto accounts' collections from a progressive local cache
+- copy an Atmosphere collection's at-uri, and dim sidebar rows consistently
+- follow and unfollow Atmosphere collections
+- mark followed Atmosphere collections that have new postcards
+- give the watch's zoomed-card pan the same limit as iPhone and Mac
+- relay downloaded Atmosphere collections to the watch
+
 ## 0.7.5 (2026-11-17)
 
 ### Features
