@@ -2,10 +2,12 @@ import AuthenticationServices
 import SwiftUI
 
 /// "Add Account": asks for a handle, then runs the atproto OAuth sign-in in the system web
-/// authentication session. Also shows any sign-in/sign-out problem.
+/// authentication session. Setting `signingIn` to a handle (or DID) signs in to that account
+/// straight away, without asking. Also shows any sign-in/sign-out problem.
 struct AtmosphereSignIn: ViewModifier {
     let accounts: AtmosphereAccounts
     @Binding var isPresented: Bool
+    @Binding var signingIn: String?
 
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var handle = ""
@@ -13,6 +15,16 @@ struct AtmosphereSignIn: ViewModifier {
 
     func body(content: Content) -> some View {
         handleEntry(content)
+            .onChange(of: signingIn) { _, account in
+                guard let account else { return }
+                signingIn = nil
+                submittedHandle = account
+                Task {
+                    // Lets a context menu or alert that asked for it finish leaving first.
+                    try? await Task.sleep(for: .milliseconds(400))
+                    startSignIn()
+                }
+            }
             // On a background view: two alerts on one view don't reliably both present.
             .background {
                 Color.clear.alert(

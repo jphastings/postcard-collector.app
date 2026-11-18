@@ -52,6 +52,8 @@ struct PostcardsApp: App {
     private var libraryView: some View {
         LibraryView(library: library, cloudLibrary: cloudLibrary, atmosphere: atmosphere, atmosphereLibrary: atmosphereLibrary)
             .task { await cloudLibrary.start() }
+            // The container's root, beside the Documents folder iCloud Drive shows.
+            .task(id: cloudLibrary.documentsURL) { atmosphere.startSyncing(container: cloudLibrary.documentsURL?.deletingLastPathComponent()) }
     }
 
     var body: some Scene {

@@ -5,7 +5,7 @@ import os
 
 private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "Atmosphere")
 
-/// The signed-in Atmosphere accounts' collections and the collections they follow: each account's
+/// The listed Atmosphere accounts' collections and the collections they follow: each account's
 /// listing and follows, and the cached copy of every collection that's been opened (see
 /// `AtmosphereCache`). Everything about a collection is keyed by its at-uri, so one followed by
 /// several accounts, or owned by one and followed by another, has one record, one cached file and
@@ -13,12 +13,12 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "A
 @MainActor
 @Observable
 final class AtmosphereLibrary {
-    /// Each signed-in account's collections, by DID: the last good listing, kept when a later
+    /// Each listed account's collections, by DID: the last good listing, kept when a later
     /// one fails. Absent until one has loaded.
     private(set) var collections: [String: [AtprotoCollection]] = [:]
     /// Why each account's latest listing failed, by DID.
     private(set) var listingErrors: [String: String] = [:]
-    /// Each signed-in account's follows, by DID: the last good list, kept when a later one fails.
+    /// Each listed account's follows, by DID: the last good list, kept when a later one fails.
     /// Absent until one has loaded.
     private(set) var follows: [String: [AtprotoFollow]] = [:]
     /// Followed collections' records, by at-uri: the last good read of each.
@@ -43,7 +43,10 @@ final class AtmosphereLibrary {
     private var fetchedCards: [String: [AtprotoFetchedCard]] = [:]
     private var isLowDataMode = false
 
-    private var signedIn: [String] = []
+    /// Every account the sidebar lists, signed in on this device or not (`AtmosphereAccount`):
+    /// listings and follows are read anonymously, so an account known only through iCloud, or
+    /// whose session has lapsed, lists and keeps its cached collections like a signed-in one.
+    private var accounts: [String] = []
     private var isReloading = false
     private var reloadThrottle = ReloadThrottle()
     /// Where the cache files and saved listings and follows live (see `AtmosphereCache`).
@@ -68,13 +71,13 @@ final class AtmosphereLibrary {
         pathMonitor.start(queue: .main)
     }
 
-    /// Lists every signed-in account's collections and follows, and reads each followed collection's
-    /// record once. Accounts that are no longer signed in are forgotten, along with the cached
+    /// Lists every account's collections and follows, and reads each followed collection's
+    /// record once. Accounts no longer listed are forgotten, along with the cached
     /// collections no remaining account owns or follows.
-    func reload(signedIn dids: [String]) async {
-        let leaving = signedIn.filter { !dids.contains($0) }
+    func reload(accounts dids: [String]) async {
+        let leaving = accounts.filter { !dids.contains($0) }
         let leftBehind = leaving.flatMap { did in (collections[did] ?? []).map(\.uri) + (follows[did] ?? []).map(\.subject) }
-        signedIn = dids
+        accounts = dids
         for did in leaving {
             try? FileManager.default.removeItem(at: AtmosphereCache.listingURL(root: root, did: did))
             collections[did] = nil
@@ -93,15 +96,15 @@ final class AtmosphereLibrary {
         isReloading = true
         defer { isReloading = false }
         var refreshed: Set<String> = []
-        // Re-read each time round, so an account signed in meanwhile is refreshed too.
+        // Re-read each time round, so an account listed meanwhile is refreshed too.
         repeat {
-            while let did = signedIn.first(where: { !refreshed.contains($0) }) {
+            while let did = accounts.first(where: { !refreshed.contains($0) }) {
                 refreshed.insert(did)
                 await refreshListing(of: did)
                 await refreshFollows(of: did)
             }
             await refreshFollowedRecords(missingOnly: false)
-        } while signedIn.contains { !refreshed.contains($0) }
+        } while accounts.contains { !refreshed.contains($0) }
         refreshCachedPaths()
     }
 
@@ -116,7 +119,7 @@ final class AtmosphereLibrary {
         do {
             let fetched = try await GoCore.shared.atprotoCollections(actor: did)
                 .filter { AtmosphereCache.rkey(of: $0.uri) != nil }
-            guard signedIn.contains(did) else { return }
+            guard accounts.contains(did) else { return }
             collections[did] = fetched
             listingErrors[did] = nil
             saveListing(fetched, for: did)
@@ -128,7 +131,7 @@ final class AtmosphereLibrary {
     private func refreshFollows(of did: String) async {
         do {
             let fetched = try await GoCore.shared.atprotoFollows(actor: did)
-            guard signedIn.contains(did) else { return }
+            guard accounts.contains(did) else { return }
             let before = (follows[did] ?? []).map(\.subject)
             follows[did] = fetched
             followingChanged()
@@ -180,12 +183,12 @@ final class AtmosphereLibrary {
         AtmosphereCache.owner(of: uri).map { ownerHandles[$0] ?? $0 }
     }
 
-    /// Where every collection the signed-in accounts own or follow is (or would be) cached.
+    /// Where every collection the listed accounts own or follow is (or would be) cached.
     var collectionPaths: Set<String> {
         Set(knownURLs.map(\.path))
     }
 
-    /// Every browsable collection the signed-in accounts own or follow, partial ones included, for
+    /// Every browsable collection the listed accounts own or follow, partial ones included, for
     /// "All collections".
     var cachedCollectionPaths: [String] {
         knownURLs.map(\.path).filter(cachedPaths.contains)
@@ -322,31 +325,31 @@ final class AtmosphereLibrary {
         listed(uri)?.cardCount
     }
 
-    /// The record of a collection a signed-in account owns or follows.
+    /// The record of a collection a listed account owns or follows.
     private func listed(_ uri: String) -> AtprotoCollection? {
         ownListing(of: uri) ?? (followedSubjects.contains(uri) ? followedRecords[uri] : nil)
     }
 
     private func ownListing(of uri: String) -> AtprotoCollection? {
-        for did in signedIn {
+        for did in accounts {
             if let collection = collections[did]?.first(where: { $0.uri == uri }) { return collection }
         }
         return nil
     }
 
     private var followedSubjects: [String] {
-        AtmosphereFollowing.subjects(followedBy: signedIn.map { follows[$0] ?? [] })
+        AtmosphereFollowing.subjects(followedBy: accounts.map { follows[$0] ?? [] })
     }
 
-    /// New postcards are only looked for in collections the signed-in accounts follow but don't own.
+    /// New postcards are only looked for in collections the listed accounts follow but don't own.
     private func isFollowedOnly(_ uri: String) -> Bool {
         ownListing(of: uri) == nil && followedSubjects.contains(uri)
     }
 
-    /// Every collection the signed-in accounts own or follow, once each.
+    /// Every collection the listed accounts own or follow, once each.
     private var knownURIs: [String] {
         var seen: Set<String> = []
-        return (signedIn.flatMap { (collections[$0] ?? []).map(\.uri) } + followedSubjects)
+        return (accounts.flatMap { (collections[$0] ?? []).map(\.uri) } + followedSubjects)
             .filter { seen.insert($0).inserted }
     }
 
@@ -355,13 +358,13 @@ final class AtmosphereLibrary {
     }
 
     private func isWanted(_ uri: String) -> Bool {
-        AtmosphereCache.keepsCache(of: uri, signedIn: Set(signedIn), followed: Set(followedSubjects))
+        AtmosphereCache.keepsCache(of: uri, accounts: Set(accounts), followed: Set(followedSubjects))
     }
 
-    /// Deletes the cached copies among `uris` that no signed-in account owns or follows any more.
+    /// Deletes the cached copies among `uris` that no listed account owns or follows any more.
     private func dropCaches(of uris: [String]) async {
         // An account whose follows haven't loaded yet may follow any of them.
-        guard signedIn.allSatisfy({ follows[$0] != nil }) else { return }
+        guard accounts.allSatisfy({ follows[$0] != nil }) else { return }
         for uri in Set(uris) where !fetching.contains(uri) && !isWanted(uri) {
             await removeCache(of: uri)
         }
@@ -445,7 +448,7 @@ final class AtmosphereLibrary {
         let owners = Set(subjects.compactMap(AtmosphereCache.owner(of:)))
         ownerHandles = ownerHandles.filter { owners.contains($0.key) }
         let snapshot = AtmosphereFollowingSnapshot(
-            follows: follows.filter { signedIn.contains($0.key) }, records: followedRecords, handles: ownerHandles
+            follows: follows.filter { accounts.contains($0.key) }, records: followedRecords, handles: ownerHandles
         )
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try? JSONEncoder().encode(snapshot).write(to: AtmosphereCache.followingURL(root: root), options: .atomic)

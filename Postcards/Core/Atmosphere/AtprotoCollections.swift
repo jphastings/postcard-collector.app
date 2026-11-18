@@ -27,7 +27,7 @@ struct AtprotoFetchedCard: Codable, Hashable, Sendable {
     let name: String
 }
 
-/// The last good follows of the signed-in accounts and what they lead to, for offline launches.
+/// The last good follows of the listed accounts and what they lead to, for offline launches.
 struct AtmosphereFollowingSnapshot: Codable {
     /// Each account's follows, by DID.
     var follows: [String: [AtprotoFollow]] = [:]
@@ -93,9 +93,9 @@ enum AtmosphereCache {
         return accountDirectory(root: root, did: did).appending(path: "\(rkey).postcards")
     }
 
-    /// A cached collection is kept while any signed-in account owns or follows it.
-    static func keepsCache(of uri: String, signedIn: Set<String>, followed: Set<String>) -> Bool {
-        owner(of: uri).map(signedIn.contains) == true || followed.contains(uri)
+    /// A cached collection is kept while any listed account owns or follows it.
+    static func keepsCache(of uri: String, accounts: Set<String>, followed: Set<String>) -> Bool {
+        owner(of: uri).map(accounts.contains) == true || followed.contains(uri)
     }
 
     static func sidecarURL(forCollectionAt url: URL) -> URL {
@@ -142,7 +142,7 @@ extension AtmosphereCache {
         isComplete || cardCount > 0
     }
 
-    /// Every browsable cached collection the signed-in accounts own or follow, once each, read
+    /// Every browsable cached collection the listed accounts own or follow, once each, read
     /// from disk alone: the saved listings (`<did>.json`) and follows (`following.json`), and the
     /// cache files beside them. So it gives the same answer before anything has reloaded
     /// `AtmosphereLibrary` — in a background launch, say. Opens each cached file to count its
@@ -183,7 +183,7 @@ struct DownloadedAtmosphereCollection: Equatable, Sendable {
     let title: String
     /// The cards in the file now, which for a partial download is fewer than the record lists.
     let cardCount: Int
-    /// Followed by a signed-in account and owned by none of them.
+    /// Followed by a listed account and owned by none of them.
     let isFollowed: Bool
 }
 
