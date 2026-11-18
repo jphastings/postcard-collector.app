@@ -4,6 +4,12 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.8 (2026-11-18)
+
+### Fixes
+
+- iOS grid starts under its title, and a native grid/map switcher
+
 ## 0.7.7 (2026-11-18)
 
 ### Features
