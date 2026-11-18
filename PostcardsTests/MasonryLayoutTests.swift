@@ -7,69 +7,106 @@ final class MasonryLayoutTests: XCTestCase {
         var aspectRatio: Double
     }
 
-    private func distribute(_ items: [Item], count: Int) -> [[Item]] {
-        MasonryLayout.columns(of: items, count: count, aspectRatio: \.aspectRatio)
+    private func place(_ items: [Item], width: Double = 400, count: Int, spacing: Double = 16) -> MasonryLayout.Placement {
+        MasonryLayout.placement(of: items, width: width, columnCount: count, spacing: spacing, aspectRatio: \.aspectRatio)
     }
 
-    private func columnHeights(_ columns: [[Item]]) -> [Double] {
-        // Mirrors the documented item-height rule (1/ratio, non-positive ratios = square).
-        columns.map { $0.reduce(0) { $0 + ($1.aspectRatio > 0 ? 1 / $1.aspectRatio : 1) } }
+    /// Item names per column, left to right, top to bottom — read back from the frames.
+    private func columns(_ items: [Item], count: Int) -> [[String]] {
+        let frames = place(items, count: count).frames
+        let xs = Set(frames.map(\.minX)).sorted()
+        return (0..<count).map { column in
+            items.indices
+                .filter { column < xs.count && frames[$0].minX == xs[column] }
+                .sorted { frames[$0].minY < frames[$1].minY }
+                .map { items[$0].name }
+        }
     }
 
-    // MARK: - Distribution
+    private let mixed = (0..<40).map { Item(name: "card-\($0)", aspectRatio: [0.5, 0.75, 1.0, 1.5, 2.0][$0 % 5]) }
 
-    func testEmptyInputYieldsEmptyColumns() {
-        let columns = distribute([], count: 3)
-        XCTAssertEqual(columns.count, 3)
-        XCTAssertTrue(columns.allSatisfy(\.isEmpty))
+    // MARK: - Placement
+
+    func testEmptyInputHasNoHeight() {
+        let placement = place([], count: 3)
+        XCTAssertTrue(placement.frames.isEmpty)
+        XCTAssertEqual(placement.contentHeight, 0)
     }
 
-    func testSingleItemLandsInTheFirstColumn() {
-        let item = Item(name: "only", aspectRatio: 1.5)
-        let columns = distribute([item], count: 3)
-        XCTAssertEqual(columns[0], [item])
-        XCTAssertTrue(columns[1].isEmpty)
-        XCTAssertTrue(columns[2].isEmpty)
+    func testHeightsComeFromAspectRatiosAtColumnWidth() {
+        // 400pt across two columns with 16pt between: 192pt columns.
+        let placement = place([Item(name: "wide", aspectRatio: 2), Item(name: "tall", aspectRatio: 0.5)], count: 2)
+        XCTAssertEqual(placement.frames, [
+            CGRect(x: 0, y: 0, width: 192, height: 96),
+            CGRect(x: 208, y: 0, width: 192, height: 384),
+        ])
     }
 
-    func testEveryItemIsPlacedExactlyOnce() {
-        let items = (0..<25).map { Item(name: "card-\($0)", aspectRatio: Double($0 % 5 + 1) / 3) }
-        let columns = distribute(items, count: 4)
-        XCTAssertEqual(columns.flatMap { $0 }.count, items.count)
-        XCTAssertEqual(Set(columns.flatMap { $0 }.map(\.name)).count, items.count)
-    }
-
-    func testGreedyBalanceBound() {
-        // Classic property of shortest-column-first: no column overshoots the shortest by
-        // more than one item, so max − min ≤ the tallest single item's height.
-        let items = (0..<40).map { Item(name: "card-\($0)", aspectRatio: [0.5, 0.75, 1.0, 1.5, 2.0][$0 % 5]) }
-        let columns = distribute(items, count: 3)
-        let heights = columnHeights(columns)
-        let tallestItem = items.map { 1 / $0.aspectRatio }.max()!
-
-        XCTAssertLessThanOrEqual(heights.max()! - heights.min()!, tallestItem + 0.0001)
-    }
-
-    func testDistributionIsDeterministic() {
-        let items = (0..<30).map { Item(name: "card-\($0)", aspectRatio: Double(($0 * 7) % 11 + 1) / 4) }
-        let first = distribute(items, count: 4)
-        let second = distribute(items, count: 4)
-        XCTAssertEqual(first, second)
+    func testEachItemGoesUnderTheShortestColumn() {
+        let items = [Item(name: "a", aspectRatio: 2), Item(name: "b", aspectRatio: 0.5), Item(name: "c", aspectRatio: 1), Item(name: "d", aspectRatio: 1)]
+        XCTAssertEqual(columns(items, count: 2), [["a", "c", "d"], ["b"]])
+        let frames = place(items, count: 2).frames
+        XCTAssertEqual(frames[2].minY, frames[0].maxY + 16)
+        XCTAssertEqual(frames[3].minY, frames[2].maxY + 16)
     }
 
     func testTiesGoToTheLeftmostColumn() {
-        // Equal-height columns at every step: strict round-robin left to right.
         let items = (0..<4).map { Item(name: "card-\($0)", aspectRatio: 1) }
-        let columns = distribute(items, count: 2)
-        XCTAssertEqual(columns[0].map(\.name), ["card-0", "card-2"])
-        XCTAssertEqual(columns[1].map(\.name), ["card-1", "card-3"])
+        XCTAssertEqual(columns(items, count: 2), [["card-0", "card-2"], ["card-1", "card-3"]])
     }
 
-    func testNonPositiveAspectRatioIsTreatedAsSquareNotInfinity() {
-        let items = [Item(name: "broken", aspectRatio: 0), Item(name: "fine", aspectRatio: 1)]
-        let columns = distribute(items, count: 2)
-        XCTAssertEqual(columns.flatMap { $0 }.count, 2)
-        XCTAssertTrue(columnHeights(columns).allSatisfy(\.isFinite))
+    func testFramesNeverOverlap() {
+        let frames = place(mixed, count: 3).frames
+        for i in frames.indices {
+            for j in frames.indices where i < j {
+                XCTAssertFalse(frames[i].intersects(frames[j]), "\(i) and \(j)")
+            }
+        }
+    }
+
+    func testContentHeightIsTheTallestColumnsBottom() {
+        let placement = place(mixed, count: 3)
+        XCTAssertEqual(placement.contentHeight, placement.frames.map(\.maxY).max()!, accuracy: 0.0001)
+    }
+
+    func testColumnsStayBalanced() {
+        // Shortest-column-first: no column ends more than one item (and its spacing) below another.
+        let frames = place(mixed, count: 3).frames
+        let bottoms = Dictionary(grouping: frames, by: \.minX).values.map { $0.map(\.maxY).max()! }
+        let tallestItem = frames.map(\.height).max()!
+        XCTAssertLessThanOrEqual(bottoms.max()! - bottoms.min()!, tallestItem + 16 + 0.0001)
+    }
+
+    func testAppendingItemsLeavesExistingFramesInPlace() {
+        let before = place(Array(mixed.prefix(25)), count: 3).frames
+        let after = place(mixed, count: 3).frames
+        XCTAssertEqual(Array(after.prefix(25)), before)
+    }
+
+    func testPlacementIsDeterministic() {
+        XCTAssertEqual(place(mixed, count: 4), place(mixed, count: 4))
+    }
+
+    func testNonPositiveAspectRatioIsTreatedAsSquare() {
+        let placement = place([Item(name: "broken", aspectRatio: 0), Item(name: "fine", aspectRatio: -1)], count: 2)
+        XCTAssertEqual(placement.frames.map(\.height), [192, 192])
+    }
+
+    // MARK: - Render span
+
+    func testRenderSpanCoversTheScreenAndAViewportEitherSide() {
+        for offset in stride(from: -100.0, through: 3000, by: 37) {
+            let span = MasonryLayout.renderSpan(scrollOffset: offset, viewportHeight: 800)
+            XCTAssertLessThanOrEqual(span.lowerBound, offset - 800)
+            XCTAssertGreaterThanOrEqual(span.upperBound, offset + 1600)
+        }
+    }
+
+    func testRenderSpanHoldsStillThroughSmallScrolls() {
+        XCTAssertEqual(
+            MasonryLayout.renderSpan(scrollOffset: 410, viewportHeight: 800),
+            MasonryLayout.renderSpan(scrollOffset: 790, viewportHeight: 800)
+        )
     }
 
     // MARK: - Column count adaptation

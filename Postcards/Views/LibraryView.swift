@@ -74,6 +74,10 @@ struct LibraryView: View {
     /// While "Follow a Collection…" asks for an address: the accounts it may follow as.
     @State private var followAddressAccounts: [String]?
     @State private var followAddress = ""
+    /// The account (handle, or DID) to sign in to without asking for it.
+    @State private var signingIn: String?
+    /// A follow or unfollow waiting on its account's sign-in.
+    @State private var afterSignIn: (did: String, action: () -> Void)?
 
     /// The collection browser's grid/map toggle, lifted here (out of each pane) because the
     /// sidebar column's own width now depends on it too — see `SidebarWidths`. Reset to
@@ -113,7 +117,7 @@ struct LibraryView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             NavigationStack(path: $sidebarPath) {
                 VStack(spacing: 0) {
-                    if hasAnySources || !atmosphere.sessions.isEmpty {
+                    if hasAnySources || !atmosphere.accounts.isEmpty {
                         sourceList
                     } else {
                         emptyLibraryView
@@ -127,6 +131,10 @@ struct LibraryView: View {
                             .padding(8)
                     }
                 }
+                #if os(iOS)
+                .navigationTitle("Your collections")
+                .navigationBarTitleDisplayMode(.large)
+                #endif
                 .toolbar {
                     // Explicit `.primaryAction` placement — matching `CollectionBrowser`'s own
                     // duplicate of this button below (see its comment for why leaving this
@@ -307,7 +315,12 @@ struct LibraryView: View {
             CreatePostcardForm(library: library, cloudLibrary: cloudLibrary)
         }
         #endif
-        .modifier(AtmosphereSignIn(accounts: atmosphere, isPresented: $isAddingAccount))
+        .modifier(AtmosphereSignIn(accounts: atmosphere, isPresented: $isAddingAccount, signingIn: $signingIn))
+        .onChange(of: atmosphere.isSigningIn) { _, isSigningIn in
+            guard !isSigningIn, let pending = afterSignIn else { return }
+            afterSignIn = nil
+            if isSignedIn(pending.did) { pending.action() }
+        }
         .alert(
             "Follow a Collection",
             isPresented: Binding(get: { followAddressAccounts != nil }, set: { if !$0 { followAddressAccounts = nil } })
@@ -373,16 +386,17 @@ struct LibraryView: View {
         .onChange(of: atmosphereLibrary.collectionPaths) { old, new in
             closeAtmosphereCollections(leaving: old.subtracting(new))
         }
-        // Launch, sign-in and sign-out (which forgets the account's collections).
-        .task(id: signedInDIDs) { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+        // Launch, sign-in, sign-out (which forgets the account's collections) and accounts synced
+        // in from iCloud.
+        .task(id: listedDIDs) { await atmosphereLibrary.reload(accounts: listedDIDs) }
         #if os(macOS)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+            Task { await atmosphereLibrary.reload(accounts: listedDIDs) }
         }
         #else
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            Task { await atmosphereLibrary.reload(signedIn: signedInDIDs) }
+            Task { await atmosphereLibrary.reload(accounts: listedDIDs) }
         }
         #endif
         .task(id: library.knownCollectionPaths(with: cloudLibrary)) { await refreshSchemaStatuses() }
@@ -415,14 +429,16 @@ struct LibraryView: View {
 
     private var sourceList: some View {
         List {
+            #if os(macOS)
             Section {
                 // The list's own title, in the same style as a collection's name at the top of the
-                // grid (`CollectionTitle`).
+                // grid (`CollectionTitle`). iOS uses its navigation bar's large title instead.
                 Text("Your collections")
                     .font(.largeTitle)
                     .fontWeight(.bold)
                     .listRowSeparator(.hidden)
             }
+            #endif
             Section {
                 NavigationLink(value: LibrarySource.allCollections) {
                     Label("All collections", systemImage: "square.stack.3d.up")
@@ -474,35 +490,56 @@ struct LibraryView: View {
                 }
             }
             Section(header: atmosphereHeader) {
-                ForEach(atmosphereSessionsInOrder) { session in
-                    Text("@\(session.handle ?? session.did)")
-                        .font(.headline)
-                        .modifier(DimmedUnless(false))
+                ForEach(atmosphereAccountsInOrder) { account in
+                    accountRow(account)
                         .contextMenu {
-                            Button("Follow a Collection…") { followAddressAccounts = [session.did] }
-                            Button("Sign Out") { Task { await atmosphere.signOut(session) } }
+                            Button("Follow a Collection…") { followAddressAccounts = [account.did] }
+                            // Signs the account out on every device: see `AtmosphereAccounts.signOut`.
+                            Button("Sign Out") { Task { await atmosphere.signOut(did: account.did) } }
                         }
-                    if session.needsSignIn == true {
-                        Text("Sign in again")
-                            .font(.caption)
-                            .modifier(DimmedUnless(false))
-                            .help("This account's sign-in has expired. Add it again to follow and unfollow as it.")
-                    }
-                    if let error = atmosphereLibrary.listingErrors[session.did] {
+                    if let error = atmosphereLibrary.listingErrors[account.did] {
                         Text("Couldn't refresh")
                             .font(.caption)
                             .modifier(DimmedUnless(false))
                             .help(error)
                     }
-                    ForEach(atmosphereLibrary.collections[session.did] ?? []) { collection in
+                    ForEach(atmosphereLibrary.collections[account.did] ?? []) { collection in
                         atmosphereCollectionLink(collection)
                     }
                     // What the account follows comes after what it owns.
-                    ForEach(atmosphereLibrary.collections(followedBy: session.did)) { collection in
-                        atmosphereCollectionLink(collection, owner: atmosphereLibrary.ownerHandle(of: collection.uri), followedBy: session.did)
+                    ForEach(atmosphereLibrary.collections(followedBy: account.did)) { collection in
+                        atmosphereCollectionLink(collection, owner: atmosphereLibrary.ownerHandle(of: collection.uri), followedBy: account.did)
                     }
                 }
             }
+        }
+    }
+
+    /// An account's subheading. One this device can't follow or unfollow as (known only through
+    /// iCloud, or its session lapsed) is flagged, and signs in to it when tapped.
+    @ViewBuilder
+    private func accountRow(_ account: AtmosphereAccount) -> some View {
+        let title = Text("@\(account.handle ?? account.did)")
+            .font(.headline)
+            .modifier(DimmedUnless(false))
+        if account.isSignedIn {
+            title
+        } else {
+            let help = "Sign in to @\(account.handle ?? account.did)"
+            Button { signingIn = account.handle ?? account.did } label: {
+                HStack {
+                    title
+                    Spacer(minLength: 8)
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.yellow)
+                        .frame(width: 20, height: 20)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(atmosphere.isSigningIn)
+            .help(help)
+            .accessibilityLabel(help)
         }
     }
 
@@ -524,7 +561,7 @@ struct LibraryView: View {
             }
             .contextMenu {
                 let handles = atmosphereHandles
-                ForEach(AtmosphereFollowing.followActions(for: collection.uri, accounts: signedInDIDs, handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
+                ForEach(AtmosphereFollowing.followActions(for: collection.uri, accounts: listedDIDs, handles: handles, follows: atmosphereLibrary.follows), id: \.did) { action in
                     Button(action.title) { follow(collection.uri, as: action.did) }
                 }
                 // Only where it's listed under the account that follows it, so it's clear who
@@ -540,21 +577,38 @@ struct LibraryView: View {
     }
 
     private var atmosphereHandles: [String: String] {
-        Dictionary(atmosphere.sessions.compactMap { session in session.handle.map { (session.did, $0) } }, uniquingKeysWith: { first, _ in first })
+        Dictionary(atmosphere.accounts.compactMap { account in account.handle.map { (account.did, $0) } }, uniquingKeysWith: { first, _ in first })
     }
 
     private func follow(_ address: String, as did: String) {
-        Task {
-            await atmosphere.follow(address, as: did)
-            await atmosphereLibrary.reloadFollows(of: did)
+        asSignedIn(did) {
+            Task {
+                await atmosphere.follow(address, as: did)
+                await atmosphereLibrary.reloadFollows(of: did)
+            }
         }
     }
 
     private func unfollow(_ action: AtmosphereFollowAction) {
-        Task {
-            await atmosphere.unfollow(action.followURIs, as: action.did)
-            await atmosphereLibrary.reloadFollows(of: action.did)
+        asSignedIn(action.did) {
+            Task {
+                await atmosphere.unfollow(action.followURIs, as: action.did)
+                await atmosphereLibrary.reloadFollows(of: action.did)
+            }
         }
+    }
+
+    /// Runs `action`, which writes as the account `did`, once this device is signed in to it:
+    /// straight away if it is, or after signing in to it if not.
+    private func asSignedIn(_ did: String, _ action: @escaping () -> Void) {
+        guard !isSignedIn(did) else { return action() }
+        guard !atmosphere.isSigningIn, let account = atmosphere.accounts.first(where: { $0.did == did }) else { return }
+        afterSignIn = (did, action)
+        signingIn = account.handle ?? did
+    }
+
+    private func isSignedIn(_ did: String) -> Bool {
+        atmosphere.accounts.contains { $0.did == did && $0.isSignedIn }
     }
 
     private var atmosphereHeader: some View {
@@ -623,7 +677,7 @@ struct LibraryView: View {
         writableCollections.map(\.path) + atmosphereLibrary.cachedCollectionPaths
     }
 
-    private var signedInDIDs: [String] { atmosphere.sessions.map(\.did) }
+    private var listedDIDs: [String] { atmosphere.accounts.map(\.did) }
 
     /// Why an Atmosphere collection's row isn't simply its copy: its last fetch failed, or it's
     /// only partly downloaded (opening it carries on). A running fetch's ring says enough.
@@ -639,12 +693,12 @@ struct LibraryView: View {
     }
 
     /// Accounts with no collections, of their own or followed, sink to the bottom.
-    private var atmosphereSessionsInOrder: [AtmosphereSession] {
-        let hasCollections = { (session: AtmosphereSession) in
-            !(atmosphereLibrary.collections[session.did] ?? []).isEmpty
-                || !atmosphereLibrary.collections(followedBy: session.did).isEmpty
+    private var atmosphereAccountsInOrder: [AtmosphereAccount] {
+        let hasCollections = { (account: AtmosphereAccount) in
+            !(atmosphereLibrary.collections[account.did] ?? []).isEmpty
+                || !atmosphereLibrary.collections(followedBy: account.did).isEmpty
         }
-        return atmosphere.sessions.filter(hasCollections) + atmosphere.sessions.filter { !hasCollections($0) }
+        return atmosphere.accounts.filter(hasCollections) + atmosphere.accounts.filter { !hasCollections($0) }
     }
 
     /// Signing out or unfollowing takes the collections no account owns or follows any more off
@@ -1240,8 +1294,9 @@ private struct AtmosphereCollectionRow: View {
                     Image(systemName: "photo.stack")
                 } else {
                     // A light, open glyph: at the same point size it reads smaller than the
-                    // dense photo stack, so it's stepped up a scale to match optically.
-                    Image(systemName: "dot.radiowaves.up.forward").imageScale(.large)
+                    // dense photo stack, so it's drawn larger to match optically. A scale effect
+                    // rather than `.imageScale`, which iOS lists override with their own icon size.
+                    Image(systemName: "dot.radiowaves.up.forward").scaleEffect(1.3)
                 }
             }
             if let progress {

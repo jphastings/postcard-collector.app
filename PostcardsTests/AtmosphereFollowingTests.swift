@@ -20,9 +20,9 @@ final class AtmosphereFollowingTests: XCTestCase {
     }
 
     func testCacheIsKeptWhileAnyAccountOwnsOrFollowsIt() {
-        XCTAssertTrue(AtmosphereCache.keepsCache(of: unsent, signedIn: [unsentAccount, byjp], followed: []), "owned")
-        XCTAssertTrue(AtmosphereCache.keepsCache(of: unsent, signedIn: [byjp], followed: [unsent]), "owner signed out, still followed")
-        XCTAssertFalse(AtmosphereCache.keepsCache(of: unsent, signedIn: [byjp], followed: [summer]), "neither")
+        XCTAssertTrue(AtmosphereCache.keepsCache(of: unsent, accounts: [unsentAccount, byjp], followed: []), "owned")
+        XCTAssertTrue(AtmosphereCache.keepsCache(of: unsent, accounts: [byjp], followed: [unsent]), "owner signed out, still followed")
+        XCTAssertFalse(AtmosphereCache.keepsCache(of: unsent, accounts: [byjp], followed: [summer]), "neither")
     }
 
     func testFollowRecord() throws {
