@@ -127,6 +127,10 @@ struct LibraryView: View {
                             .padding(8)
                     }
                 }
+                #if os(iOS)
+                .navigationTitle("Your collections")
+                .navigationBarTitleDisplayMode(.large)
+                #endif
                 .toolbar {
                     // Explicit `.primaryAction` placement — matching `CollectionBrowser`'s own
                     // duplicate of this button below (see its comment for why leaving this
@@ -415,14 +419,16 @@ struct LibraryView: View {
 
     private var sourceList: some View {
         List {
+            #if os(macOS)
             Section {
                 // The list's own title, in the same style as a collection's name at the top of the
-                // grid (`CollectionTitle`).
+                // grid (`CollectionTitle`). iOS uses its navigation bar's large title instead.
                 Text("Your collections")
                     .font(.largeTitle)
                     .fontWeight(.bold)
                     .listRowSeparator(.hidden)
             }
+            #endif
             Section {
                 NavigationLink(value: LibrarySource.allCollections) {
                     Label("All collections", systemImage: "square.stack.3d.up")
