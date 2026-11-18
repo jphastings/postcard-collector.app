@@ -4,6 +4,18 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.7 (2026-11-18)
+
+### Features
+
+- sync the Atmosphere account list through iCloud, flagging accounts not signed in here
+
+### Fixes
+
+- show "Your collections" as the iOS large navigation title
+- an iOS-native Atmosphere sign-in prompt, and a followed icon that scales on iOS
+- place masonry grid cards at precomputed frames so scrolling up doesn't shift them
+
 ## 0.7.6 (2026-11-18)
 
 ### Features
