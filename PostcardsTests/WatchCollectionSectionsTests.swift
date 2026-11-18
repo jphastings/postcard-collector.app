@@ -38,4 +38,18 @@ final class WatchCollectionSectionsTests: XCTestCase {
         XCTAssertEqual(sections.onWatch, [])
         XCTAssertEqual(sections.onPhone, [])
     }
+
+    func testAtmosphereCollectionsMixInByTitle() {
+        let catalog = [
+            info("k", "Kyoto"),
+            WatchCollectionInfo(id: "atproto-b", title: "Berlin", cardCount: 1, atmosphere: .followed),
+            info("a", "Athens"),
+            WatchCollectionInfo(id: "atproto-z", title: "Zanzibar", cardCount: 1, atmosphere: .own),
+        ]
+
+        let sections = WatchCollectionSections(catalog: catalog, pinned: ["atproto-z"], isOnWatch: { $0 == "k" })
+
+        XCTAssertEqual(sections.onWatch.map(\.id), ["atproto-z", "k"])
+        XCTAssertEqual(sections.onPhone.map(\.id), ["a", "atproto-b"])
+    }
 }

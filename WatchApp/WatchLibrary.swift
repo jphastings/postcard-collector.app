@@ -189,9 +189,13 @@ final class WatchLibrary: NSObject {
     /// Whether everything the watch keeps for `id` has landed: its manifest, its details,
     /// every card's screen faces — and, for a pinned collection (kept for offline use), every
     /// card's zoom faces too. Unpinned collections fetch zoom faces card by card, as they're
-    /// zoomed into.
+    /// zoomed into. Never while the catalog lists more cards than the manifest — the collection
+    /// has grown on the phone (a partly downloaded Atmosphere collection, say) — so the next
+    /// request fetches the new manifest and cards.
     func isComplete(_ id: String) -> Bool {
-        guard let manifest = manifests[id], cardDetails[id] != nil else { return false }
+        guard let manifest = manifests[id], cardDetails[id] != nil,
+              manifest.count >= catalog.first(where: { $0.id == id })?.cardCount ?? 0
+        else { return false }
         let wantsZoom = isPinned(id)
         return manifest.allSatisfy { meta in
             let hasBack = meta.flip != .none

@@ -11,8 +11,10 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 private let messageTimeout: TimeInterval = 20
 
 /// The iPhone side of the watch relay (see `WatchRelay` for the wire contract). Publishes a
-/// lightweight catalog of `CloudLibrary`'s collections as the `WCSession` application
-/// context, keeps it in sync as the library changes, and answers the watch's requests by
+/// lightweight catalog of `CloudLibrary`'s collections, and of the Atmosphere collections
+/// downloaded here (`AtmosphereCache.downloadedCollections` — never one that isn't: the watch
+/// mustn't start an atproto download), as the `WCSession` application context, keeps it in
+/// sync as either changes, and answers the watch's requests by
 /// streaming whatever of a collection it's missing: a manifest of every card's identity and
 /// layout, the first missing cards as messages, the collection's details, the rest of the
 /// cards' screen-tier faces through the file queue in display order, and — for a pinned
@@ -27,6 +29,11 @@ private let messageTimeout: TimeInterval = 20
 @MainActor
 final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private let cloudLibrary: CloudLibrary
+    private let atmosphereLibrary: AtmosphereLibrary
+    /// The downloaded Atmosphere collections as last read from disk, which requests resolve
+    /// against. Read from disk rather than from `atmosphereLibrary`'s state, which only
+    /// `LibraryView` loads — and a background launch never shows it.
+    private var atmosphereCollections: [DownloadedAtmosphereCollection] = []
     private var lastPublishedCatalogData: Data?
     /// Set when the watch says it has never received a catalog (`opHello`): the next push goes
     /// out even if it's unchanged, since the watch evidently doesn't have the last one.
@@ -41,16 +48,17 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// running, run as soon as that one finishes — so, say, pinning a collection mid-browse
     /// still gets it its zoom tier.
     private var queuedRequests: [String: WatchDownloadRequest] = [:]
-    /// Requests for ids not yet in `cloudLibrary.items` — e.g. a background launch delivering
-    /// a queued request before `NSMetadataQuery` has gathered. Retried once the catalog
-    /// changes (see `armCatalogObservation`).
+    /// Requests for ids that name no collection yet — e.g. a background launch delivering a
+    /// queued request before `NSMetadataQuery` has gathered, or before the Atmosphere cache has
+    /// been read. Retried once the catalog changes (see `armCatalogObservation`).
     private var pendingRequests: [String: WatchDownloadRequest] = [:]
     /// Cards (by collection, card, and tier) whose faces are being sent in answer to an
     /// `opFocus`, so the watch asking again before they've landed doesn't send them twice.
     private var inFlightFocusKeys: Set<WatchFaceKey> = []
 
-    init(cloudLibrary: CloudLibrary) {
+    init(cloudLibrary: CloudLibrary, atmosphereLibrary: AtmosphereLibrary) {
         self.cloudLibrary = cloudLibrary
+        self.atmosphereLibrary = atmosphereLibrary
         super.init()
     }
 
@@ -64,6 +72,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         WCSession.default.delegate = self
         WCSession.default.activate()
         armCatalogObservation()
+        armAtmosphereObservation()
         Task { await cloudLibrary.start() }
     }
 
@@ -83,6 +92,21 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         retryPendingRequests()
     }
 
+    /// Republishes whenever the Atmosphere library's idea of what's cached changes — a
+    /// download's first card or its end, a follow or listing change. Only the trigger: the
+    /// catalog itself is read from disk (see `atmosphereCollections`).
+    private func armAtmosphereObservation() {
+        withObservationTracking {
+            _ = atmosphereLibrary.cachedPaths
+            _ = atmosphereLibrary.completePaths
+            _ = atmosphereLibrary.collections
+            _ = atmosphereLibrary.follows
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.armAtmosphereObservation() }
+        }
+        publishCatalog()
+    }
+
     /// Whether `cloudLibrary.items` says anything yet: until the iCloud query's first gather,
     /// an empty list only means "not looked yet", and publishing it would tell the watch there
     /// are no collections. With no iCloud at all, empty is the real answer.
@@ -90,31 +114,43 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         cloudLibrary.hasGatheredItems || cloudLibrary.containerState == .unavailable
     }
 
-    /// Re-attempts any request that arrived before its collection was in `cloudLibrary.items`
-    /// (see `streamCollection`). Only touches ids whose item has since appeared — still-missing
+    /// Re-attempts any request that arrived before its collection was known (see
+    /// `streamCollection`). Only touches ids whose collection has since appeared — still-missing
     /// ids are left queued untouched, so this doesn't re-kick `cloudLibrary.start()` on every
     /// catalog change while genuinely waiting.
     private func retryPendingRequests() {
-        for (id, request) in pendingRequests where collectionItem(id: id) != nil {
+        for (id, request) in pendingRequests where collectionPath(id: id) != nil {
             pendingRequests[id] = nil
             streamCollection(id: id, request: request)
         }
     }
 
-    /// Builds and pushes the catalog. Collection files already known to be `.current` are
-    /// read for their real title/count; anything else gets a minimal entry rather than
-    /// triggering a download just to advertise it. The (blocking, SQLite) reads happen off
-    /// the main actor — `CloudItem` is `Sendable`, so the snapshot can safely cross.
+    /// Builds and pushes the catalog. iCloud collection files already known to be `.current`
+    /// are read for their real title/count; anything else gets a minimal entry rather than
+    /// triggering a download just to advertise it. Atmosphere collections are read from their
+    /// cache on disk, and refresh what requests resolve against even while iCloud hasn't
+    /// gathered. The (blocking, SQLite) reads happen off the main actor — `CloudItem` is
+    /// `Sendable`, so the snapshot can safely cross.
     private func publishCatalog() {
-        guard isLibraryReady else { return }
+        let isReady = isLibraryReady
         let collections = cloudLibrary.items.filter { $0.isCollection }
+        let atmosphereRoot = atmosphereLibrary.root
         catalogGeneration += 1
         let generation = catalogGeneration
         Task.detached(priority: .utility) { [weak self] in
-            let catalog = collections.map(Self.catalogEntry(for:))
+            let atmosphere = AtmosphereCache.downloadedCollections(root: atmosphereRoot)
+            await self?.adoptAtmosphereCollections(atmosphere, generation: generation)
+            guard isReady else { return }
+            let catalog = collections.map(Self.catalogEntry(for:)) + atmosphere.map(WatchCatalogBuilder.entry(for:))
             guard let data = try? JSONEncoder().encode(catalog) else { return }
             await self?.pushCatalog(data, generation: generation)
         }
+    }
+
+    private func adoptAtmosphereCollections(_ collections: [DownloadedAtmosphereCollection], generation: Int) {
+        guard generation == catalogGeneration else { return }
+        atmosphereCollections = collections
+        retryPendingRequests()
     }
 
     private nonisolated static func catalogEntry(for item: CloudItem) -> WatchCollectionInfo {
@@ -178,14 +214,15 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
         }
     }
 
-    private func collectionItem(id: String) -> CloudItem? {
-        cloudLibrary.items.first { $0.isCollection && $0.displayName == id }
+    private func collectionPath(id: String) -> String? {
+        WatchCatalogBuilder.path(forID: id, cloudItems: cloudLibrary.items, atmosphere: atmosphereCollections)
     }
 
     /// Starts streaming whatever of `id` the watch is missing, per `request`. If a stream for
     /// the same id is already running, the request waits for it to finish (see
-    /// `queuedRequests`). If `id` isn't in `cloudLibrary.items` yet — a background launch or a
-    /// request that beat `NSMetadataQuery`'s initial gather — it's queued rather than dropped,
+    /// `queuedRequests`). If `id` names no collection yet — a background launch or a request
+    /// that beat `NSMetadataQuery`'s initial gather or the Atmosphere cache's read — it's
+    /// queued rather than dropped,
     /// and `cloudLibrary.start()` is kicked (idempotent). `armCatalogObservation`'s change
     /// reaction retries queued ids once the catalog updates.
     ///
@@ -203,7 +240,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             queuedRequests[id] = request
             return
         }
-        guard let item = collectionItem(id: id) else {
+        guard let path = collectionPath(id: id) else {
             pendingRequests[id] = request
             logger.info("queued stream for \(id, privacy: .public): library not ready")
             Task { await cloudLibrary.start() }
@@ -212,7 +249,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
         inFlightStreamIDs.insert(id)
         Task.detached(priority: .userInitiated) { [weak self] in
-            await Self.stream(item: item, id: id, request: request, allowsMessages: allowsMessages)
+            await Self.stream(path: path, id: id, request: request, allowsMessages: allowsMessages)
             await self?.markStreamFinished(id: id)
         }
     }
@@ -230,11 +267,11 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// while the card is still missing.
     private func sendFocusedCard(id: String, cardName: String, tier: String, sides: [String]?) {
         let key = WatchFaceKey(id: id, cardName: cardName, tier: tier, side: "")
-        guard !inFlightFocusKeys.contains(key), let item = collectionItem(id: id) else { return }
+        guard !inFlightFocusKeys.contains(key), let path = collectionPath(id: id) else { return }
 
         inFlightFocusKeys.insert(key)
         Task.detached(priority: .userInitiated) { [weak self] in
-            await Self.sendFocused(item: item, id: id, cardName: cardName, tier: tier, sides: sides)
+            await Self.sendFocused(path: path, id: id, cardName: cardName, tier: tier, sides: sides)
             await self?.markFocusFinished(key)
         }
     }
@@ -255,10 +292,10 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// Each card is split once, at full resolution, for both tiers: its screen faces are sent
     /// straight away, while its zoom faces (if wanted) are written out and only queued once
     /// every card's screen faces are — see `sendCard`.
-    private nonisolated static func stream(item: CloudItem, id: String, request: WatchDownloadRequest, allowsMessages: Bool) async {
+    private nonisolated static func stream(path: String, id: String, request: WatchDownloadRequest, allowsMessages: Bool) async {
         do {
-            try await CloudLibrary.primeForGoCore(path: item.path)
-            let reader = try CollectionReader(path: item.path)
+            try await CloudLibrary.primeForGoCore(path: path)
+            let reader = try CollectionReader(path: path)
             let summaries = try reader.cardSummaries()
 
             await sendManifest(summaries, id: id)
@@ -310,10 +347,10 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// The answer to an `opFocus`: one card's faces at one tier, as messages (each falling
     /// back to the file queue if its messages don't get through) — the `sides` asked for, in
     /// that order, or both.
-    private nonisolated static func sendFocused(item: CloudItem, id: String, cardName: String, tier: String, sides: [String]?) async {
+    private nonisolated static func sendFocused(path: String, id: String, cardName: String, tier: String, sides: [String]?) async {
         do {
-            try await CloudLibrary.primeForGoCore(path: item.path)
-            let reader = try CollectionReader(path: item.path)
+            try await CloudLibrary.primeForGoCore(path: path)
+            let reader = try CollectionReader(path: path)
             let summaries = try reader.cardSummaries()
             guard let index = summaries.firstIndex(where: { $0.name == cardName }) else { return }
             let summary = summaries[index]

@@ -239,9 +239,9 @@ struct WatchCardView: View {
                 if isZoomed {
                     let start = panAtDragStart ?? pan
                     panAtDragStart = start
-                    pan = clampedPan(
+                    pan = panBounds(in: space).rubberBanded(
                         CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height),
-                        in: space
+                        viewport: space
                     )
                 } else if abs(value.translation.height) > abs(value.translation.width),
                           !togglesFullScreen(value.translation.height < 0 ? .up : .down, from: value.startLocation, in: space) {
@@ -256,6 +256,10 @@ struct WatchCardView: View {
             .onEnded { value in
                 guard !isZoomed else {
                     panAtDragStart = nil
+                    let settled = panBounds(in: space).clamp(pan)
+                    if settled != pan {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 1)) { pan = settled }
+                    }
                     return
                 }
                 let direction = WatchCardInteraction.swipeDirection(
@@ -320,9 +324,9 @@ struct WatchCardView: View {
         zoomedCardID = zooming ? meta.name : nil
     }
 
-    /// Keeps the zoomed card's showing face covering the screen along any axis it overflows,
-    /// and centred along any it doesn't.
-    private func clampedPan(_ proposed: CGSize, in space: CGSize) -> CGSize {
+    /// How far the zoomed card may be panned, as on iPhone and Mac: a quarter of its showing face
+    /// always stays on screen (see `ZoomGeometry.panBounds`).
+    private func panBounds(in space: CGSize) -> ZoomGeometry.PanBounds {
         let face = WatchCardInteraction.visibleFaceSize(
             frontPixelSize: frontPixelSize,
             flip: meta.flip,
@@ -330,8 +334,15 @@ struct WatchCardView: View {
             showingFront: isShowingFront,
             fittedIn: restingSize(in: space)
         )
-        let zoomedFace = CGSize(width: face.width * zoom, height: face.height * zoom)
-        return ZoomGeometry.clampedOffset(proposed, contentSize: zoomedFace, containerSize: space)
+        // The watch lays the zoomed face out at full size rather than scaling it, so it's
+        // measured at that size, centred, with no further scale.
+        let zoomedFace = CGRect(
+            x: (space.width - face.width * zoom) / 2,
+            y: (space.height - face.height * zoom) / 2,
+            width: face.width * zoom,
+            height: face.height * zoom
+        )
+        return ZoomGeometry.panBounds(card: zoomedFace, viewport: space, scale: 1)
     }
 
     // MARK: - Loading
