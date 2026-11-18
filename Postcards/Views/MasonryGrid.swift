@@ -98,7 +98,12 @@ private struct PinnedHeader<Header: View>: ViewModifier {
     let header: Header
 
     func body(content: Content) -> some View {
-        if #available(macOS 26, iOS 26, *) {
+        #if os(iOS)
+        // iOS has no header to pin (the name is the navigation title), and a safeAreaBar
+        // holding nothing there still reserved about a screen's height above the cards.
+        content
+        #else
+        if #available(macOS 26, *) {
             // Asked for explicitly: the window's hidden toolbar background otherwise leaves the
             // edge hard, with cards showing straight through behind the header.
             content
@@ -107,6 +112,7 @@ private struct PinnedHeader<Header: View>: ViewModifier {
         } else {
             content.safeAreaInset(edge: .top, spacing: 0) { header.background(.bar) }
         }
+        #endif
     }
 }
 

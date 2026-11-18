@@ -622,9 +622,12 @@ struct LibraryView: View {
             .disabled(atmosphere.isSigningIn)
             .help("Add Account")
             .accessibilityLabel("Add Account")
-            // Section headers run further right than rows do; this lines the button up with
-            // the rows' trailing glyphs (download, upgrade warning).
+            #if os(macOS)
+            // Sidebar section headers run further right than rows do; this lines the button up
+            // with the rows' trailing glyphs (download, upgrade warning). iOS's grouped lists
+            // already inset headers to match their rows.
             .padding(.trailing, 19)
+            #endif
         }
     }
 
@@ -939,10 +942,16 @@ struct LibraryView: View {
 
     /// DEBUG-only hook for UI tests: `-uitest-import <path>` runs the real import
     /// pipeline at launch, standing in for the un-automatable system file picker.
+    /// `-uitest-open <name>` then opens the collection with that display name, for checking
+    /// layouts where a simulator can't be tapped.
     private func runAutomationHookIfRequested() async {
         #if DEBUG
         guard let path = UserDefaults.standard.string(forKey: "uitest-import") else { return }
         await library.importSources(from: [URL(fileURLWithPath: path)])
+        if let name = UserDefaults.standard.string(forKey: "uitest-open"),
+           let source = library.sources.first(where: { $0.displayName == name }) {
+            sidebarPath = [source]
+        }
         #endif
     }
 
@@ -1063,6 +1072,7 @@ private struct CollectionBrowser: View {
             // look like. (`.navigation` was tried for "Add…" first, to sit beside the back
             // chevron, but placed it past the sidebar/detail split instead — `.primaryAction`
             // for both is the more predictable, adjacent pairing.)
+            #if os(macOS)
             ToolbarItemGroup(placement: .primaryAction) {
                 AddMenu(onCreate: onCreate, onOpen: onImport)
                 // The grid/map switcher acts on the sidebar's browser, so it hides with the sidebar.
@@ -1070,6 +1080,26 @@ private struct CollectionBrowser: View {
                     CollectionModeSwitcher(mode: $viewMode, isEnabled: hasAnyLocation)
                 }
             }
+            #else
+            // Its own item, without the toolbar's glass behind it: the segmented control is its own
+            // capsule. Only offered when there's a map to switch to.
+            if hasAnyLocation {
+                if #available(iOS 26, *) {
+                    ToolbarItem(placement: .primaryAction) {
+                        CollectionModeSwitcher(mode: $viewMode, isEnabled: true)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
+                } else {
+                    ToolbarItem(placement: .primaryAction) {
+                        CollectionModeSwitcher(mode: $viewMode, isEnabled: true)
+                    }
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                AddMenu(onCreate: onCreate, onOpen: onImport)
+            }
+            #endif
         }
         #if os(macOS)
         // Hide this pushed destination's own inline back button + title band — back moves

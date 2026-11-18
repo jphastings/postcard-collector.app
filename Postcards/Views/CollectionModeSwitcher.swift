@@ -21,6 +21,19 @@ struct CollectionModeSwitcher: View {
     var isEnabled: Bool
 
     var body: some View {
+        #if os(iOS)
+        // The system segmented control: it draws as its own glass item in an iOS toolbar, where
+        // the custom control below sat as a second capsule inside the toolbar's own.
+        Picker("View", selection: $mode) {
+            ForEach(CollectionViewMode.allCases) { candidate in
+                Image(systemName: candidate.systemImage)
+                    .accessibilityLabel(candidate.label)
+                    .tag(candidate)
+            }
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("CollectionModeSwitcher")
+        #else
         // A single connected control (not two loose icons) so grid and map read as one
         // mutually-exclusive either-or, with the selected segment highlighted. Only the map
         // segment is gated on the collection having locations; grid is always available.
@@ -37,6 +50,7 @@ struct CollectionModeSwitcher: View {
         .accessibilityElement(children: .contain)
         // Stable machine-facing handle for UI tests.
         .accessibilityIdentifier("CollectionModeSwitcher")
+        #endif
     }
 
     private func segment(_ candidate: CollectionViewMode) -> some View {
