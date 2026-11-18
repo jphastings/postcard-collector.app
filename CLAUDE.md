@@ -248,8 +248,11 @@ SwiftUI `Map` hosts `Annotation` content behind a bridging boundary with sharp e
   that flag, add `-allowProvisioningUpdates`); even signed, a local run can hit "Timed out
   while enabling automation mode," so treat them as CI/Xcode-run rather than headless-CLI.
   Don't run the iOS `PostcardsUITests` target from headless automation — it stalls.
-- CI's app job must run on a macOS image whose SDK contains the Liquid Glass APIs the
-  code uses — runtime `#available` guards don't help the *compiler* against an old SDK.
+- CI and release build the apps on GitHub's `xcode-27` runner with Xcode pinned via
+  `DEVELOPER_DIR` (both workflows, kept in step), matching local development: SwiftUI and
+  Liquid Glass behaviour depends on the SDK an app is built against, so a TestFlight build
+  from an older SDK can behave unlike anything tested locally. Runtime `#available` guards
+  don't help the *compiler* against an old SDK either.
 - Release flow spans two repos, in order: dotpostcard main push auto-releases via
   commitizen (`feat:`/`fix:` prefixes drive the version); then bump `DOTPOSTCARD_REF`
   in **both** workflow files here and merge that to main. Releases here are Knope's
