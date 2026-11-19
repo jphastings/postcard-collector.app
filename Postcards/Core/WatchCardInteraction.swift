@@ -3,9 +3,10 @@ import Foundation
 
 /// The pure decisions behind the watch card's gestures (see `WatchCardView`): what a finished
 /// drag was — a sideways swipe flips the card, a vertical one pages through the collection,
-/// unless it's from the top edge and hides or brings back the controls — how far the card
-/// follows a vertical drag while it's in progress, how big the showing face is on screen, and how
-/// much a resting card shrinks to keep its corners off the screen's curved ones.
+/// unless it's from the top edge and hides or brings back the controls — whether a tap was
+/// single or double, how far the card follows a vertical drag while it's in progress, how big
+/// the showing face is on screen, and how much a resting card shrinks to keep its corners off
+/// the screen's curved ones.
 /// Kept free of SwiftUI so they're unit-testable.
 enum WatchCardInteraction {
     enum SwipeDirection: Equatable {
@@ -82,6 +83,36 @@ enum WatchCardInteraction {
     static func pageDragOffset(forVerticalTranslation translation: CGFloat, cardHeight: CGFloat) -> CGFloat {
         let limit = max(cardHeight, 0) / 4
         return min(max(translation * 0.4, -limit), limit)
+    }
+
+    // MARK: - Taps
+
+    /// Tells single taps from double ones as each lands, so a single tap can act at once
+    /// instead of waiting out the double-tap window. A tap is the second of a double if it
+    /// lands soon after, and near, the previous *single* tap; a double resets the sequence, so
+    /// a third tap starts afresh.
+    struct TapSequence {
+        enum Tap: Equatable {
+            case single
+            case double
+        }
+
+        /// Measured between the taps' ends, so it includes the second tap's own touch.
+        static let doubleTapInterval: TimeInterval = 0.35
+        static let doubleTapDistance: CGFloat = 40
+
+        private var lastSingle: (time: TimeInterval, location: CGPoint)?
+
+        mutating func classify(at time: TimeInterval, location: CGPoint) -> Tap {
+            if let last = lastSingle,
+               time - last.time <= Self.doubleTapInterval,
+               hypot(location.x - last.location.x, location.y - last.location.y) <= Self.doubleTapDistance {
+                lastSingle = nil
+                return .double
+            }
+            lastSingle = (time, location)
+            return .single
+        }
     }
 
     // MARK: - Full screen

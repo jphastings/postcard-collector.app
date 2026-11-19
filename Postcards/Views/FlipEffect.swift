@@ -71,6 +71,9 @@ struct FlippableCardView: View {
     /// portrait card's. Its owner clears this as the card first flips, with `frontFitRelease`
     /// (see `FlipGeometry.startsFittedToFront`). Defaults to `false`.
     var fitsFrontOnly: Bool = false
+    /// How the next change to `flipHalfTurns` animates; `nil` (the default) for the flip's own
+    /// turn. `WatchCardView` sets a quicker one to take back a turn it has only just begun.
+    var flipHalfTurnsAnimation: Animation? = nil
 
     /// How long a flip takes.
     private static let flipDuration: TimeInterval = 1
@@ -93,7 +96,8 @@ struct FlippableCardView: View {
         tapToFlip: Bool = true,
         isFlipped: Binding<Bool>? = nil,
         flipHalfTurns: Int? = nil,
-        fitsFrontOnly: Bool = false
+        fitsFrontOnly: Bool = false,
+        flipHalfTurnsAnimation: Animation? = nil
     ) {
         self.front = front
         self.back = back
@@ -106,6 +110,7 @@ struct FlippableCardView: View {
         self.isFlipped = isFlipped
         self.flipHalfTurns = flipHalfTurns
         self.fitsFrontOnly = fitsFrontOnly
+        self.flipHalfTurnsAnimation = flipHalfTurnsAnimation
         let initialAngle: Double
         if let flipHalfTurns {
             initialAngle = Double(flipHalfTurns) * 180
@@ -164,7 +169,7 @@ struct FlippableCardView: View {
         }
         .onChange(of: flipHalfTurns) { _, newValue in
             guard let newValue else { return }
-            withAnimation(.easeInOut(duration: Self.flipDuration)) {
+            withAnimation(flipHalfTurnsAnimation ?? .easeInOut(duration: Self.flipDuration)) {
                 angleDegrees = Double(newValue) * 180
             }
         }

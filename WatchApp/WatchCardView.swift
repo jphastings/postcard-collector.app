@@ -5,15 +5,20 @@ import SwiftUI
 ///
 /// Its gestures all live on one untransformed container — a drag on a view inside its own
 /// scale or offset feeds back into its own coordinate space and jitters:
-/// - **swipe left or right** flips it over, turning the way it was pushed, about the card's
-///   own hinge (`FlipGeometry`: a book card turns sideways, a calendar card top over bottom);
+/// - **tap** flips it over, about the card's own hinge (`FlipGeometry`: a book card turns
+///   sideways, a calendar card top over bottom);
+/// - **swipe left or right** flips it too, turning the way it was pushed;
 /// - **swipe up or down** moves to the next or previous postcard (`onPage`), as the crown does;
 /// - **swipe up from the top** of the card pushes the collection's controls (back button and
 ///   title) off the screen, giving the card all of it, and **swipe down from the top** of the
 ///   screen brings them back (`onFullScreen`);
-/// - **double tap** zooms in 2.5×, after which a drag pans (paging is disabled meanwhile);
+/// - **double tap** zooms in 2.5×, after which a drag pans (paging is disabled meanwhile), a
+///   tap does nothing, and another double tap zooms back out;
 /// - **long press** opens the card's info page (`onShowInfo`).
-/// A single tap does nothing, so a double tap never waits one out.
+/// A tap flips the card the moment it lands rather than waiting out the double-tap window,
+/// which would make every flip feel late. A double tap's second tap takes back the turn its
+/// first began — only a few degrees in by then — as quickly as the zoom, so the wobble is lost
+/// under it.
 ///
 /// The swipes share one drag gesture, which also stops the scroll view's own touch scrolling
 /// from starting — so a vertical swipe pages by asking the scroll view to move, rather than
@@ -78,10 +83,16 @@ struct WatchCardView: View {
     @State private var loadState: LoadState = .waiting
     @State private var zoomFront: CGImage?
     @State private var zoomBack: CGImage?
-    /// Half turns of flip, signed by the swipes that made them (see `FlippableCardView`).
+    /// Half turns of flip, signed by the way each turned (see `FlippableCardView`).
     @State private var flipHalfTurns = 0
+    /// How the latest change to `flipHalfTurns` animates; `nil` for a full flip.
+    @State private var flipHalfTurnsAnimation: Animation?
     /// Whether the card has been flipped since it was scrolled to (see `fitsFrontOnly`).
     @State private var hasFlipped = false
+    @State private var taps = WatchCardInteraction.TapSequence()
+    /// `hasFlipped` as it was before the last single tap flipped the card, for a second tap to
+    /// restore as it takes that flip back; `nil` if that tap didn't flip it.
+    @State private var hadFlippedBeforeTap: Bool?
     @State private var isZoomed = false
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -139,7 +150,8 @@ struct WatchCardView: View {
         let hasZoomFace: Bool
     }
 
-    /// Only the side showing: a zoomed card can't be flipped (a swipe pans it), so the other
+    /// Only the side showing: a zoomed card can't be flipped (a swipe pans it, a tap does
+    /// nothing), so the other
     /// side's zoom face would only cost memory — several megabytes decoded — and bandwidth.
     private var zoomLoadTrigger: ZoomLoadTrigger {
         ZoomLoadTrigger(
@@ -156,7 +168,7 @@ struct WatchCardView: View {
                 .offset(y: pageDrag)
                 .frame(width: space.width, height: space.height)
                 .contentShape(Rectangle())
-                .gesture(longPressOrDoubleTap)
+                .gesture(longPressOrTap)
                 .simultaneousGesture(swipeOrPan(in: space))
                 // VoiceOver's own swipes and taps can't reach the gestures above (it scrolls
                 // the collection itself).
@@ -200,7 +212,8 @@ struct WatchCardView: View {
                 frontPixelSize: frontPixelSize,
                 tapToFlip: false,
                 flipHalfTurns: flipHalfTurns,
-                fitsFrontOnly: fitsFrontOnly
+                fitsFrontOnly: fitsFrontOnly,
+                flipHalfTurnsAnimation: flipHalfTurnsAnimation
             )
             .frame(width: resting.width * zoom, height: resting.height * zoom)
             .offset(pan)
@@ -235,11 +248,42 @@ struct WatchCardView: View {
 
     // MARK: - Gestures
 
-    /// A long press takes precedence over a double tap. There's no single-tap action.
-    private var longPressOrDoubleTap: some Gesture {
+    /// A long press takes precedence over taps.
+    private var longPressOrTap: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .onEnded { _ in onShowInfo() }
-            .exclusively(before: TapGesture(count: 2).onEnded { toggleZoom() })
+            .exclusively(before: SpatialTapGesture().onEnded { tap(at: $0.location) })
+    }
+
+    /// A single tap flips the card at once; a double tap takes that flip back and zooms in or
+    /// out. While zoomed, a single tap does nothing.
+    private func tap(at location: CGPoint) {
+        switch taps.classify(at: ProcessInfo.processInfo.systemUptime, location: location) {
+        case .single:
+            hadFlippedBeforeTap = nil
+            guard !isZoomed, isLoaded, hasBack else { return }
+            hadFlippedBeforeTap = hasFlipped
+            flip(halfTurns: 1)
+        case .double:
+            if let hadFlipped = hadFlippedBeforeTap {
+                undoTapFlip(restoring: hadFlipped)
+            }
+            hadFlippedBeforeTap = nil
+            toggleZoom()
+        }
+    }
+
+    /// Takes back the flip a double tap's first tap began, as quickly as the zoom it's hidden
+    /// under rather than in the flip's own time. A spring, because it takes over from the
+    /// flip's in-flight animation, where a timing curve would run alongside it and let the
+    /// flip carry on turning the card.
+    private func undoTapFlip(restoring hadFlipped: Bool) {
+        let undo = Animation.spring(duration: 0.25, bounce: 0)
+        flipHalfTurnsAnimation = undo
+        flipHalfTurns -= 1
+        if hasFlipped != hadFlipped {
+            withAnimation(undo) { hasFlipped = hadFlipped }
+        }
     }
 
     /// Pans while zoomed. Otherwise the card follows a vertical drag part way, and once the
@@ -313,7 +357,12 @@ struct WatchCardView: View {
     /// first flip also zooms a card fitted by its front alone out to fit both sides, for good.
     private func flip(_ direction: WatchCardInteraction.SwipeDirection) {
         guard isLoaded, hasBack, let halfTurns = WatchCardInteraction.flipHalfTurns(for: direction) else { return }
+        flip(halfTurns: halfTurns)
+    }
+
+    private func flip(halfTurns: Int) {
         // FlippableCardView animates its own angle to follow.
+        flipHalfTurnsAnimation = nil
         flipHalfTurns += halfTurns
         if !hasFlipped {
             withAnimation(FlippableCardView.frontFitRelease) { hasFlipped = true }

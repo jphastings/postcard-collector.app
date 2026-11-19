@@ -110,6 +110,32 @@ final class WatchCardInteractionTests: XCTestCase {
         XCTAssertEqual(WatchCardInteraction.pageDragOffset(forVerticalTranslation: 400, cardHeight: 240), 60, accuracy: 0.001)
     }
 
+    // MARK: - TapSequence
+
+    func testASecondTapSoonAndNearIsADouble() {
+        var taps = WatchCardInteraction.TapSequence()
+        XCTAssertEqual(taps.classify(at: 10, location: CGPoint(x: 50, y: 50)), .single)
+        XCTAssertEqual(taps.classify(at: 10.2, location: CGPoint(x: 70, y: 60)), .double)
+    }
+
+    func testASecondTapTooLateOrTooFarIsAnotherSingle() {
+        var late = WatchCardInteraction.TapSequence()
+        _ = late.classify(at: 10, location: .zero)
+        XCTAssertEqual(late.classify(at: 10.5, location: .zero), .single)
+
+        var far = WatchCardInteraction.TapSequence()
+        _ = far.classify(at: 10, location: .zero)
+        XCTAssertEqual(far.classify(at: 10.1, location: CGPoint(x: 60, y: 0)), .single)
+    }
+
+    func testATapAfterADoubleStartsAfresh() {
+        var taps = WatchCardInteraction.TapSequence()
+        _ = taps.classify(at: 10, location: .zero)
+        _ = taps.classify(at: 10.2, location: .zero)
+        XCTAssertEqual(taps.classify(at: 10.3, location: .zero), .single)
+        XCTAssertEqual(taps.classify(at: 10.5, location: .zero), .double)
+    }
+
     // MARK: - togglesFullScreen
 
     func testASwipeUpFromTheTopHidesTheControls() {
