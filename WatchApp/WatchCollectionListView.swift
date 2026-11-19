@@ -97,18 +97,12 @@ private struct CollectionRow: View {
                 }
                 .opacity(library.isPresent(info.id) ? 1 : 0.6)
                 Spacer(minLength: 4)
-                if info.atmosphere == .followed {
-                    Image(systemName: "dot.radiowaves.up.forward")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("Followed")
-                }
                 if library.isPinned(info.id) {
                     Image(systemName: "pin.fill")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                CollectionStatusBadge(status: rowStatus)
+                CollectionStatusBadge(status: rowStatus, isFollowed: info.atmosphere == .followed)
             }
         }
         // Full swipe would fire the edge-most action — the destructive Remove Download,
@@ -185,9 +179,10 @@ private struct CollectionRow: View {
 /// A row's trailing status glyph. Every state draws inside the same fixed square, centred —
 /// progress as a ring the size of the icons, rather than a system spinner or bar with its own
 /// intrinsic size and padding — so the glyphs line up down the right-hand edge whatever state
-/// each row is in.
+/// each row is in. A followed collection shows that, rather than a check, once downloaded.
 private struct CollectionStatusBadge: View {
     let status: CollectionDownloadStatus
+    let isFollowed: Bool
 
     private static let side: CGFloat = 20
 
@@ -199,6 +194,12 @@ private struct CollectionStatusBadge: View {
     @ViewBuilder
     private var glyph: some View {
         switch status {
+        case .downloaded where isFollowed:
+            // A light, open glyph reads smaller than the dense check at the same size.
+            Image(systemName: "dot.radiowaves.up.forward")
+                .scaleEffect(1.3)
+                .foregroundStyle(.green)
+                .accessibilityLabel("Followed, downloaded")
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
