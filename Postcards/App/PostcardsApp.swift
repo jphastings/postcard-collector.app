@@ -7,7 +7,7 @@ import Sparkle
 
 @main
 struct PostcardsApp: App {
-    @State private var library = LibraryModel()
+    @State private var library: LibraryModel
     @State private var cloudLibrary: CloudLibrary
     @State private var atmosphere = AtmosphereAccounts()
     @State private var atmosphereLibrary: AtmosphereLibrary
@@ -25,6 +25,8 @@ struct PostcardsApp: App {
     #endif
 
     init() {
+        let library = LibraryModel()
+        _library = State(initialValue: library)
         let cloudLibrary = CloudLibrary()
         // Configured here, before anything can start it, rather than in `LibraryView`'s task:
         // on iOS the watch relay below starts the library itself, possibly during a background
@@ -43,7 +45,7 @@ struct PostcardsApp: App {
         // launch this app in the background to deliver a queued WCSession userInfo (phone
         // locked/in pocket), and a background launch never runs `LibraryView`'s task. The
         // delegate must exist from the first instant so that delivery isn't silently dropped.
-        let provider = WatchConnectivityProvider(cloudLibrary: cloudLibrary, atmosphereLibrary: atmosphereLibrary)
+        let provider = WatchConnectivityProvider(library: library, cloudLibrary: cloudLibrary, atmosphereLibrary: atmosphereLibrary)
         _watchConnectivityProvider = State(initialValue: provider)
         provider.start()
         #endif

@@ -654,14 +654,8 @@ struct LibraryView: View {
         !library.sources.isEmpty || !cloudSidebarItems.isEmpty
     }
 
-    /// The "Library" sidebar section's rows: imported collections, minus any whose path is
-    /// also an iCloud item — a collection created in the iCloud folder by the
-    /// "New collection…" flow is registered in `library.sources` for instant visibility,
-    /// then moves to the iCloud section once `CloudLibrary`'s metadata query notices it.
     private var importedCollectionSources: [LibrarySource] {
-        library.sources.filter { source in
-            source.isCollection && !cloudLibrary.items.contains { $0.path == source.path }
-        }
+        library.localCollections(with: cloudLibrary)
     }
 
     /// The "iCloud" sidebar section's rows. Bare card files in iCloud Drive aren't listed:

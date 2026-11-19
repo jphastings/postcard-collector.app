@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Lists every collection the iPhone has advertised (`library.catalog`): the ones already on
-/// the watch — or pinned to be kept there — first, then the ones only on the iPhone (see
-/// `WatchCollectionSections`). Pinning (via the swipe action) keeps a collection downloaded,
+/// Lists every collection the iPhone has advertised (`library.catalog`), in the iPhone
+/// sidebar's sections (see `WatchCollectionSection`); rows not yet on the watch are dimmed.
+/// Pinning (via the swipe action) keeps a collection downloaded,
 /// zoom tier and all, so it opens with no phone present; unpinning lets that cache lapse
 /// rather than deleting it. A separate "Remove Download" swipe action, shown once a collection
 /// has any download, deletes its cache outright (unpinning it first if needed).
@@ -12,22 +12,16 @@ import SwiftUI
 /// person wait here for a download to finish.
 struct WatchCollectionListView: View {
     let library: WatchLibrary
+    #if DEBUG
+    /// Opened by the `-uitest-open <title>` launch argument, for simulator checks.
+    @State private var uitestOpenID: String?
+    #endif
 
     var body: some View {
-        let sections = WatchCollectionSections(
-            catalog: library.catalog,
-            pinned: library.pinnedIDs,
-            isOnWatch: { library.isPresent($0) }
-        )
         List {
-            if !sections.onWatch.isEmpty {
-                Section("Downloaded") {
-                    ForEach(sections.onWatch) { CollectionRow(library: library, info: $0) }
-                }
-            }
-            if !sections.onPhone.isEmpty {
-                Section("On iPhone") {
-                    ForEach(sections.onPhone) { CollectionRow(library: library, info: $0) }
+            ForEach(WatchCollectionSection.sections(of: library.catalog)) { section in
+                Section(section.title) {
+                    ForEach(section.collections) { CollectionRow(library: library, info: $0) }
                 }
             }
         }
@@ -40,6 +34,13 @@ struct WatchCollectionListView: View {
                 emptyOverlay
             }
         }
+        #if DEBUG
+        .navigationDestination(item: $uitestOpenID) { WatchPostcardScrollView(library: library, id: $0) }
+        .onChange(of: library.catalog, initial: true) { _, catalog in
+            guard uitestOpenID == nil, let title = UserDefaults.standard.string(forKey: "uitest-open") else { return }
+            uitestOpenID = catalog.first { $0.title == title }?.id
+        }
+        #endif
     }
 
     /// Before any catalog has arrived, the iPhone app has never been heard from — most likely
@@ -52,7 +53,7 @@ struct WatchCollectionListView: View {
             ContentUnavailableView(
                 "No Collections",
                 systemImage: "square.stack",
-                description: Text("Add a collection to the Postcards folder in iCloud Drive on your iPhone.")
+                description: Text("Add a collection on your iPhone.")
             )
         } else {
             ContentUnavailableView(
@@ -94,6 +95,7 @@ private struct CollectionRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                .opacity(library.isPresent(info.id) ? 1 : 0.6)
                 Spacer(minLength: 4)
                 if info.atmosphere == .followed {
                     Image(systemName: "dot.radiowaves.up.forward")

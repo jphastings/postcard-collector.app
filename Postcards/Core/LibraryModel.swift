@@ -306,6 +306,16 @@ final class LibraryModel {
 }
 
 extension LibraryModel {
+    /// The sidebar's "Local" collections (relayed to the watch as "From iPhone"): imported ones,
+    /// minus any whose path is also an iCloud item — a collection created in the iCloud folder
+    /// by the "New collection…" flow is registered in `sources` for instant visibility, then
+    /// moves to the iCloud section once `CloudLibrary`'s metadata query notices it.
+    func localCollections(with cloudLibrary: CloudLibrary) -> [LibrarySource] {
+        sources.filter { source in
+            source.isCollection && !cloudLibrary.items.contains { $0.path == source.path }
+        }
+    }
+
     /// Every collection a card can be added to — imported plus fully-downloaded iCloud ones,
     /// deduplicated by path (see `WritableCollection.known(sources:downloaded:)`). A
     /// just-created iCloud collection can briefly be in both `sources` and `cloudLibrary.items`.

@@ -154,7 +154,8 @@ struct WatchCardMeta: Identifiable, Hashable, Codable, Sendable {
 
 /// One collection as advertised to the watch — enough to draw the list row without the file
 /// itself. `id` is the collection's stable identifier — an iCloud collection's filename stem,
-/// or `WatchCatalogBuilder.atmosphereID(uri:)` for an Atmosphere one; it keys relay messages
+/// `WatchCatalogBuilder.localID(path:)` for one only on the phone, or
+/// `WatchCatalogBuilder.atmosphereID(uri:)` for an Atmosphere one; it keys relay messages
 /// and is the on-watch cache directory's name, so it must stay one safe path component.
 struct WatchCollectionInfo: Identifiable, Hashable, Codable, Sendable {
     var id: String
@@ -163,6 +164,10 @@ struct WatchCollectionInfo: Identifiable, Hashable, Codable, Sendable {
     /// Set for an Atmosphere collection; absent for iCloud ones. Optional so catalogs from
     /// phones that predate it still decode, and watches that predate it ignore it.
     var atmosphere: AtmosphereRole? = nil
+    /// `true` for a collection only on the phone (imported, not in iCloud). Absent means
+    /// iCloud — or Atmosphere, per `atmosphere` — so catalogs from phones that predate it
+    /// still decode, and watches that predate it ignore it.
+    var isLocal: Bool? = nil
 
     enum AtmosphereRole: String, Codable, Sendable {
         /// A signed-in account's own.
