@@ -4,6 +4,18 @@ Every release of Postcard Collector for iPhone, iPad, Apple Watch, and Mac, newe
 [Knope](https://knope.tech) writes each entry from the conventional commits merged since the
 release before it — see `knope.toml` and `docs/RELEASING.md`.
 
+## 0.7.9 (2026-11-19)
+
+### Features
+
+- watch lists collections in the iPhone's sections, including Local ones
+- watch shows a downloaded followed collection with a green follow glyph
+- tap to flip a watch card, double tap to zoom
+
+### Fixes
+
+- watch cards clear the screen's rounded corners
+
 ## 0.7.8 (2026-11-18)
 
 ### Fixes
