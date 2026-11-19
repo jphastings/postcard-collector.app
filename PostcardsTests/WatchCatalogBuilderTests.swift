@@ -94,14 +94,16 @@ final class WatchCatalogBuilderTests: XCTestCase {
 
     func testARequestResolvesToTheFileItsIDNames() throws {
         let item = CloudItem(path: "/cloud/Rome.postcards", displayName: "Rome", isCollection: true, downloadState: .current)
+        let local = LibrarySource.collection(path: "/imports/Rome.postcards", displayName: "Rome")
         let atmosphere = AtmosphereCache.downloadedCollections(root: try atmosphereRoot())
         let rome = try XCTUnwrap(atmosphere.first { $0.uri == bobsPartial })
 
         func path(_ id: String) -> String? {
-            WatchCatalogBuilder.path(forID: id, cloudItems: [item], atmosphere: atmosphere)
+            WatchCatalogBuilder.path(forID: id, cloudItems: [item], local: [local], atmosphere: atmosphere)
         }
 
         XCTAssertEqual(path("Rome"), "/cloud/Rome.postcards")
+        XCTAssertEqual(path(WatchCatalogBuilder.localID(path: local.path)), "/imports/Rome.postcards")
         XCTAssertEqual(path(WatchCatalogBuilder.atmosphereID(uri: bobsPartial)), rome.path)
         XCTAssertNil(path(WatchCatalogBuilder.atmosphereID(uri: alicesUndownloaded)))
     }
@@ -111,6 +113,30 @@ final class WatchCatalogBuilderTests: XCTestCase {
 
         XCTAssertEqual(id, WatchCatalogBuilder.atmosphereID(uri: alicesTrip))
         XCTAssertNotEqual(id, WatchCatalogBuilder.atmosphereID(uri: bobsPartial))
+        XCTAssertFalse(id.contains("/"))
+    }
+
+    // MARK: - Only on the phone
+
+    func testALocalCollectionIsMarkedAndReadForItsTitleAndCount() throws {
+        let path = try fixturePath()
+        let reader = try CollectionReader(path: path)
+        let source = LibrarySource.collection(path: path, displayName: "fixture")
+
+        let entry = WatchCatalogBuilder.entry(forLocal: source, reader: try CollectionReader(path: path))
+
+        XCTAssertEqual(entry.isLocal, true)
+        XCTAssertNil(entry.atmosphere)
+        XCTAssertEqual(entry.title, try XCTUnwrap(reader.title()))
+        XCTAssertEqual(entry.cardCount, try reader.cardCount())
+    }
+
+    func testLocalIDsSurviveTheAppContainerMovingAndAreSinglePathComponents() {
+        let id = WatchCatalogBuilder.localID(path: "/old-container/ImportedSources/Rome.postcards")
+
+        XCTAssertEqual(id, WatchCatalogBuilder.localID(path: "/new-container/ImportedSources/Rome.postcards"))
+        XCTAssertNotEqual(id, WatchCatalogBuilder.localID(path: "/old-container/ImportedSources/Paris.postcards"))
+        XCTAssertNotEqual(id, "Rome", "never clashes with an iCloud collection's id")
         XCTAssertFalse(id.contains("/"))
     }
 }

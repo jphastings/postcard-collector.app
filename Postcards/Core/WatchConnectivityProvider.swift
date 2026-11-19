@@ -11,7 +11,8 @@ private let logger = Logger(subsystem: "org.dotpostcard.collector", category: "W
 private let messageTimeout: TimeInterval = 20
 
 /// The iPhone side of the watch relay (see `WatchRelay` for the wire contract). Publishes a
-/// lightweight catalog of `CloudLibrary`'s collections, and of the Atmosphere collections
+/// lightweight catalog of `CloudLibrary`'s collections, the phone-only ones
+/// (`LibraryModel.localCollections`), and the Atmosphere collections
 /// downloaded here (`AtmosphereCache.downloadedCollections` — never one that isn't: the watch
 /// mustn't start an atproto download), as the `WCSession` application context, keeps it in
 /// sync as either changes, and answers the watch's requests by
@@ -28,6 +29,7 @@ private let messageTimeout: TimeInterval = 20
 /// so the entire body must live behind `#if os(iOS)`.
 @MainActor
 final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
+    private let library: LibraryModel
     private let cloudLibrary: CloudLibrary
     private let atmosphereLibrary: AtmosphereLibrary
     /// The downloaded Atmosphere collections as last read from disk, which requests resolve
@@ -56,7 +58,8 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     /// `opFocus`, so the watch asking again before they've landed doesn't send them twice.
     private var inFlightFocusKeys: Set<WatchFaceKey> = []
 
-    init(cloudLibrary: CloudLibrary, atmosphereLibrary: AtmosphereLibrary) {
+    init(library: LibraryModel, cloudLibrary: CloudLibrary, atmosphereLibrary: AtmosphereLibrary) {
+        self.library = library
         self.cloudLibrary = cloudLibrary
         self.atmosphereLibrary = atmosphereLibrary
         super.init()
@@ -83,6 +86,7 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     private func armCatalogObservation() {
         withObservationTracking {
             _ = cloudLibrary.items
+            _ = library.sources
             _ = cloudLibrary.hasGatheredItems
             _ = cloudLibrary.containerState
         } onChange: { [weak self] in
@@ -127,13 +131,15 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
 
     /// Builds and pushes the catalog. iCloud collection files already known to be `.current`
     /// are read for their real title/count; anything else gets a minimal entry rather than
-    /// triggering a download just to advertise it. Atmosphere collections are read from their
+    /// triggering a download just to advertise it; phone-only ones are always on disk, so are
+    /// always read. Atmosphere collections are read from their
     /// cache on disk, and refresh what requests resolve against even while iCloud hasn't
     /// gathered. The (blocking, SQLite) reads happen off the main actor — `CloudItem` is
     /// `Sendable`, so the snapshot can safely cross.
     private func publishCatalog() {
         let isReady = isLibraryReady
         let collections = cloudLibrary.items.filter { $0.isCollection }
+        let local = library.localCollections(with: cloudLibrary)
         let atmosphereRoot = atmosphereLibrary.root
         catalogGeneration += 1
         let generation = catalogGeneration
@@ -141,7 +147,9 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
             let atmosphere = AtmosphereCache.downloadedCollections(root: atmosphereRoot)
             await self?.adoptAtmosphereCollections(atmosphere, generation: generation)
             guard isReady else { return }
-            let catalog = collections.map(Self.catalogEntry(for:)) + atmosphere.map(WatchCatalogBuilder.entry(for:))
+            let catalog = local.map { WatchCatalogBuilder.entry(forLocal: $0, reader: try? CollectionReader(path: $0.path)) }
+                + collections.map(Self.catalogEntry(for:))
+                + atmosphere.map(WatchCatalogBuilder.entry(for:))
             guard let data = try? JSONEncoder().encode(catalog) else { return }
             await self?.pushCatalog(data, generation: generation)
         }
@@ -215,7 +223,12 @@ final class WatchConnectivityProvider: NSObject, WCSessionDelegate {
     }
 
     private func collectionPath(id: String) -> String? {
-        WatchCatalogBuilder.path(forID: id, cloudItems: cloudLibrary.items, atmosphere: atmosphereCollections)
+        WatchCatalogBuilder.path(
+            forID: id,
+            cloudItems: cloudLibrary.items,
+            local: library.localCollections(with: cloudLibrary),
+            atmosphere: atmosphereCollections
+        )
     }
 
     /// Starts streaming whatever of `id` the watch is missing, per `request`. If a stream for

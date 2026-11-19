@@ -1,55 +1,49 @@
 import XCTest
 
 final class WatchCollectionSectionsTests: XCTestCase {
-    private func info(_ id: String, _ title: String) -> WatchCollectionInfo {
-        WatchCollectionInfo(id: id, title: title, cardCount: 1)
+    private func info(
+        _ id: String, _ title: String, isLocal: Bool? = nil, atmosphere: WatchCollectionInfo.AtmosphereRole? = nil
+    ) -> WatchCollectionInfo {
+        WatchCollectionInfo(id: id, title: title, cardCount: 1, atmosphere: atmosphere, isLocal: isLocal)
     }
 
-    func testDownloadedCollectionsComeFirstThenTheRestByTitle() {
-        let catalog = [info("z", "Zanzibar"), info("k", "Kyoto"), info("b", "Berlin"), info("a", "Athens")]
-
-        let sections = WatchCollectionSections(catalog: catalog, pinned: [], isOnWatch: { $0 == "z" || $0 == "b" })
-
-        XCTAssertEqual(sections.onWatch.map(\.id), ["b", "z"])
-        XCTAssertEqual(sections.onPhone.map(\.id), ["a", "k"])
+    private func layout(_ catalog: [WatchCollectionInfo]) -> [String: [String]] {
+        Dictionary(uniqueKeysWithValues: WatchCollectionSection.sections(of: catalog).map { ($0.title, $0.collections.map(\.id)) })
     }
 
-    func testPinnedCollectionsLeadTheDownloadedOnesEvenBeforeTheyveArrived() {
-        let catalog = [info("a", "Athens"), info("b", "Berlin"), info("k", "Kyoto")]
+    func testCollectionsAreGroupedAsOnTheIPhoneEachByTitle() {
+        let catalog = [
+            info("z", "Zanzibar"),
+            info("af", "Athens", atmosphere: .followed),
+            info("lk", "Kyoto", isLocal: true),
+            info("b", "Berlin"),
+            info("az", "Zurich", atmosphere: .own),
+            info("la", "Amsterdam", isLocal: true),
+            info("ab", "Bern", atmosphere: .own),
+        ]
 
-        // Kyoto is pinned but hasn't downloaded yet; Athens is downloaded but not pinned.
-        let sections = WatchCollectionSections(catalog: catalog, pinned: ["k"], isOnWatch: { $0 == "a" })
+        XCTAssertEqual(WatchCollectionSection.sections(of: catalog).map(\.title), ["From iPhone", "iCloud", "Atmosphere"])
+        XCTAssertEqual(layout(catalog), [
+            "From iPhone": ["la", "lk"],
+            "iCloud": ["b", "z"],
+            "Atmosphere": ["ab", "az", "af"],
+        ])
+    }
 
-        XCTAssertEqual(sections.onWatch.map(\.id), ["k", "a"])
-        XCTAssertEqual(sections.onPhone.map(\.id), ["b"])
+    func testAnEntryFromAnOlderPhoneIsICloud() throws {
+        let decoded = try JSONDecoder().decode([WatchCollectionInfo].self, from: Data(#"[{"id":"k","title":"Kyoto","cardCount":3}]"#.utf8))
+
+        XCTAssertEqual(layout(decoded), ["iCloud": ["k"]])
     }
 
     func testTitlesSortNaturally() {
         let catalog = [info("10", "Trip 10"), info("2", "Trip 2"), info("1", "trip 1")]
 
-        let sections = WatchCollectionSections(catalog: catalog, pinned: [], isOnWatch: { _ in false })
-
-        XCTAssertEqual(sections.onPhone.map(\.id), ["1", "2", "10"])
+        XCTAssertEqual(layout(catalog), ["iCloud": ["1", "2", "10"]])
     }
 
-    func testAnEmptyCatalogHasEmptySections() {
-        let sections = WatchCollectionSections(catalog: [], pinned: ["gone"], isOnWatch: { _ in true })
-
-        XCTAssertEqual(sections.onWatch, [])
-        XCTAssertEqual(sections.onPhone, [])
-    }
-
-    func testAtmosphereCollectionsMixInByTitle() {
-        let catalog = [
-            info("k", "Kyoto"),
-            WatchCollectionInfo(id: "atproto-b", title: "Berlin", cardCount: 1, atmosphere: .followed),
-            info("a", "Athens"),
-            WatchCollectionInfo(id: "atproto-z", title: "Zanzibar", cardCount: 1, atmosphere: .own),
-        ]
-
-        let sections = WatchCollectionSections(catalog: catalog, pinned: ["atproto-z"], isOnWatch: { $0 == "k" })
-
-        XCTAssertEqual(sections.onWatch.map(\.id), ["atproto-z", "k"])
-        XCTAssertEqual(sections.onPhone.map(\.id), ["a", "atproto-b"])
+    func testEmptySectionsAreLeftOut() {
+        XCTAssertEqual(WatchCollectionSection.sections(of: []), [])
+        XCTAssertEqual(WatchCollectionSection.sections(of: [info("l", "Lisbon", isLocal: true)]).map(\.title), ["From iPhone"])
     }
 }
