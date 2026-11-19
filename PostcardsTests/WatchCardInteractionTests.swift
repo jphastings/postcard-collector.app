@@ -198,4 +198,36 @@ final class WatchCardInteractionTests: XCTestCase {
             .zero
         )
     }
+
+    // MARK: - cornerClearanceScale
+
+    private let screen = CGSize(width: 208, height: 248)
+    private var radius: CGFloat { screen.width * WatchCardInteraction.screenCornerRadiusFraction }
+
+    /// The scale for a card resting full screen, in the 4pt-inset box `WatchCardView` uses.
+    private func fullScreenScale(aspect: CGFloat) -> CGFloat {
+        WatchCardInteraction.cornerClearanceScale(
+            cardAspectRatio: aspect, restingBox: CGSize(width: 200, height: 248),
+            space: CGRect(origin: .zero, size: screen), screen: screen, cornerRadius: radius
+        )
+    }
+
+    func testASquareCardShrinksUntilItsCornersClearTheScreens() {
+        let scale = fullScreenScale(aspect: 1)
+        XCTAssertLessThan(scale, 1)
+        // Fitted 200pt square, centred: its bottom-left corner against the bottom-left curve.
+        let half = 100 * scale
+        let corner = CGPoint(x: 104 - half, y: 124 + half)
+        let distance = hypot(corner.x - radius, corner.y - (screen.height - radius))
+        XCTAssertLessThanOrEqual(distance, radius - WatchCardInteraction.screenCornerMargin + 0.01)
+        XCTAssertGreaterThan(distance, radius - WatchCardInteraction.screenCornerMargin - 0.5)
+    }
+
+    func testAWideLandscapeCardKeepsItsSize() {
+        XCTAssertEqual(fullScreenScale(aspect: 3.0 / 2), 1)
+    }
+
+    func testATallCardWhoseCornersClearKeepsItsSize() {
+        XCTAssertEqual(fullScreenScale(aspect: 0.35), 1)
+    }
 }

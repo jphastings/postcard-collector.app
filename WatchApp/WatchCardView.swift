@@ -21,6 +21,7 @@ import SwiftUI
 ///
 /// The card's slot is always the whole screen; while the controls are showing, the card keeps
 /// to the space below them (`controlsHeight`), so hiding them re-centres it in the full slot.
+/// At rest it shrinks only if its corners would otherwise fall in the screen's curved corners.
 /// A portrait front on a hand flip starts fitted by itself, as big as a plain portrait card's,
 /// each time it's scrolled to, and zooms out to fit its landscape back with the first flip
 /// (`fitsFrontOnly`).
@@ -212,11 +213,24 @@ struct WatchCardView: View {
         CGSize(width: slot.width, height: max(slot.height - (isFullScreen ? 0 : controlsHeight), 1))
     }
 
-    /// The space the card fits itself into at rest: the whole of its space, bar the edge inset.
-    /// No vertical inset — the space runs to the physical screen edge, and the card should use
-    /// all of that height (it aspect-fits itself).
+    /// The space the card fits itself into at rest: the whole of its space, bar the edge inset,
+    /// shrunk only as far as keeps the fitted card's corners inside the screen's curved ones
+    /// (`WatchCardInteraction.cornerClearanceScale`). No vertical inset — the space runs to the
+    /// physical screen edge, and the card should use all of that height (it aspect-fits itself).
     private func restingSize(in space: CGSize) -> CGSize {
-        CGSize(width: max(space.width - 2 * Self.horizontalInset, 1), height: max(space.height, 1))
+        let box = CGSize(width: max(space.width - 2 * Self.horizontalInset, 1), height: max(space.height, 1))
+        // The slot is the whole screen, with the space at its bottom.
+        let top = isFullScreen ? 0 : controlsHeight
+        let screen = CGSize(width: space.width, height: space.height + top)
+        let fit = FlipGeometry.fitSize(forFrontSize: frontPixelSize, flip: meta.flip, fitsFrontOnly: fitsFrontOnly)
+        let scale = WatchCardInteraction.cornerClearanceScale(
+            cardAspectRatio: fit.width / fit.height,
+            restingBox: box,
+            space: CGRect(origin: CGPoint(x: 0, y: top), size: space),
+            screen: screen,
+            cornerRadius: screen.width * WatchCardInteraction.screenCornerRadiusFraction
+        )
+        return CGSize(width: box.width * scale, height: box.height * scale)
     }
 
     // MARK: - Gestures
